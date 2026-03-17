@@ -1,15 +1,28 @@
 import { useRef, useState, useCallback, type ReactNode } from "react";
 import type { LayoutComponent } from "../lib/layout-types";
 
+type ResizeDir = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
 interface GridLayoutProps {
   columns: number;
   rowHeight: number;
   components: LayoutComponent[];
   locked: boolean;
   onMoveComponent: (id: string, x: number, y: number) => void;
-  onResizeComponent: (id: string, w: number, h: number) => void;
+  onResizeComponent: (id: string, w: number, h: number, x?: number, y?: number) => void;
   renderComponent: (comp: LayoutComponent) => ReactNode;
 }
+
+const RESIZE_HANDLES: { dir: ResizeDir; cursor: string; className: string }[] = [
+  { dir: "n",  cursor: "cursor-n-resize",  className: "top-0 left-2 right-2 h-1.5" },
+  { dir: "s",  cursor: "cursor-s-resize",  className: "bottom-0 left-2 right-2 h-1.5" },
+  { dir: "e",  cursor: "cursor-e-resize",  className: "right-0 top-2 bottom-2 w-1.5" },
+  { dir: "w",  cursor: "cursor-w-resize",  className: "left-0 top-2 bottom-2 w-1.5" },
+  { dir: "nw", cursor: "cursor-nw-resize", className: "top-0 left-0 h-2.5 w-2.5" },
+  { dir: "ne", cursor: "cursor-ne-resize", className: "top-0 right-0 h-2.5 w-2.5" },
+  { dir: "sw", cursor: "cursor-sw-resize", className: "bottom-0 left-0 h-2.5 w-2.5" },
+  { dir: "se", cursor: "cursor-se-resize", className: "bottom-0 right-0 h-2.5 w-2.5" },
+];
 
 export default function GridLayout({
   columns,
@@ -26,9 +39,9 @@ export default function GridLayout({
   const [dragging, setDragging] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<{ x: number; y: number } | null>(null);
 
-  // Resize state
+  // Resize state — now tracks x/y/w/h since edges can move position
   const [resizing, setResizing] = useState<string | null>(null);
-  const [resizePreview, setResizePreview] = useState<{ w: number; h: number } | null>(null);
+  const [resizePreview, setResizePreview] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
 
   // Free-form (Ctrl/Cmd drag) state
   const [freeFormActive, setFreeFormActive] = useState(false);
@@ -100,54 +113,77 @@ export default function GridLayout({
     [locked, columns, rowHeight, getColWidth, onMoveComponent],
   );
 
-  // --- Resize handlers ---
+  // --- Resize handlers (supports all 8 directions) ---
   const handleResizeStart = useCallback(
-    (e: React.MouseEvent, comp: LayoutComponent) => {
+    (e: React.MouseEvent, comp: LayoutComponent, dir: ResizeDir) => {
       if (locked) return;
       e.preventDefault();
       e.stopPropagation();
       setResizing(comp.id);
-      setResizePreview({ w: comp.w, h: comp.h });
+      setResizePreview({ x: comp.x, y: comp.y, w: comp.w, h: comp.h });
       setFreeFormActive(e.ctrlKey || e.metaKey);
 
-      const startX = e.clientX;
-      const startY = e.clientY;
+      const startMouseX = e.clientX;
+      const startMouseY = e.clientY;
+
+      const movesLeft = dir.includes("w");
+      const movesRight = dir.includes("e");
+      const movesTop = dir.includes("n");
+      const movesBottom = dir.includes("s");
+
+      const computeNew = (dx: number, dy: number, isFreeForm: boolean) => {
+        const colW = getColWidth();
+        if (!colW) return { x: comp.x, y: comp.y, w: comp.w, h: comp.h };
+
+        const snapOrRaw = (val: number) => isFreeForm ? val : Math.round(val);
+
+        let newX = comp.x;
+        let newY = comp.y;
+        let newW = comp.w;
+        let newH = comp.h;
+
+        if (movesRight) {
+          newW = Math.max(2, Math.min(columns - comp.x, comp.w + snapOrRaw(dx / colW)));
+        }
+        if (movesLeft) {
+          const dCols = snapOrRaw(dx / colW);
+          const maxLeftShift = comp.w - 2; // can't shrink below min width of 2
+          const clampedD = Math.max(-comp.x, Math.min(maxLeftShift, dCols));
+          newX = comp.x + clampedD;
+          newW = comp.w - clampedD;
+        }
+        if (movesBottom) {
+          newH = Math.max(3, comp.h + snapOrRaw(dy / rowHeight));
+        }
+        if (movesTop) {
+          const dRows = snapOrRaw(dy / rowHeight);
+          const maxTopShift = comp.h - 3; // can't shrink below min height of 3
+          const clampedD = Math.max(-comp.y, Math.min(maxTopShift, dRows));
+          newY = comp.y + clampedD;
+          newH = comp.h - clampedD;
+        }
+
+        return { x: newX, y: newY, w: newW, h: newH };
+      };
 
       const onMove = (ev: MouseEvent) => {
         const colW = getColWidth();
         if (!colW) return;
-        const dx = ev.clientX - startX;
-        const dy = ev.clientY - startY;
+        const dx = ev.clientX - startMouseX;
+        const dy = ev.clientY - startMouseY;
         const isFreeForm = ev.ctrlKey || ev.metaKey;
         setFreeFormActive(isFreeForm);
-
-        let newW: number, newH: number;
-        if (isFreeForm) {
-          newW = Math.max(2, Math.min(columns - comp.x, comp.w + dx / colW));
-          newH = Math.max(3, comp.h + dy / rowHeight);
-        } else {
-          newW = Math.max(2, Math.min(columns - comp.x, comp.w + Math.round(dx / colW)));
-          newH = Math.max(3, comp.h + Math.round(dy / rowHeight));
-        }
-        setResizePreview({ w: newW, h: newH });
+        setResizePreview(computeNew(dx, dy, isFreeForm));
       };
 
       const onUp = (ev: MouseEvent) => {
         const colW = getColWidth();
         if (colW) {
-          const dx = ev.clientX - startX;
-          const dy = ev.clientY - startY;
+          const dx = ev.clientX - startMouseX;
+          const dy = ev.clientY - startMouseY;
           const isFreeForm = ev.ctrlKey || ev.metaKey;
-
-          let newW: number, newH: number;
-          if (isFreeForm) {
-            newW = Math.max(2, Math.min(columns - comp.x, comp.w + dx / colW));
-            newH = Math.max(3, comp.h + dy / rowHeight);
-          } else {
-            newW = Math.max(2, Math.min(columns - comp.x, comp.w + Math.round(dx / colW)));
-            newH = Math.max(3, comp.h + Math.round(dy / rowHeight));
-          }
-          onResizeComponent(comp.id, newW, newH);
+          const { x, y, w, h } = computeNew(dx, dy, isFreeForm);
+          onResizeComponent(comp.id, w, h, x, y);
         }
         setResizing(null);
         setResizePreview(null);
@@ -164,7 +200,7 @@ export default function GridLayout({
 
   const maxRow = components.reduce((max, c) => {
     const h = resizing === c.id && resizePreview ? resizePreview.h : c.h;
-    const y = dragging === c.id && dragPreview ? dragPreview.y : c.y;
+    const y = resizing === c.id && resizePreview ? resizePreview.y : (dragging === c.id && dragPreview ? dragPreview.y : c.y);
     return Math.max(max, y + h);
   }, 0);
   const minRows = Math.max(maxRow + 2, Math.ceil(400 / rowHeight));
@@ -172,7 +208,7 @@ export default function GridLayout({
   return (
     <div
       ref={containerRef}
-      className="relative h-full w-full overflow-auto"
+      className="relative h-full w-full overflow-hidden"
       style={{ minHeight: minRows * rowHeight }}
     >
       {/* Grid lines when unlocked */}
@@ -212,8 +248,8 @@ export default function GridLayout({
       {components.map((comp) => {
         const isDragging = dragging === comp.id;
         const isResizing = resizing === comp.id;
-        const posX = isDragging && dragPreview ? dragPreview.x : comp.x;
-        const posY = isDragging && dragPreview ? dragPreview.y : comp.y;
+        const posX = isResizing && resizePreview ? resizePreview.x : (isDragging && dragPreview ? dragPreview.x : comp.x);
+        const posY = isResizing && resizePreview ? resizePreview.y : (isDragging && dragPreview ? dragPreview.y : comp.y);
         const w = isResizing && resizePreview ? resizePreview.w : comp.w;
         const h = isResizing && resizePreview ? resizePreview.h : comp.h;
 
@@ -230,15 +266,12 @@ export default function GridLayout({
               height: h * rowHeight,
             }}
           >
-            {/* Drag handle — whole component header area, but we let the
-                component itself handle clicks on buttons. The outer div
-                handles mousedown for drag only when unlocked. */}
+            {/* Drag handle — whole component area */}
             <div
               className={`h-full w-full ${!locked ? "cursor-grab" : ""} ${
                 isDragging ? "cursor-grabbing" : ""
               }`}
               onMouseDown={(e) => {
-                // Don't start drag if clicking on interactive elements
                 const target = e.target as HTMLElement;
                 if (target.closest("button, input, [data-no-drag]")) return;
                 handleDragStart(e, comp);
@@ -247,13 +280,19 @@ export default function GridLayout({
               {renderComponent(comp)}
             </div>
 
-            {/* Resize handle — bottom-right corner, only when unlocked */}
+            {/* Resize handles — all 8 directions, only when unlocked */}
+            {!locked &&
+              RESIZE_HANDLES.map(({ dir, cursor, className }) => (
+                <div
+                  key={dir}
+                  className={`absolute z-[60] ${cursor} ${className}`}
+                  onMouseDown={(e) => handleResizeStart(e, comp, dir)}
+                />
+              ))}
+
+            {/* SE corner visual indicator */}
             {!locked && (
-              <div
-                className="absolute bottom-0 right-0 z-[60] h-3 w-3 cursor-se-resize"
-                onMouseDown={(e) => handleResizeStart(e, comp)}
-              >
-                {/* Visual indicator */}
+              <div className="pointer-events-none absolute bottom-0 right-0 z-[61]">
                 <svg
                   width="12"
                   height="12"

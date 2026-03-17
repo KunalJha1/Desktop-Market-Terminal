@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useId } from "react";
 import { X, Search, TrendingUp, TrendingDown } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
 import { getChannelById } from "../lib/link-channels";
-import { getQuote, ALL_SYMBOLS, formatPrice, formatVolume } from "../lib/market-data";
+import { ALL_SYMBOLS, formatPrice, formatVolume } from "../lib/market-data";
+import { useQuoteData } from "../lib/use-market-data";
 
 interface QuoteCardProps {
   linkChannel: number | null;
@@ -23,6 +24,7 @@ export default function QuoteCard({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const quoteId = useId();
 
   useEffect(() => {
     if (searchOpen && searchRef.current) {
@@ -30,7 +32,7 @@ export default function QuoteCard({
     }
   }, [searchOpen]);
 
-  const quote = getQuote(symbol);
+  const quote = useQuoteData(quoteId, symbol);
   const isPositive = quote ? quote.change >= 0 : true;
 
   const q = searchQuery.toLowerCase();

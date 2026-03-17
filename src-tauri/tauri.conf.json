@@ -13,7 +13,21 @@
     "allowlist": {
       "all": false,
       "shell": {
-        "open": true
+        "open": true,
+        "execute": true,
+        "sidecar": true,
+        "scope": [
+          {
+            "name": "python",
+            "cmd": "python",
+            "args": true
+          },
+          {
+            "name": "dailyiq-sidecar",
+            "cmd": "binaries/dailyiq-sidecar",
+            "args": true
+          }
+        ]
       },
       "fs": {
         "readFile": true,
@@ -27,6 +41,12 @@
       },
       "dialog": {
         "open": true
+      },
+      "os": {
+        "all": true
+      },
+      "window": {
+        "all": true
       }
     },
     "bundle": {

@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
+import { appWindow } from "@tauri-apps/api/window";
 import { useAuth } from "../lib/auth";
 import { useTabs, type TabType } from "../lib/tabs";
 import { useTws } from "../lib/tws";
+import WindowControls from "../components/WindowControls";
 import TabBar from "../components/TabBar";
 import SettingsPanel from "../components/SettingsPanel";
 import DashboardPage from "./DashboardPage";
@@ -12,7 +14,7 @@ import SimulationsPage from "./SimulationsPage";
 import HeatmapPage from "./HeatmapPage";
 import MarketBiasPage from "./MarketBiasPage";
 
-const pageByType: Record<TabType, React.FC> = {
+const pageByType: Record<TabType, React.FC<{ tabId?: string }>> = {
   dashboard: DashboardPage,
   chart: ChartPage,
   options: OptionsPage,
@@ -32,7 +34,14 @@ const CONNECTION_LABELS: Record<string, string> = {
 export default function Dashboard() {
   const { session } = useAuth();
   const { tabs, activeTabId } = useTabs();
-  const { status, port, clientId, connectionType } = useTws();
+  const { status, port, clientId, connectionType, sidecarStatus } = useTws();
+
+  // Derive active data provider for status bar
+  const dataProvider = status === "connected"
+    ? "live" as const
+    : sidecarStatus === "ready"
+      ? "yahoo" as const
+      : "offline" as const;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const user = session?.user;
   const firstName =
@@ -40,14 +49,35 @@ export default function Dashboard() {
     user?.email?.split("@")[0] ||
     "User";
 
+  const lastClickTime = useRef(0);
+
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const ActivePage = activeTab ? pageByType[activeTab.type] : null;
 
   return (
     <div className="flex h-screen flex-col bg-base">
-      {/* Top bar */}
-      <header className="titlebar-drag flex h-7 shrink-0 items-center justify-between border-b border-white/[0.06] bg-base px-3 pl-[78px]">
-        <div className="titlebar-no-drag">
+      {/* Top bar — draggable titlebar */}
+      <header
+        className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.06] bg-[#10151C] px-3"
+        onMouseDown={async (e) => {
+          if ((e.target as HTMLElement).closest("[data-no-drag]")) return;
+          e.preventDefault();
+          const now = Date.now();
+          if (now - lastClickTime.current < 300) {
+            lastClickTime.current = 0;
+            const isMax = await appWindow.isMaximized();
+            if (isMax) await appWindow.unmaximize();
+            else await appWindow.maximize();
+          } else {
+            lastClickTime.current = now;
+            appWindow.startDragging();
+          }
+        }}
+      >
+        <div className="flex items-center gap-3" data-no-drag>
+          <p className="text-[11px] font-light tracking-wide text-white/40">
+            Hi, <span className="text-white/70">{firstName}</span>
+          </p>
           <button
             onClick={() => setSettingsOpen(true)}
             className="text-[11px] font-light text-white/30 transition-all duration-100 hover:text-white/80"
@@ -56,9 +86,7 @@ export default function Dashboard() {
           </button>
         </div>
 
-        <p className="titlebar-no-drag text-[11px] font-light tracking-wide text-white/40">
-          Hi, <span className="text-white/70">{firstName}</span>
-        </p>
+        <WindowControls />
       </header>
 
       {/* Tab bar */}
@@ -66,7 +94,7 @@ export default function Dashboard() {
 
       {/* Page content */}
       <main className="flex-1 overflow-hidden">
-        {ActivePage && <ActivePage />}
+        {ActivePage && <ActivePage tabId={activeTab?.id} />}
       </main>
 
       {/* Bottom status bar */}
@@ -82,6 +110,33 @@ export default function Dashboard() {
         </p>
 
         <div className="flex items-center gap-3 font-mono text-[10px] text-white/30">
+          {/* Data provider */}
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`inline-block h-1.5 w-1.5 rounded-full ${
+                dataProvider === "live"
+                  ? "bg-green"
+                  : dataProvider === "yahoo"
+                    ? "bg-blue"
+                    : "bg-red/60"
+              }`}
+            />
+            <span className={
+              dataProvider === "live"
+                ? "text-green"
+                : dataProvider === "yahoo"
+                  ? "text-blue"
+                  : "text-red/60"
+            }>
+              {dataProvider === "live"
+                ? "LIVE"
+                : dataProvider === "yahoo"
+                  ? "YAHOO"
+                  : "OFFLINE"}
+            </span>
+          </div>
+          <span className="text-white/10">|</span>
+          {/* TWS connection */}
           <div className="flex items-center gap-1.5">
             <span
               className={`inline-block h-1.5 w-1.5 rounded-full ${

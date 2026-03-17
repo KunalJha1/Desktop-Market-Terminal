@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import {
   BarChart3,
@@ -7,7 +8,9 @@ import {
   Github,
   Mail,
 } from "lucide-react";
+import { appWindow } from "@tauri-apps/api/window";
 import Logo from "../components/Logo";
+import WindowControls from "../components/WindowControls";
 
 const copyByRoute: Record<string, { heading: string; subtitle: string }> = {
   "/": {
@@ -53,21 +56,39 @@ const features = [
 export default function AuthLayout() {
   const location = useLocation();
   const copy = copyByRoute[location.pathname] ?? copyByRoute["/"];
+  const lastClickTime = useRef(0);
 
   return (
     <div className="relative flex h-screen w-screen flex-col bg-gradient-to-br from-[#0f172a] via-[#131d35] to-[#0a0f1a]">
-      {/* macOS title bar drag region */}
-      <div className="titlebar-drag absolute inset-x-0 top-0 z-50 h-8" />
-
-      {/* Version badge */}
-      <a
-        href="https://github.com/KunalJha1"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="titlebar-no-drag absolute right-5 top-2 z-50 font-mono text-[11px] text-white/30 transition-colors hover:text-white/60"
+      {/* Title bar drag region + window controls */}
+      <div
+        className="absolute inset-x-0 top-0 z-50 flex h-8 items-center justify-end bg-[#10151C]/80"
+        onMouseDown={async (e) => {
+          if ((e.target as HTMLElement).closest("[data-no-drag]")) return;
+          e.preventDefault();
+          const now = Date.now();
+          if (now - lastClickTime.current < 300) {
+            lastClickTime.current = 0;
+            const isMax = await appWindow.isMaximized();
+            if (isMax) await appWindow.unmaximize();
+            else await appWindow.maximize();
+          } else {
+            lastClickTime.current = now;
+            appWindow.startDragging();
+          }
+        }}
       >
-        v{__APP_VERSION__}
-      </a>
+        <a
+          href="https://github.com/KunalJha1"
+          target="_blank"
+          rel="noopener noreferrer"
+          data-no-drag
+          className="mr-2 font-mono text-[11px] text-white/30 transition-colors hover:text-white/60"
+        >
+          v{__APP_VERSION__}
+        </a>
+        <WindowControls />
+      </div>
 
       {/* Main content */}
       <div className="flex flex-1 items-center justify-center gap-12 px-12 lg:gap-20 lg:px-20">

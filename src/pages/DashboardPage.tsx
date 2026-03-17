@@ -3,6 +3,7 @@ import DashboardToolbar from "../components/DashboardToolbar";
 import GridLayout from "../components/GridLayout";
 import QuoteCard from "../components/QuoteCard";
 import WatchlistCard from "../components/WatchlistCard";
+import MiniChart from "../chart/components/MiniChart";
 import { useTabs } from "../lib/tabs";
 import { useLayout } from "../lib/layout";
 import type { LayoutComponent } from "../lib/layout-types";
@@ -10,6 +11,7 @@ import type { LayoutComponent } from "../lib/layout-types";
 const COMPONENT_TYPES = [
   { type: "quote", label: "Quote Card", defaultW: 4, defaultH: 8 },
   { type: "watchlist", label: "Watchlist", defaultW: 4, defaultH: 10 },
+  { type: "minichart", label: "Mini Chart", defaultW: 4, defaultH: 8 },
 ] as const;
 
 export default function DashboardPage() {
@@ -72,6 +74,7 @@ export default function DashboardPage() {
     const defaultConfigs: Record<string, Record<string, unknown>> = {
       quote: { symbol: "AAPL" },
       watchlist: { symbols: ["AAPL", "MSFT", "NVDA", "TSLA", "SPY"] },
+      minichart: { symbol: "AAPL", timeframe: "1D", chartType: "candlestick" },
     };
 
     addComponent(activeTabId, type, {
@@ -88,8 +91,11 @@ export default function DashboardPage() {
     updateComponent(activeTabId, id, { x, y });
   };
 
-  const handleResizeComponent = (id: string, w: number, h: number) => {
-    updateComponent(activeTabId, id, { w, h });
+  const handleResizeComponent = (id: string, w: number, h: number, x?: number, y?: number) => {
+    const update: Partial<LayoutComponent> = { w, h };
+    if (x !== undefined) update.x = x;
+    if (y !== undefined) update.y = y;
+    updateComponent(activeTabId, id, update);
   };
 
   // When a watchlist row is clicked, update all QuoteCards on the same link channel
@@ -136,6 +142,20 @@ export default function DashboardPage() {
               updateComponent(activeTabId, comp.id, { config: cfg })
             }
             onSymbolSelect={(sym) => handleSymbolSelect(comp, sym)}
+          />
+        );
+      case "minichart":
+        return (
+          <MiniChart
+            linkChannel={comp.linkChannel}
+            onSetLinkChannel={(ch) =>
+              setComponentLinkChannel(activeTabId, comp.id, ch)
+            }
+            onClose={() => removeComponent(activeTabId, comp.id)}
+            config={comp.config}
+            onConfigChange={(cfg) =>
+              updateComponent(activeTabId, comp.id, { config: cfg })
+            }
           />
         );
       default:

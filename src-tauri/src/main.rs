@@ -5,6 +5,8 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::process::{Child, Command};
+use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
 
@@ -203,20 +205,167 @@ fn probe_tws_ports() -> Option<ProbeResult> {
 #[tauri::command]
 fn spawn_tab_window(app_handle: tauri::AppHandle, label: String, title: String) -> Result<(), String> {
     let url = tauri::WindowUrl::App("index.html".into());
-    tauri::WindowBuilder::new(&app_handle, &label, url)
+    let builder = tauri::WindowBuilder::new(&app_handle, &label, url)
         .title(&title)
         .inner_size(1440.0, 900.0)
-        .min_inner_size(1280.0, 800.0)
+        .min_inner_size(1280.0, 800.0);
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true)
+        .hidden_title(true);
+
+    builder
         .build()
         .map_err(|e| format!("Failed to create window: {}", e))?;
     Ok(())
 }
 
+struct SidecarState {
+    child: Mutex<Option<Child>>,
+    port: Mutex<Option<u16>>,
+}
+
+/// Find the project root by searching upward from the executable for backend/main.py.
+/// In dev mode (cargo tauri dev), the exe is in src-tauri/target/debug/.
+/// In prod, the backend would be bundled alongside the exe.
+fn find_backend_script() -> Option<std::path::PathBuf> {
+    // Try common locations relative to the executable
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|p| p.to_path_buf());
+        // Walk up to 5 levels to find the project root
+        for _ in 0..5 {
+            if let Some(ref d) = dir {
+                let candidate = d.join("backend").join("main.py");
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+                dir = d.parent().map(|p| p.to_path_buf());
+            } else {
+                break;
+            }
+        }
+    }
+    // Also try CWD-relative as a fallback
+    let cwd_candidate = std::path::PathBuf::from("backend/main.py");
+    if cwd_candidate.exists() {
+        return Some(cwd_candidate);
+    }
+    None
+}
+
+/// Shared logic: spawn the Python sidecar, poll /health, store state.
+/// Returns the port on success.
+fn do_spawn_sidecar(state: &SidecarState) -> Result<u16, String> {
+    // If already running, return existing port
+    if let Some(port) = *state.port.lock().unwrap() {
+        return Ok(port);
+    }
+
+    let script_path = find_backend_script()
+        .ok_or_else(|| "backend/main.py not found — searched up from executable".to_string())?;
+
+    // Find a free port in the 18100-18200 range
+    let sidecar_port = (18100u16..=18200)
+        .find(|p| TcpListener::bind(format!("127.0.0.1:{}", p)).is_ok())
+        .ok_or_else(|| "No free port in 18100-18200 range".to_string())?;
+
+    let child = Command::new("python")
+        .args([script_path.to_string_lossy().as_ref(), "--port", &sidecar_port.to_string()])
+        .current_dir(script_path.parent().unwrap().parent().unwrap()) // set CWD to project root
+        .spawn()
+        .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
+
+    *state.child.lock().unwrap() = Some(child);
+    *state.port.lock().unwrap() = Some(sidecar_port);
+
+    // Poll /health until ready (max 10s)
+    let addr = format!("127.0.0.1:{}", sidecar_port);
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(250));
+        let sock_addr: SocketAddr = addr.parse().unwrap();
+        if let Ok(mut stream) = TcpStream::connect_timeout(&sock_addr, Duration::from_millis(200)) {
+            let request = format!("GET /health HTTP/1.1\r\nHost: {}\r\n\r\n", addr);
+            if std::io::Write::write_all(&mut stream, request.as_bytes()).is_ok() {
+                let mut buf = [0u8; 512];
+                if stream.read(&mut buf).is_ok() {
+                    let response = String::from_utf8_lossy(&buf);
+                    if response.contains("200") {
+                        return Ok(sidecar_port);
+                    }
+                }
+            }
+        }
+    }
+
+    Err("Sidecar failed to become ready within 10s".to_string())
+}
+
+#[tauri::command]
+fn spawn_sidecar(state: tauri::State<'_, SidecarState>) -> Result<u16, String> {
+    do_spawn_sidecar(&state)
+}
+
+/// Query the sidecar port (returns None if not yet running).
+/// The frontend polls this on mount to get the auto-spawned port.
+#[tauri::command]
+fn get_sidecar_port(state: tauri::State<'_, SidecarState>) -> Option<u16> {
+    *state.port.lock().unwrap()
+}
+
+#[tauri::command]
+fn kill_sidecar(state: tauri::State<'_, SidecarState>) {
+    if let Some(mut child) = state.child.lock().unwrap().take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    *state.port.lock().unwrap() = None;
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![start_oauth_server, spawn_tab_window, probe_tws_ports])
+        .manage(SidecarState {
+            child: Mutex::new(None),
+            port: Mutex::new(None),
+        })
+        .invoke_handler(tauri::generate_handler![
+            start_oauth_server,
+            spawn_tab_window,
+            probe_tws_ports,
+            spawn_sidecar,
+            kill_sidecar,
+            get_sidecar_port,
+        ])
+        .setup(|app| {
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(window) = app.get_window("main") {
+                    let _ = window.set_decorations(false);
+                }
+            }
+
+            // Auto-spawn the Python sidecar on app start
+            let state: tauri::State<SidecarState> = app.state();
+            match do_spawn_sidecar(&state) {
+                Ok(port) => println!("Sidecar auto-started on port {}", port),
+                Err(e) => eprintln!("Sidecar auto-start failed (will retry on demand): {}", e),
+            }
+
+            Ok(())
+        })
+        .on_window_event(|event| {
+            if let tauri::WindowEvent::Destroyed = event.event() {
+                // Kill sidecar on app exit
+                let window = event.window().clone();
+                let state: tauri::State<SidecarState> = window.state();
+                let child = state.child.lock().unwrap().take();
+                if let Some(mut child) = child {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

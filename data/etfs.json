@@ -1,0 +1,3313 @@
+{
+    "etfs": [
+        {
+            "symbol": "SPY",
+            "name": "SPDR S&P 500 ETF Trust",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp.",
+                    "weight_pct": 7.83
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "weight_pct": 6.83
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp.",
+                    "weight_pct": 6.13
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com Inc.",
+                    "weight_pct": 3.82
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. Class A",
+                    "weight_pct": 3.08
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc.",
+                    "weight_pct": 2.81
+                },
+                {
+                    "symbol": "GOOG",
+                    "name": "Alphabet Inc. Class C",
+                    "weight_pct": 2.48
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc. Class A",
+                    "weight_pct": 2.44
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla, Inc.",
+                    "weight_pct": 2.26
+                },
+                {
+                    "symbol": "BRK.B",
+                    "name": "Berkshire Hathaway Inc. Class B",
+                    "weight_pct": 1.54
+                }
+            ]
+        },
+        {
+            "symbol": "IVV",
+            "name": "iShares Core S&P 500 ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp.",
+                    "weight_pct": 7.81
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "weight_pct": 6.82
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp.",
+                    "weight_pct": 6.12
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com Inc.",
+                    "weight_pct": 3.82
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. Class A",
+                    "weight_pct": 3.08
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc.",
+                    "weight_pct": 2.81
+                },
+                {
+                    "symbol": "GOOG",
+                    "name": "Alphabet Inc. Class C",
+                    "weight_pct": 2.47
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc. Class A",
+                    "weight_pct": 2.44
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla, Inc.",
+                    "weight_pct": 2.25
+                },
+                {
+                    "symbol": "BRK.B",
+                    "name": "Berkshire Hathaway Inc. Class B",
+                    "weight_pct": 1.54
+                }
+            ]
+        },
+        {
+            "symbol": "VOO",
+            "name": "Vanguard S&P 500 ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp.",
+                    "weight_pct": 7.38
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "weight_pct": 7.07
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp.",
+                    "weight_pct": 6.25
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com Inc.",
+                    "weight_pct": 3.87
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc.",
+                    "weight_pct": 3.24
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. Class A",
+                    "weight_pct": 3.18
+                },
+                {
+                    "symbol": "GOOG",
+                    "name": "Alphabet Inc. Class C",
+                    "weight_pct": 2.56
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc. Class A",
+                    "weight_pct": 2.4
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla, Inc.",
+                    "weight_pct": 2.06
+                }
+            ]
+        },
+        {
+            "symbol": "VTI",
+            "name": "Vanguard Total Stock Market ETF",
+            "top_holdings": [
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "weight_pct": 6.29
+                },
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp.",
+                    "weight_pct": 6.22
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp.",
+                    "weight_pct": 5.56
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com Inc.",
+                    "weight_pct": 3.41
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc.",
+                    "weight_pct": 2.88
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. Class A",
+                    "weight_pct": 2.83
+                },
+                {
+                    "symbol": "GOOG",
+                    "name": "Alphabet Inc. Class C",
+                    "weight_pct": 2.25
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc. Class A",
+                    "weight_pct": 2.14
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla, Inc.",
+                    "weight_pct": 1.79
+                },
+                {
+                    "symbol": "BRK.B",
+                    "name": "Berkshire Hathaway Inc. Class B",
+                    "weight_pct": 1.4
+                }
+            ]
+        },
+        {
+            "symbol": "ITOT",
+            "name": "iShares Core S&P Total U.S. Stock Market ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp.",
+                    "weight_pct": 6.9
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "weight_pct": 6.03
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp.",
+                    "weight_pct": 5.41
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com Inc.",
+                    "weight_pct": 3.37
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. Class A",
+                    "weight_pct": 2.72
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc.",
+                    "weight_pct": 2.48
+                },
+                {
+                    "symbol": "GOOG",
+                    "name": "Alphabet Inc. Class C",
+                    "weight_pct": 2.19
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc. Class A",
+                    "weight_pct": 2.15
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla, Inc.",
+                    "weight_pct": 1.99
+                },
+                {
+                    "symbol": "BRK.B",
+                    "name": "Berkshire Hathaway Inc. Class B",
+                    "weight_pct": 1.36
+                }
+            ]
+        },
+        {
+            "symbol": "QQQ",
+            "name": "Invesco QQQ Trust",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation",
+                    "weight_pct": 9.88
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corporation",
+                    "weight_pct": 8.39
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "weight_pct": 8.24
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc.",
+                    "weight_pct": 5.59
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com, Inc.",
+                    "weight_pct": 5.1
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla, Inc.",
+                    "weight_pct": 3.53
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc. Class A",
+                    "weight_pct": 3.47
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. Class A",
+                    "weight_pct": 3.08
+                },
+                {
+                    "symbol": "GOOG",
+                    "name": "Alphabet Inc. Class C",
+                    "weight_pct": 2.88
+                },
+                {
+                    "symbol": "NFLX",
+                    "name": "Netflix, Inc.",
+                    "weight_pct": 2.73
+                }
+            ]
+        },
+        {
+            "symbol": "IWM",
+            "name": "iShares Russell 2000 ETF",
+            "top_holdings": [
+                {
+                    "symbol": "CRDO",
+                    "name": "Credo Technology Group Holding Ltd.",
+                    "weight_pct": 0.75
+                },
+                {
+                    "symbol": "BE",
+                    "name": "Bloom Energy Corp. Class A",
+                    "weight_pct": 0.66
+                },
+                {
+                    "symbol": "FN",
+                    "name": "Fabrinet",
+                    "weight_pct": 0.58
+                },
+                {
+                    "symbol": "IONQ",
+                    "name": "IonQ, Inc.",
+                    "weight_pct": 0.52
+                },
+                {
+                    "symbol": "SATS",
+                    "name": "EchoStar Corp. Class A",
+                    "weight_pct": 0.48
+                },
+                {
+                    "symbol": "NXT",
+                    "name": "NextPower Inc. Class A",
+                    "weight_pct": 0.45
+                },
+                {
+                    "symbol": "KTOS",
+                    "name": "Kratos Defense & Security Solutions, Inc.",
+                    "weight_pct": 0.44
+                },
+                {
+                    "symbol": "HL",
+                    "name": "Hecla Mining Co.",
+                    "weight_pct": 0.43
+                },
+                {
+                    "symbol": "GH",
+                    "name": "Guardant Health, Inc.",
+                    "weight_pct": 0.42
+                },
+                {
+                    "symbol": "CDE",
+                    "name": "Coeur Mining, Inc.",
+                    "weight_pct": 0.41
+                }
+            ]
+        },
+        {
+            "symbol": "DIA",
+            "name": "SPDR Dow Jones Industrial Average ETF Trust",
+            "top_holdings": [
+                {
+                    "symbol": "GS",
+                    "name": "Goldman Sachs Group Inc",
+                    "weight_pct": 11.46
+                },
+                {
+                    "symbol": "CAT",
+                    "name": "Caterpillar Inc",
+                    "weight_pct": 7.37
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp",
+                    "weight_pct": 6.16
+                },
+                {
+                    "symbol": "AXP",
+                    "name": "American Express Co",
+                    "weight_pct": 4.82
+                },
+                {
+                    "symbol": "V",
+                    "name": "Visa Inc Class A",
+                    "weight_pct": 4.49
+                },
+                {
+                    "symbol": "HD",
+                    "name": "Home Depot Inc",
+                    "weight_pct": 4.42
+                },
+                {
+                    "symbol": "AMGN",
+                    "name": "Amgen Inc",
+                    "weight_pct": 4.21
+                },
+                {
+                    "symbol": "UNH",
+                    "name": "UnitedHealth Group Inc",
+                    "weight_pct": 4.19
+                },
+                {
+                    "symbol": "JPM",
+                    "name": "JPMorgan Chase & Co",
+                    "weight_pct": 4.14
+                },
+                {
+                    "symbol": "SHW",
+                    "name": "Sherwin-Williams Co",
+                    "weight_pct": 4.11
+                }
+            ]
+        },
+        {
+            "symbol": "SCHB",
+            "name": "Schwab U.S. Broad Market ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp",
+                    "weight_pct": 6.92
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc",
+                    "weight_pct": 6.04
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp",
+                    "weight_pct": 5.42
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com Inc",
+                    "weight_pct": 3.38
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc Class A",
+                    "weight_pct": 2.73
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc",
+                    "weight_pct": 2.49
+                },
+                {
+                    "symbol": "GOOG",
+                    "name": "Alphabet Inc Class C",
+                    "weight_pct": 2.19
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms Inc Class A",
+                    "weight_pct": 2.16
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla Inc",
+                    "weight_pct": 2.0
+                },
+                {
+                    "symbol": "BRK.B",
+                    "name": "Berkshire Hathaway Inc Class B",
+                    "weight_pct": 1.37
+                }
+            ]
+        },
+        {
+            "symbol": "VXUS",
+            "name": "Vanguard Total International Stock ETF",
+            "top_holdings": [
+                {
+                    "symbol": "TSM",
+                    "name": "Taiwan Semiconductor Manufacturing Co. Ltd.",
+                    "weight_pct": 2.87
+                },
+                {
+                    "symbol": "TCEHY",
+                    "name": "Tencent Holdings Ltd. (ADR)",
+                    "weight_pct": 1.25
+                },
+                {
+                    "symbol": "ASML",
+                    "name": "ASML Holding NV",
+                    "weight_pct": 1.07
+                },
+                {
+                    "symbol": "BABA",
+                    "name": "Alibaba Group Holding Ltd. (ADR)",
+                    "weight_pct": 0.9
+                },
+                {
+                    "symbol": "SSNLF",
+                    "name": "Samsung Electronics Co. Ltd.",
+                    "weight_pct": 0.83
+                },
+                {
+                    "symbol": "AZN",
+                    "name": "AstraZeneca plc",
+                    "weight_pct": 0.71
+                },
+                {
+                    "symbol": "RHHBY",
+                    "name": "Roche Holding AG (ADR)",
+                    "weight_pct": 0.69
+                },
+                {
+                    "symbol": "NSRGY",
+                    "name": "Nestlé SA (ADR)",
+                    "weight_pct": 0.65
+                },
+                {
+                    "symbol": "SAP",
+                    "name": "SAP SE (ADR)",
+                    "weight_pct": 0.64
+                },
+                {
+                    "symbol": "HSBC",
+                    "name": "HSBC Holdings plc (ADR)",
+                    "weight_pct": 0.63
+                }
+            ]
+        },
+        {
+            "symbol": "VEA",
+            "name": "Vanguard FTSE Developed Markets ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NSRGY",
+                    "name": "Nestlé SA (ADR)",
+                    "weight_pct": 2.4
+                },
+                {
+                    "symbol": "ASML",
+                    "name": "ASML Holding NV",
+                    "weight_pct": 2.2
+                },
+                {
+                    "symbol": "NVO",
+                    "name": "Novo Nordisk A/S (ADR)",
+                    "weight_pct": 2.1
+                },
+                {
+                    "symbol": "SHEL",
+                    "name": "Shell PLC (ADR)",
+                    "weight_pct": 1.9
+                },
+                {
+                    "symbol": "RHHBY",
+                    "name": "Roche Holding AG (ADR)",
+                    "weight_pct": 1.8
+                }
+            ]
+        },
+        {
+            "symbol": "VWO",
+            "name": "Vanguard FTSE Emerging Markets ETF",
+            "top_holdings": [
+                {
+                    "symbol": "TSM",
+                    "name": "Taiwan Semiconductor Manufacturing",
+                    "weight_pct": 7.2
+                },
+                {
+                    "symbol": "TCEHY",
+                    "name": "Tencent Holdings Ltd (ADR)",
+                    "weight_pct": 4.1
+                },
+                {
+                    "symbol": "BABA",
+                    "name": "Alibaba Group Holding Ltd",
+                    "weight_pct": 3.3
+                },
+                {
+                    "symbol": "SSNLF",
+                    "name": "Samsung Electronics Co Ltd (OTC)",
+                    "weight_pct": 2.9
+                },
+                {
+                    "symbol": "HDB",
+                    "name": "HDFC Bank Ltd (ADR)",
+                    "weight_pct": 1.7
+                }
+            ]
+        },
+        {
+            "symbol": "EFA",
+            "name": "iShares MSCI EAFE ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NSRGY",
+                    "name": "Nestlé SA (ADR)",
+                    "weight_pct": 2.6
+                },
+                {
+                    "symbol": "ASML",
+                    "name": "ASML Holding NV",
+                    "weight_pct": 2.3
+                },
+                {
+                    "symbol": "NVO",
+                    "name": "Novo Nordisk A/S (ADR)",
+                    "weight_pct": 2.2
+                },
+                {
+                    "symbol": "SHEL",
+                    "name": "Shell PLC (ADR)",
+                    "weight_pct": 2.0
+                },
+                {
+                    "symbol": "TM",
+                    "name": "Toyota Motor Corp (ADR)",
+                    "weight_pct": 1.8
+                }
+            ]
+        },
+        {
+            "symbol": "EEM",
+            "name": "iShares MSCI Emerging Markets ETF",
+            "top_holdings": [
+                {
+                    "symbol": "TSM",
+                    "name": "Taiwan Semiconductor Manufacturing",
+                    "weight_pct": 8.1
+                },
+                {
+                    "symbol": "TCEHY",
+                    "name": "Tencent Holdings Ltd (ADR)",
+                    "weight_pct": 4.5
+                },
+                {
+                    "symbol": "BABA",
+                    "name": "Alibaba Group Holding Ltd",
+                    "weight_pct": 3.6
+                },
+                {
+                    "symbol": "SSNLF",
+                    "name": "Samsung Electronics Co Ltd (OTC)",
+                    "weight_pct": 3.1
+                },
+                {
+                    "symbol": "RIGD",
+                    "name": "Reliance Industries Ltd (GDR/DR)",
+                    "weight_pct": 1.9
+                }
+            ]
+        },
+        {
+            "symbol": "XLK",
+            "name": "Technology Select Sector SPDR Fund",
+            "top_holdings": [
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc",
+                    "weight_pct": 22.5
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp",
+                    "weight_pct": 21.8
+                },
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp",
+                    "weight_pct": 7.6
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc",
+                    "weight_pct": 5.2
+                },
+                {
+                    "symbol": "CRM",
+                    "name": "Salesforce Inc",
+                    "weight_pct": 3.1
+                }
+            ]
+        },
+        {
+            "symbol": "XLF",
+            "name": "Financial Select Sector SPDR Fund",
+            "top_holdings": [
+                {
+                    "symbol": "BRK.B",
+                    "name": "Berkshire Hathaway Inc Class B",
+                    "weight_pct": 12.8
+                },
+                {
+                    "symbol": "JPM",
+                    "name": "JPMorgan Chase & Co",
+                    "weight_pct": 10.5
+                },
+                {
+                    "symbol": "V",
+                    "name": "Visa Inc",
+                    "weight_pct": 8.3
+                },
+                {
+                    "symbol": "MA",
+                    "name": "Mastercard Inc",
+                    "weight_pct": 7.9
+                },
+                {
+                    "symbol": "BAC",
+                    "name": "Bank of America Corp",
+                    "weight_pct": 6.7
+                }
+            ]
+        },
+        {
+            "symbol": "XLE",
+            "name": "Energy Select Sector SPDR Fund",
+            "top_holdings": [
+                {
+                    "symbol": "XOM",
+                    "name": "Exxon Mobil Corp",
+                    "weight_pct": 22.6
+                },
+                {
+                    "symbol": "CVX",
+                    "name": "Chevron Corp",
+                    "weight_pct": 18.9
+                },
+                {
+                    "symbol": "COP",
+                    "name": "ConocoPhillips",
+                    "weight_pct": 9.1
+                },
+                {
+                    "symbol": "SLB",
+                    "name": "Schlumberger NV",
+                    "weight_pct": 4.8
+                },
+                {
+                    "symbol": "EOG",
+                    "name": "EOG Resources Inc",
+                    "weight_pct": 4.5
+                }
+            ]
+        },
+        {
+            "symbol": "XLV",
+            "name": "Health Care Select Sector SPDR Fund",
+            "top_holdings": [
+                {
+                    "symbol": "LLY",
+                    "name": "Eli Lilly and Co",
+                    "weight_pct": 13.4
+                },
+                {
+                    "symbol": "UNH",
+                    "name": "UnitedHealth Group Inc",
+                    "weight_pct": 11.9
+                },
+                {
+                    "symbol": "JNJ",
+                    "name": "Johnson & Johnson",
+                    "weight_pct": 7.2
+                },
+                {
+                    "symbol": "ABBV",
+                    "name": "AbbVie Inc",
+                    "weight_pct": 6.5
+                },
+                {
+                    "symbol": "MRK",
+                    "name": "Merck & Co Inc",
+                    "weight_pct": 5.8
+                }
+            ]
+        },
+        {
+            "symbol": "XLY",
+            "name": "Consumer Discretionary Select Sector SPDR Fund",
+            "top_holdings": [
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com Inc",
+                    "weight_pct": 22.1
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla Inc",
+                    "weight_pct": 18.7
+                },
+                {
+                    "symbol": "HD",
+                    "name": "Home Depot Inc",
+                    "weight_pct": 6.4
+                },
+                {
+                    "symbol": "MCD",
+                    "name": "McDonald's Corp",
+                    "weight_pct": 4.5
+                },
+                {
+                    "symbol": "NKE",
+                    "name": "Nike Inc",
+                    "weight_pct": 3.9
+                }
+            ]
+        },
+        {
+            "symbol": "XLP",
+            "name": "Consumer Staples Select Sector SPDR Fund",
+            "top_holdings": [
+                {
+                    "symbol": "PG",
+                    "name": "Procter & Gamble Co",
+                    "weight_pct": 14.9
+                },
+                {
+                    "symbol": "KO",
+                    "name": "Coca-Cola Co",
+                    "weight_pct": 8.9
+                },
+                {
+                    "symbol": "PEP",
+                    "name": "PepsiCo Inc",
+                    "weight_pct": 8.4
+                },
+                {
+                    "symbol": "COST",
+                    "name": "Costco Wholesale Corp",
+                    "weight_pct": 7.6
+                },
+                {
+                    "symbol": "WMT",
+                    "name": "Walmart Inc",
+                    "weight_pct": 7.2
+                }
+            ]
+        },
+        {
+            "symbol": "XLI",
+            "name": "Industrial Select Sector SPDR Fund",
+            "top_holdings": [
+                {
+                    "symbol": "GE",
+                    "name": "GE Aerospace",
+                    "weight_pct": 7.8
+                },
+                {
+                    "symbol": "RTX",
+                    "name": "RTX Corp",
+                    "weight_pct": 6.9
+                },
+                {
+                    "symbol": "CAT",
+                    "name": "Caterpillar Inc",
+                    "weight_pct": 6.4
+                },
+                {
+                    "symbol": "BA",
+                    "name": "Boeing Co",
+                    "weight_pct": 5.8
+                },
+                {
+                    "symbol": "HON",
+                    "name": "Honeywell International Inc",
+                    "weight_pct": 5.4
+                }
+            ]
+        },
+        {
+            "symbol": "XLB",
+            "name": "Materials Select Sector SPDR Fund",
+            "top_holdings": [
+                {
+                    "symbol": "LIN",
+                    "name": "Linde PLC",
+                    "weight_pct": 17.3
+                },
+                {
+                    "symbol": "APD",
+                    "name": "Air Products and Chemicals Inc",
+                    "weight_pct": 7.9
+                },
+                {
+                    "symbol": "SHW",
+                    "name": "Sherwin-Williams Co",
+                    "weight_pct": 7.2
+                },
+                {
+                    "symbol": "ECL",
+                    "name": "Ecolab Inc",
+                    "weight_pct": 6.6
+                },
+                {
+                    "symbol": "FCX",
+                    "name": "Freeport-McMoRan Inc",
+                    "weight_pct": 6.1
+                }
+            ]
+        },
+        {
+            "symbol": "XLU",
+            "name": "Utilities Select Sector SPDR Fund",
+            "top_holdings": [
+                {
+                    "symbol": "NEE",
+                    "name": "NextEra Energy Inc",
+                    "weight_pct": 14.8
+                },
+                {
+                    "symbol": "DUK",
+                    "name": "Duke Energy Corp",
+                    "weight_pct": 8.1
+                },
+                {
+                    "symbol": "SO",
+                    "name": "Southern Co",
+                    "weight_pct": 7.9
+                },
+                {
+                    "symbol": "AEP",
+                    "name": "American Electric Power",
+                    "weight_pct": 7.4
+                },
+                {
+                    "symbol": "EXC",
+                    "name": "Exelon Corp",
+                    "weight_pct": 6.9
+                }
+            ]
+        },
+        {
+            "symbol": "XLRE",
+            "name": "Real Estate Select Sector SPDR Fund",
+            "top_holdings": [
+                {
+                    "symbol": "PLD",
+                    "name": "Prologis Inc",
+                    "weight_pct": 11.6
+                },
+                {
+                    "symbol": "AMT",
+                    "name": "American Tower Corp",
+                    "weight_pct": 10.9
+                },
+                {
+                    "symbol": "EQIX",
+                    "name": "Equinix Inc",
+                    "weight_pct": 9.4
+                },
+                {
+                    "symbol": "PSA",
+                    "name": "Public Storage",
+                    "weight_pct": 7.2
+                },
+                {
+                    "symbol": "O",
+                    "name": "Realty Income Corp",
+                    "weight_pct": 6.8
+                }
+            ]
+        },
+        {
+            "symbol": "SMH",
+            "name": "VanEck Semiconductor ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp",
+                    "weight_pct": 21.4
+                },
+                {
+                    "symbol": "TSM",
+                    "name": "Taiwan Semiconductor Manufacturing",
+                    "weight_pct": 10.8
+                },
+                {
+                    "symbol": "ASML",
+                    "name": "ASML Holding NV",
+                    "weight_pct": 9.6
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc",
+                    "weight_pct": 6.9
+                },
+                {
+                    "symbol": "AMD",
+                    "name": "Advanced Micro Devices Inc",
+                    "weight_pct": 5.7
+                }
+            ]
+        },
+        {
+            "symbol": "SOXX",
+            "name": "iShares Semiconductor ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp",
+                    "weight_pct": 9.2
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc",
+                    "weight_pct": 8.6
+                },
+                {
+                    "symbol": "AMD",
+                    "name": "Advanced Micro Devices Inc",
+                    "weight_pct": 7.4
+                },
+                {
+                    "symbol": "QCOM",
+                    "name": "Qualcomm Inc",
+                    "weight_pct": 6.8
+                },
+                {
+                    "symbol": "INTC",
+                    "name": "Intel Corp",
+                    "weight_pct": 6.3
+                }
+            ]
+        },
+        {
+            "symbol": "IGV",
+            "name": "iShares Expanded Tech-Software Sector ETF",
+            "top_holdings": [
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp",
+                    "weight_pct": 14.9
+                },
+                {
+                    "symbol": "ADBE",
+                    "name": "Adobe Inc",
+                    "weight_pct": 8.7
+                },
+                {
+                    "symbol": "CRM",
+                    "name": "Salesforce Inc",
+                    "weight_pct": 7.9
+                },
+                {
+                    "symbol": "ORCL",
+                    "name": "Oracle Corp",
+                    "weight_pct": 6.8
+                },
+                {
+                    "symbol": "NOW",
+                    "name": "ServiceNow Inc",
+                    "weight_pct": 5.4
+                }
+            ]
+        },
+        {
+            "symbol": "ARKK",
+            "name": "ARK Innovation ETF",
+            "top_holdings": [
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla Inc",
+                    "weight_pct": 11.3
+                },
+                {
+                    "symbol": "ROKU",
+                    "name": "Roku Inc",
+                    "weight_pct": 8.9
+                },
+                {
+                    "symbol": "COIN",
+                    "name": "Coinbase Global Inc",
+                    "weight_pct": 7.8
+                },
+                {
+                    "symbol": "SQ",
+                    "name": "Block Inc",
+                    "weight_pct": 6.7
+                },
+                {
+                    "symbol": "PATH",
+                    "name": "UiPath Inc",
+                    "weight_pct": 6.1
+                }
+            ]
+        },
+        {
+            "symbol": "VUG",
+            "name": "Vanguard Growth ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp",
+                    "weight_pct": 11.4
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc",
+                    "weight_pct": 9.6
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp",
+                    "weight_pct": 8.8
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com Inc",
+                    "weight_pct": 6.7
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms Inc",
+                    "weight_pct": 4.9
+                }
+            ]
+        },
+        {
+            "symbol": "VTV",
+            "name": "Vanguard Value ETF",
+            "top_holdings": [
+                {
+                    "symbol": "BRK.B",
+                    "name": "Berkshire Hathaway Inc Class B",
+                    "weight_pct": 8.9
+                },
+                {
+                    "symbol": "JPM",
+                    "name": "JPMorgan Chase & Co",
+                    "weight_pct": 6.7
+                },
+                {
+                    "symbol": "XOM",
+                    "name": "Exxon Mobil Corp",
+                    "weight_pct": 5.9
+                },
+                {
+                    "symbol": "UNH",
+                    "name": "UnitedHealth Group Inc",
+                    "weight_pct": 5.6
+                },
+                {
+                    "symbol": "JNJ",
+                    "name": "Johnson & Johnson",
+                    "weight_pct": 4.8
+                }
+            ]
+        },
+        {
+            "symbol": "MTUM",
+            "name": "iShares MSCI USA Momentum Factor ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp",
+                    "weight_pct": 8.6
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms Inc",
+                    "weight_pct": 6.9
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc",
+                    "weight_pct": 6.4
+                },
+                {
+                    "symbol": "LLY",
+                    "name": "Eli Lilly and Co",
+                    "weight_pct": 5.8
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp",
+                    "weight_pct": 5.3
+                }
+            ]
+        },
+        {
+            "symbol": "QUAL",
+            "name": "iShares MSCI USA Quality Factor ETF",
+            "top_holdings": [
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp",
+                    "weight_pct": 6.8
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc",
+                    "weight_pct": 6.5
+                },
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp",
+                    "weight_pct": 6.1
+                },
+                {
+                    "symbol": "UNH",
+                    "name": "UnitedHealth Group Inc",
+                    "weight_pct": 5.4
+                },
+                {
+                    "symbol": "JNJ",
+                    "name": "Johnson & Johnson",
+                    "weight_pct": 4.9
+                }
+            ]
+        },
+        {
+            "symbol": "USMV",
+            "name": "iShares MSCI USA Min Vol Factor ETF",
+            "top_holdings": [
+                {
+                    "symbol": "JNJ",
+                    "name": "Johnson & Johnson",
+                    "weight_pct": 2.1
+                },
+                {
+                    "symbol": "BRK.B",
+                    "name": "Berkshire Hathaway Inc Class B",
+                    "weight_pct": 1.9
+                },
+                {
+                    "symbol": "PG",
+                    "name": "Procter & Gamble Co",
+                    "weight_pct": 1.8
+                },
+                {
+                    "symbol": "PEP",
+                    "name": "PepsiCo Inc",
+                    "weight_pct": 1.7
+                },
+                {
+                    "symbol": "KO",
+                    "name": "Coca-Cola Co",
+                    "weight_pct": 1.6
+                }
+            ]
+        },
+        {
+            "symbol": "SCHD",
+            "name": "Schwab U.S. Dividend Equity ETF",
+            "top_holdings": [
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc",
+                    "weight_pct": 4.6
+                },
+                {
+                    "symbol": "PEP",
+                    "name": "PepsiCo Inc",
+                    "weight_pct": 4.2
+                },
+                {
+                    "symbol": "COST",
+                    "name": "Costco Wholesale Corp",
+                    "weight_pct": 4.0
+                },
+                {
+                    "symbol": "TXN",
+                    "name": "Texas Instruments Inc",
+                    "weight_pct": 3.9
+                },
+                {
+                    "symbol": "KO",
+                    "name": "Coca-Cola Co",
+                    "weight_pct": 3.8
+                }
+            ]
+        },
+        {
+            "symbol": "DGRO",
+            "name": "iShares Core Dividend Growth ETF",
+            "top_holdings": [
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp",
+                    "weight_pct": 5.4
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc",
+                    "weight_pct": 4.9
+                },
+                {
+                    "symbol": "JNJ",
+                    "name": "Johnson & Johnson",
+                    "weight_pct": 4.1
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc",
+                    "weight_pct": 3.8
+                },
+                {
+                    "symbol": "UNH",
+                    "name": "UnitedHealth Group Inc",
+                    "weight_pct": 3.6
+                }
+            ]
+        },
+        {
+            "symbol": "USO",
+            "name": "United States Oil Fund, LP",
+            "top_holdings": [
+                {
+                    "symbol": "OIL",
+                    "name": "Oil",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "UNG",
+            "name": "United States Natural Gas Fund, LP",
+            "top_holdings": [
+                {
+                    "symbol": "NATGAS",
+                    "name": "Natural Gas",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "TQQQ",
+            "name": "ProShares UltraPro QQQ",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation (Leveraged Exposure)",
+                    "weight_pct": 9.88
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corporation (Leveraged Exposure)",
+                    "weight_pct": 8.39
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc. (Leveraged Exposure)",
+                    "weight_pct": 8.24
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc. (Leveraged Exposure)",
+                    "weight_pct": 5.59
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com, Inc. (Leveraged Exposure)",
+                    "weight_pct": 5.1
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla, Inc. (Leveraged Exposure)",
+                    "weight_pct": 3.53
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc. Class A (Leveraged Exposure)",
+                    "weight_pct": 3.47
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. Class A (Leveraged Exposure)",
+                    "weight_pct": 3.08
+                },
+                {
+                    "symbol": "GOOG",
+                    "name": "Alphabet Inc. Class C (Leveraged Exposure)",
+                    "weight_pct": 2.88
+                },
+                {
+                    "symbol": "NFLX",
+                    "name": "Netflix, Inc. (Leveraged Exposure)",
+                    "weight_pct": 2.73
+                }
+            ]
+        },
+        {
+            "symbol": "SQQQ",
+            "name": "ProShares UltraPro Short QQQ",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation (Inverse Exposure)",
+                    "weight_pct": 9.88
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corporation (Inverse Exposure)",
+                    "weight_pct": 8.39
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc. (Inverse Exposure)",
+                    "weight_pct": 8.24
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc. (Inverse Exposure)",
+                    "weight_pct": 5.59
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com, Inc. (Inverse Exposure)",
+                    "weight_pct": 5.1
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla, Inc. (Inverse Exposure)",
+                    "weight_pct": 3.53
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc. Class A (Inverse Exposure)",
+                    "weight_pct": 3.47
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. Class A (Inverse Exposure)",
+                    "weight_pct": 3.08
+                },
+                {
+                    "symbol": "GOOG",
+                    "name": "Alphabet Inc. Class C (Inverse Exposure)",
+                    "weight_pct": 2.88
+                },
+                {
+                    "symbol": "NFLX",
+                    "name": "Netflix, Inc. (Inverse Exposure)",
+                    "weight_pct": 2.73
+                }
+            ]
+        },
+        {
+            "symbol": "SPXL",
+            "name": "Direxion Daily S&P 500 Bull 3X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation (Leveraged Exposure)",
+                    "weight_pct": 8.01
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corporation (Leveraged Exposure)",
+                    "weight_pct": 6.75
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc. (Leveraged Exposure)",
+                    "weight_pct": 6.62
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com, Inc. (Leveraged Exposure)",
+                    "weight_pct": 3.74
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc. Class A (Leveraged Exposure)",
+                    "weight_pct": 2.79
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc. (Leveraged Exposure)",
+                    "weight_pct": 2.72
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. Class A (Leveraged Exposure)",
+                    "weight_pct": 2.48
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla, Inc. (Leveraged Exposure)",
+                    "weight_pct": 2.19
+                },
+                {
+                    "symbol": "GOOG",
+                    "name": "Alphabet Inc. Class C (Leveraged Exposure)",
+                    "weight_pct": 1.99
+                },
+                {
+                    "symbol": "BRK.B",
+                    "name": "Berkshire Hathaway Inc. Class B (Leveraged Exposure)",
+                    "weight_pct": 1.62
+                }
+            ]
+        },
+        {
+            "symbol": "SPXS",
+            "name": "Direxion Daily S&P 500 Bear 3X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation (Inverse Exposure)",
+                    "weight_pct": 8.01
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corporation (Inverse Exposure)",
+                    "weight_pct": 6.75
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc. (Inverse Exposure)",
+                    "weight_pct": 6.62
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com, Inc. (Inverse Exposure)",
+                    "weight_pct": 3.74
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc. Class A (Inverse Exposure)",
+                    "weight_pct": 2.79
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc. (Inverse Exposure)",
+                    "weight_pct": 2.72
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. Class A (Inverse Exposure)",
+                    "weight_pct": 2.48
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla, Inc. (Inverse Exposure)",
+                    "weight_pct": 2.19
+                },
+                {
+                    "symbol": "GOOG",
+                    "name": "Alphabet Inc. Class C (Inverse Exposure)",
+                    "weight_pct": 1.99
+                },
+                {
+                    "symbol": "BRK.B",
+                    "name": "Berkshire Hathaway Inc. Class B (Inverse Exposure)",
+                    "weight_pct": 1.62
+                }
+            ]
+        },
+        {
+            "symbol": "SOXL",
+            "name": "Direxion Daily Semiconductor Bull 3X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Limited (Leveraged Exposure)",
+                    "weight_pct": 7.87
+                },
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation (Leveraged Exposure)",
+                    "weight_pct": 7.6
+                },
+                {
+                    "symbol": "AMD",
+                    "name": "Advanced Micro Devices, Inc. (Leveraged Exposure)",
+                    "weight_pct": 7.05
+                },
+                {
+                    "symbol": "QCOM",
+                    "name": "Qualcomm Incorporated (Leveraged Exposure)",
+                    "weight_pct": 5.48
+                },
+                {
+                    "symbol": "MU",
+                    "name": "Micron Technology, Inc. (Leveraged Exposure)",
+                    "weight_pct": 4.98
+                },
+                {
+                    "symbol": "INTC",
+                    "name": "Intel Corporation (Leveraged Exposure)",
+                    "weight_pct": 4.88
+                },
+                {
+                    "symbol": "TXN",
+                    "name": "Texas Instruments Incorporated (Leveraged Exposure)",
+                    "weight_pct": 4.8
+                },
+                {
+                    "symbol": "MRVL",
+                    "name": "Marvell Technology, Inc. (Leveraged Exposure)",
+                    "weight_pct": 4.74
+                },
+                {
+                    "symbol": "LRCX",
+                    "name": "Lam Research Corporation (Leveraged Exposure)",
+                    "weight_pct": 4.74
+                },
+                {
+                    "symbol": "AMAT",
+                    "name": "Applied Materials, Inc. (Leveraged Exposure)",
+                    "weight_pct": 4.52
+                },
+                {
+                    "symbol": "ASML",
+                    "name": "ASML Holding N.V. ADR (Leveraged Exposure)",
+                    "weight_pct": 4.39
+                },
+                {
+                    "symbol": "KLAC",
+                    "name": "KLA Corporation (Leveraged Exposure)",
+                    "weight_pct": 4.39
+                },
+                {
+                    "symbol": "TSM",
+                    "name": "Taiwan Semiconductor Manufacturing Company ADR (Leveraged Exposure)",
+                    "weight_pct": 4.07
+                },
+                {
+                    "symbol": "MPWR",
+                    "name": "Monolithic Power Systems, Inc. (Leveraged Exposure)",
+                    "weight_pct": 3.91
+                },
+                {
+                    "symbol": "ADI",
+                    "name": "Analog Devices, Inc. (Leveraged Exposure)",
+                    "weight_pct": 3.47
+                },
+                {
+                    "symbol": "NXPI",
+                    "name": "NXP Semiconductors N.V. (Leveraged Exposure)",
+                    "weight_pct": 3.44
+                },
+                {
+                    "symbol": "MCHP",
+                    "name": "Microchip Technology Incorporated (Leveraged Exposure)",
+                    "weight_pct": 3.34
+                },
+                {
+                    "symbol": "ALAB",
+                    "name": "Astera Labs, Inc. (Leveraged Exposure)",
+                    "weight_pct": 2.45
+                }
+            ]
+        },
+        {
+            "symbol": "SOXS",
+            "name": "Direxion Daily Semiconductor Bear 3X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Limited (Inverse Exposure)",
+                    "weight_pct": 7.87
+                },
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation (Inverse Exposure)",
+                    "weight_pct": 7.6
+                },
+                {
+                    "symbol": "AMD",
+                    "name": "Advanced Micro Devices, Inc. (Inverse Exposure)",
+                    "weight_pct": 7.05
+                },
+                {
+                    "symbol": "QCOM",
+                    "name": "Qualcomm Incorporated (Inverse Exposure)",
+                    "weight_pct": 5.48
+                },
+                {
+                    "symbol": "MU",
+                    "name": "Micron Technology, Inc. (Inverse Exposure)",
+                    "weight_pct": 4.98
+                },
+                {
+                    "symbol": "INTC",
+                    "name": "Intel Corporation (Inverse Exposure)",
+                    "weight_pct": 4.88
+                },
+                {
+                    "symbol": "TXN",
+                    "name": "Texas Instruments Incorporated (Inverse Exposure)",
+                    "weight_pct": 4.8
+                },
+                {
+                    "symbol": "MRVL",
+                    "name": "Marvell Technology, Inc. (Inverse Exposure)",
+                    "weight_pct": 4.74
+                },
+                {
+                    "symbol": "LRCX",
+                    "name": "Lam Research Corporation (Inverse Exposure)",
+                    "weight_pct": 4.74
+                },
+                {
+                    "symbol": "AMAT",
+                    "name": "Applied Materials, Inc. (Inverse Exposure)",
+                    "weight_pct": 4.52
+                },
+                {
+                    "symbol": "ASML",
+                    "name": "ASML Holding N.V. ADR (Inverse Exposure)",
+                    "weight_pct": 4.39
+                },
+                {
+                    "symbol": "KLAC",
+                    "name": "KLA Corporation (Inverse Exposure)",
+                    "weight_pct": 4.39
+                },
+                {
+                    "symbol": "TSM",
+                    "name": "Taiwan Semiconductor Manufacturing Company ADR (Inverse Exposure)",
+                    "weight_pct": 4.07
+                },
+                {
+                    "symbol": "MPWR",
+                    "name": "Monolithic Power Systems, Inc. (Inverse Exposure)",
+                    "weight_pct": 3.91
+                },
+                {
+                    "symbol": "ADI",
+                    "name": "Analog Devices, Inc. (Inverse Exposure)",
+                    "weight_pct": 3.47
+                },
+                {
+                    "symbol": "NXPI",
+                    "name": "NXP Semiconductors N.V. (Inverse Exposure)",
+                    "weight_pct": 3.44
+                },
+                {
+                    "symbol": "MCHP",
+                    "name": "Microchip Technology Incorporated (Inverse Exposure)",
+                    "weight_pct": 3.34
+                },
+                {
+                    "symbol": "ALAB",
+                    "name": "Astera Labs, Inc. (Inverse Exposure)",
+                    "weight_pct": 2.45
+                }
+            ]
+        },
+        {
+            "symbol": "FNGU",
+            "name": "MicroSectors FANG+ Index 3X Leveraged ETN",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation (Leveraged Exposure)",
+                    "weight_pct": 11.63
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc. (Leveraged Exposure)",
+                    "weight_pct": 11.49
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc. (Leveraged Exposure)",
+                    "weight_pct": 10.95
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. (Leveraged Exposure)",
+                    "weight_pct": 10.62
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc. (Leveraged Exposure)",
+                    "weight_pct": 10.33
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corporation (Leveraged Exposure)",
+                    "weight_pct": 10.06
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com, Inc. (Leveraged Exposure)",
+                    "weight_pct": 9.9
+                },
+                {
+                    "symbol": "NFLX",
+                    "name": "Netflix, Inc. (Leveraged Exposure)",
+                    "weight_pct": 9.28
+                },
+                {
+                    "symbol": "CRWD",
+                    "name": "CrowdStrike Holdings, Inc. (Leveraged Exposure)",
+                    "weight_pct": 7.95
+                },
+                {
+                    "symbol": "NOW",
+                    "name": "ServiceNow, Inc. (Leveraged Exposure)",
+                    "weight_pct": 7.79
+                }
+            ]
+        },
+        {
+            "symbol": "FNGD",
+            "name": "MicroSectors FANG+ Index -3X Inverse Leveraged ETN",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation (Inverse Leveraged Exposure)",
+                    "weight_pct": 11.63
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc. (Inverse Leveraged Exposure)",
+                    "weight_pct": 11.49
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc. (Inverse Leveraged Exposure)",
+                    "weight_pct": 10.95
+                },
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc. (Inverse Leveraged Exposure)",
+                    "weight_pct": 10.62
+                },
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms, Inc. (Inverse Leveraged Exposure)",
+                    "weight_pct": 10.33
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corporation (Inverse Leveraged Exposure)",
+                    "weight_pct": 10.06
+                },
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com, Inc. (Inverse Leveraged Exposure)",
+                    "weight_pct": 9.9
+                },
+                {
+                    "symbol": "NFLX",
+                    "name": "Netflix, Inc. (Inverse Leveraged Exposure)",
+                    "weight_pct": 9.28
+                },
+                {
+                    "symbol": "CRWD",
+                    "name": "CrowdStrike Holdings, Inc. (Inverse Leveraged Exposure)",
+                    "weight_pct": 7.95
+                },
+                {
+                    "symbol": "NOW",
+                    "name": "ServiceNow, Inc. (Inverse Leveraged Exposure)",
+                    "weight_pct": 7.79
+                }
+            ]
+        },
+        {
+            "symbol": "NVDU",
+            "name": "GraniteShares 2x Long NVDA Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "AVL",
+            "name": "GraniteShares 2x Long AVGO Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc. (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "AVS",
+            "name": "GraniteShares 2x Short AVGO Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc. (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "NVDQ",
+            "name": "GraniteShares 2x Short NVDA Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp (Inverse Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "GGLL",
+            "name": "GraniteShares 2x Long GOOGL Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc Class A (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "GGLS",
+            "name": "GraniteShares 2x Short GOOGL Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "GOOGL",
+                    "name": "Alphabet Inc Class A (Inverse Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "NFXL",
+            "name": "GraniteShares 2x Long NFLX Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NFLX",
+                    "name": "Netflix Inc (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "NFXS",
+            "name": "GraniteShares 2x Short NFLX Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NFLX",
+                    "name": "Netflix Inc (Inverse Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "MSFU",
+            "name": "GraniteShares 2x Long MSFT Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "MSFD",
+            "name": "GraniteShares 2x Short MSFT Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp (Inverse Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "CRWL",
+            "name": "GraniteShares 2x Long CRWD Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "CRWD",
+                    "name": "CrowdStrike Holdings Inc (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "NOWL",
+            "name": "GraniteShares 2x Long NOW Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NOW",
+                    "name": "ServiceNow Inc (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "SHPU",
+            "name": "GraniteShares 2x Long SHOP Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "SHOP",
+                    "name": "Shopify Inc (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "SHPD",
+            "name": "GraniteShares 2x Short SHOP Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "SHOP",
+                    "name": "Shopify Inc (Inverse Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "HOOG",
+            "name": "GraniteShares 2x Long HOOD Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "HOOD",
+                    "name": "Robinhood Markets Inc (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "HIMZ",
+            "name": "GraniteShares 2x Long HIMS Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "HIMS",
+                    "name": "Hims & Hers Health Inc (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "PLTU",
+            "name": "GraniteShares 2x Long PLTR Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "PLTR",
+                    "name": "Palantir Technologies Inc (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "PLTD",
+            "name": "GraniteShares 2x Short PLTR Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "PLTR",
+                    "name": "Palantir Technologies Inc (Inverse Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "TSLL",
+            "name": "Direxion Daily TSLA Bull 2X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla Inc (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "TSLQ",
+            "name": "AXS TSLA Bear Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla Inc (Inverse Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "UVXY",
+            "name": "ProShares Ultra VIX Short-Term Futures ETF (1.5x)",
+            "top_holdings": [
+                {
+                    "symbol": "VIX",
+                    "name": "VIX",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "VXX",
+            "name": "iPath Series B S&P 500 VIX Short-Term Futures ETN",
+            "top_holdings": [
+                {
+                    "symbol": "VIX",
+                    "name": "VIX",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "IBIT",
+            "name": "iShares Bitcoin Trust",
+            "top_holdings": [
+                {
+                    "symbol": "BITCOIN",
+                    "name": "Bitcoin",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "GLD",
+            "name": "SPDR Gold Shares",
+            "top_holdings": [
+                {
+                    "symbol": "GOLD",
+                    "name": "Gold",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "SLV",
+            "name": "iShares Silver Trust",
+            "top_holdings": [
+                {
+                    "symbol": "SILVER",
+                    "name": "Silver",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "AGQ",
+            "name": "ProShares Ultra Silver",
+            "top_holdings": [
+                {
+                    "symbol": "SILVER",
+                    "name": "Silver",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "BND",
+            "name": "Vanguard Total Bond Market ETF",
+            "top_holdings": [
+                {
+                    "symbol": "UST",
+                    "name": "U.S. Treasuries",
+                    "weight_pct": 45
+                },
+                {
+                    "symbol": "MBS",
+                    "name": "Agency MBS",
+                    "weight_pct": 25
+                },
+                {
+                    "symbol": "CORP_IG",
+                    "name": "Investment Grade Corporate Bonds",
+                    "weight_pct": 30
+                }
+            ]
+        },
+        {
+            "symbol": "AGG",
+            "name": "iShares Core U.S. Aggregate Bond ETF",
+            "top_holdings": [
+                {
+                    "symbol": "UST",
+                    "name": "U.S. Treasuries",
+                    "weight_pct": 45
+                },
+                {
+                    "symbol": "MBS",
+                    "name": "Agency MBS",
+                    "weight_pct": 25
+                },
+                {
+                    "symbol": "CORP_IG",
+                    "name": "Investment Grade Corporate Bonds",
+                    "weight_pct": 30
+                }
+            ]
+        },
+        {
+            "symbol": "SHY",
+            "name": "iShares 1-3 Year Treasury Bond ETF",
+            "top_holdings": [
+                {
+                    "symbol": "UST_1_3Y",
+                    "name": "U.S. Treasuries (1–3Y)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "IEF",
+            "name": "iShares 7-10 Year Treasury Bond ETF",
+            "top_holdings": [
+                {
+                    "symbol": "UST_7_10Y",
+                    "name": "U.S. Treasuries (7–10Y)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "TLT",
+            "name": "iShares 20+ Year Treasury Bond ETF",
+            "top_holdings": [
+                {
+                    "symbol": "UST_20Y_PLUS",
+                    "name": "U.S. Treasuries (20+Y)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "TIP",
+            "name": "iShares TIPS Bond ETF",
+            "top_holdings": [
+                {
+                    "symbol": "TIPS",
+                    "name": "Treasury Inflation-Protected Securities (TIPS)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "LQD",
+            "name": "iShares iBoxx $ Investment Grade Corporate Bond ETF",
+            "top_holdings": [
+                {
+                    "symbol": "CORP_IG",
+                    "name": "Investment Grade Corporate Bonds",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "HYG",
+            "name": "iShares iBoxx $ High Yield Corporate Bond ETF",
+            "top_holdings": [
+                {
+                    "symbol": "CORP_HY",
+                    "name": "High Yield Corporate Bonds",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "JEPI",
+            "name": "JPMorgan Equity Premium Income ETF",
+            "top_holdings": [
+                {
+                    "symbol": "US_LARGE_CAP",
+                    "name": "U.S. Large-Cap Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "JEPQ",
+            "name": "JPMorgan Nasdaq Equity Premium Income ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NASDAQ_100",
+                    "name": "Nasdaq-100 Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "UPRO",
+            "name": "ProShares UltraPro S&P 500",
+            "top_holdings": [
+                {
+                    "symbol": "SP500",
+                    "name": "S&P 500",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "SPXU",
+            "name": "ProShares UltraPro Short S&P 500",
+            "top_holdings": [
+                {
+                    "symbol": "SP500",
+                    "name": "S&P 500",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "VYM",
+            "name": "Vanguard High Dividend Yield ETF",
+            "top_holdings": [
+                {
+                    "symbol": "US_DIVIDEND",
+                    "name": "U.S. Dividend Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "IWF",
+            "name": "iShares Russell 1000 Growth ETF",
+            "top_holdings": [
+                {
+                    "symbol": "US_LARGE_GROWTH",
+                    "name": "U.S. Large-Cap Growth Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "IWD",
+            "name": "iShares Russell 1000 Value ETF",
+            "top_holdings": [
+                {
+                    "symbol": "US_LARGE_VALUE",
+                    "name": "U.S. Large-Cap Value Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "VB",
+            "name": "Vanguard Small-Cap ETF",
+            "top_holdings": [
+                {
+                    "symbol": "US_SMALL_CAP",
+                    "name": "U.S. Small-Cap Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "VO",
+            "name": "Vanguard Mid-Cap ETF",
+            "top_holdings": [
+                {
+                    "symbol": "US_MID_CAP",
+                    "name": "U.S. Mid-Cap Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "VBR",
+            "name": "Vanguard Small-Cap Value ETF",
+            "top_holdings": [
+                {
+                    "symbol": "US_SMALL_VALUE",
+                    "name": "U.S. Small-Cap Value Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "VT",
+            "name": "Vanguard Total World Stock ETF",
+            "top_holdings": [
+                {
+                    "symbol": "GLOBAL",
+                    "name": "Global Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "VEU",
+            "name": "Vanguard FTSE All-World ex-US ETF",
+            "top_holdings": [
+                {
+                    "symbol": "GLOBAL_EX_US",
+                    "name": "Global ex-U.S. Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "IEMG",
+            "name": "iShares Core MSCI Emerging Markets ETF",
+            "top_holdings": [
+                {
+                    "symbol": "EM",
+                    "name": "Emerging Markets Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "IYR",
+            "name": "iShares U.S. Real Estate ETF",
+            "top_holdings": [
+                {
+                    "symbol": "REITS",
+                    "name": "U.S. Real Estate (REITs)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "UGL",
+            "name": "ProShares Ultra Gold",
+            "top_holdings": [
+                {
+                    "symbol": "GOLD",
+                    "name": "Gold",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "UCO",
+            "name": "ProShares Ultra Bloomberg Crude Oil",
+            "top_holdings": [
+                {
+                    "symbol": "OIL",
+                    "name": "Oil",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "BOIL",
+            "name": "ProShares Ultra Bloomberg Natural Gas",
+            "top_holdings": [
+                {
+                    "symbol": "NATGAS",
+                    "name": "Natural Gas",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "KOLD",
+            "name": "ProShares UltraShort Bloomberg Natural Gas",
+            "top_holdings": [
+                {
+                    "symbol": "NATGAS",
+                    "name": "Natural Gas",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "ARKG",
+            "name": "ARK Genomic Revolution ETF",
+            "top_holdings": [
+                {
+                    "symbol": "GENOMICS",
+                    "name": "Genomics & Biotech Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "XBI",
+            "name": "SPDR S&P Biotech ETF",
+            "top_holdings": [
+                {
+                    "symbol": "BIOTECH",
+                    "name": "Biotech Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "XME",
+            "name": "SPDR S&P Metals & Mining ETF",
+            "top_holdings": [
+                {
+                    "symbol": "METALS_MINING",
+                    "name": "Metals & Mining Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "XOP",
+            "name": "SPDR S&P Oil & Gas Exploration & Production ETF",
+            "top_holdings": [
+                {
+                    "symbol": "OIL_GAS_E_P",
+                    "name": "Oil & Gas Exploration & Production Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "ICLN",
+            "name": "iShares Global Clean Energy ETF",
+            "top_holdings": [
+                {
+                    "symbol": "CLEAN_ENERGY",
+                    "name": "Clean Energy Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "TAN",
+            "name": "Invesco Solar ETF",
+            "top_holdings": [
+                {
+                    "symbol": "SOLAR",
+                    "name": "Solar Energy Stocks",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "BITO",
+            "name": "ProShares Bitcoin Strategy ETF",
+            "top_holdings": [
+                {
+                    "symbol": "BITCOIN",
+                    "name": "Bitcoin",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "FBTC",
+            "name": "Fidelity Wise Origin Bitcoin Fund",
+            "top_holdings": [
+                {
+                    "symbol": "BITCOIN",
+                    "name": "Bitcoin",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "MUU",
+            "name": "ProShares Ultra Micron Technology",
+            "top_holdings": [
+                {
+                    "symbol": "MU",
+                    "name": "Micron Technology Inc (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "AMUU",
+            "name": "ProShares Ultra AMD",
+            "top_holdings": [
+                {
+                    "symbol": "AMD",
+                    "name": "Advanced Micro Devices Inc (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "TSMG",
+            "name": "GraniteShares 2x Long TSM Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "TSM",
+                    "name": "Taiwan Semiconductor Manufacturing (Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "STSM",
+            "name": "GraniteShares 2x Short TSM Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "TSM",
+                    "name": "Taiwan Semiconductor Manufacturing (Inverse Leveraged Exposure)",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "LINT",
+            "name": "Direxion Daily INTC Bull 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "INTC",
+                    "name": "Intel Corp",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "INTW",
+            "name": "GraniteShares 2x Long INTC Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "INTC",
+                    "name": "Intel Corp",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "AAPU",
+            "name": "Direxion Daily AAPL Bull 2X Share",
+            "top_holdings": [
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "AAPD",
+            "name": "Direxion Daily AAPL Bear 1X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "AMZU",
+            "name": "Direxion Daily AMZN Bull 2X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com Inc",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "AMZD",
+            "name": "Direxion Daily AMZN Bear 1X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com Inc",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "METU",
+            "name": "Direxion Daily META Bull 2X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms Inc",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "METD",
+            "name": "Direxion Daily META Bear 1X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "META",
+                    "name": "Meta Platforms Inc",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "NVDD",
+            "name": "Direxion Daily NVDA Bear 1X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "AMDD",
+            "name": "Direxion Daily AMD Bear 1X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "AMD",
+                    "name": "Advanced Micro Devices, Inc.",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "BOEU",
+            "name": "Direxion Daily BA Bull 2X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "BA",
+                    "name": "The Boeing Company",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "BOED",
+            "name": "Direxion Daily BA Bear 1X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "BA",
+                    "name": "The Boeing Company",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "CONX",
+            "name": "Direxion Daily COIN Bull 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "COIN",
+                    "name": " Coinbase Global, Inc.",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "CSCL",
+            "name": "Direxion Daily CSCO Bull 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "CSCO",
+                    "name": "Cisco Systems Inc",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "CSCS",
+            "name": "Direxion Daily CSCO Bear 1X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "CSCO",
+                    "name": "Direxion Daily CSCO Bear 1X ETF",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "MUD",
+            "name": "Direxion Daily MU Bear 1X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "MU",
+                    "name": "Micron Technology, Inc.",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "TSXU",
+            "name": "Direxion Daily Semiconductors Top 5 Bull 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation",
+                    "weight_pct": 15.15
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corporation",
+                    "weight_pct": 14.21
+                },
+                {
+                    "symbol": "PLTR",
+                    "name": "Palantir Technologies Inc.",
+                    "weight_pct": 14.02
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "weight_pct": 13.78
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc.",
+                    "weight_pct": 12.36
+                }
+            ]
+        },
+        {
+            "symbol": "TSXD",
+            "name": "Direxion Daily Semiconductors Top 5 Bear 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation",
+                    "weight_pct": 15.15
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corporation",
+                    "weight_pct": 14.21
+                },
+                {
+                    "symbol": "PLTR",
+                    "name": "Palantir Technologies Inc.",
+                    "weight_pct": 14.02
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "weight_pct": 13.78
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc.",
+                    "weight_pct": 12.36
+                }
+            ]
+        },
+        {
+            "symbol": "FRDU",
+            "name": "Direxion Daily F Bull 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "F",
+                    "name": "Ford Motor Company",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "FRDD",
+            "name": "Direxion Daily F Bear 1X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "F",
+                    "name": "Ford Motor Company",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "HODU",
+            "name": "Direxion Daily HOOD Bull 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "HOOD",
+                    "name": "Robinhood Markets, Inc.",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "ELIL",
+            "name": "Direxion Daily LLY Bull 2X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "LLY",
+                    "name": "Eli Lilly and Company",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "ELIS",
+            "name": "Direxion Daily LLY Bear 1X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "LLY",
+                    "name": "Eli Lilly and Company",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "LMTL",
+            "name": "Direxion Daily LMT Bull 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "LMT",
+                    "name": "Lockheed Martin Corporation",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "LMTS",
+            "name": "Direxion Daily LMT Bear 1X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "LMT",
+                    "name": "Lockheed Martin Corporation",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "ORCU",
+            "name": "Direxion Daily ORCL Bull 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "ORCL",
+                    "name": "Oracle Corporation",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "ORCS",
+            "name": "Direxion Daily ORCL Bear 1X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "ORCL",
+                    "name": "Oracle Corporation",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "QCMU",
+            "name": "Direxion Daily QCOM Bull 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "QCOM",
+                    "name": "QUALCOMM Incorporated",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "QCMD",
+            "name": "Direxion Daily QCOM Bear 1X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "QCOM",
+                    "name": "QUALCOMM Incorporated",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "TSLS",
+            "name": "Direxion Daily TSLA Bear 1X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla, Inc.",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "TSMX",
+            "name": "Direxion Daily TSM Bull 2X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "TSM",
+                    "name": "Taiwan Semiconductor Manufacturing Co Ltd",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "TSMZ",
+            "name": "Direxion Daily TSM Bear 1X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "TSM",
+                    "name": "Taiwan Semiconductor Manufacturing Co Ltd",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "XOMX",
+            "name": "Direxion Daily XOM Bull 2X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "XOM",
+                    "name": "Exxon Mobil Corporation",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "XOMZ",
+            "name": "Direxion Daily XOM Bear 1X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "XOM",
+                    "name": "Exxon Mobil Corporation",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "PALU",
+            "name": "Direxion Daily PANW Bull 2X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "PANW",
+                    "name": "Palo Alto Networks, Inc.",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "PALD",
+            "name": "Direxion Daily PANW Bear 1X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "PANW",
+                    "name": "Palo Alto Networks, Inc.",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "TBXU",
+            "name": "Direxion Daily Biotech Top 5 Bull 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "REGN",
+                    "name": "Regeneron Pharmaceuticals, Inc",
+                    "weight_pct": 9.56
+                },
+                {
+                    "symbol": "AMGN",
+                    "name": "Amgen Inc",
+                    "weight_pct": 9.45
+                },
+                {
+                    "symbol": "GILD",
+                    "name": "Gilead Sciences, Inc",
+                    "weight_pct": 9.36
+                },
+                {
+                    "symbol": "VRTX",
+                    "name": "Vertex Pharmaceuticals Incorporated",
+                    "weight_pct": 9.18
+                },
+                {
+                    "symbol": "ARGX",
+                    "name": "Argenx SE American Depositary Shares",
+                    "weight_pct": 8.71
+                }
+            ]
+        },
+        {
+            "symbol": "TEXU",
+            "name": "Direxion Daily Energy Top 5 Bull 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "XOM",
+                    "name": "Exxon Mobil Corporation",
+                    "weight_pct": 8.9
+                },
+                {
+                    "symbol": "CVX",
+                    "name": "Chevron Corporation",
+                    "weight_pct": 8.76
+                },
+                {
+                    "symbol": "WMB",
+                    "name": "The Williams Companies, Inc.",
+                    "weight_pct": 8.38
+                },
+                {
+                    "symbol": "COP",
+                    "name": "ConocoPhillips",
+                    "weight_pct": 7.96
+                },
+                {
+                    "symbol": "EOG",
+                    "name": "EOG Resources, Inc.",
+                    "weight_pct": 7.59
+                }
+            ]
+        },
+        {
+            "symbol": "TTXU",
+            "name": "Direxion Daily Technology Top 5 Bull 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp.",
+                    "weight_pct": 15.35
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp.",
+                    "weight_pct": 14.28
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "weight_pct": 13.66
+                },
+                {
+                    "symbol": "PLTR",
+                    "name": "Palantir Technologies Inc.",
+                    "weight_pct": 13.53
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc.",
+                    "weight_pct": 12.25
+                }
+            ]
+        },
+        {
+            "symbol": "TTXD",
+            "name": "Direxion Daily Technology Top 5 Bear 2X ETF",
+            "top_holdings": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp.",
+                    "weight_pct": 15.35
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft Corp.",
+                    "weight_pct": 14.28
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple Inc.",
+                    "weight_pct": 13.66
+                },
+                {
+                    "symbol": "PLTR",
+                    "name": "Palantir Technologies Inc.",
+                    "weight_pct": 13.53
+                },
+                {
+                    "symbol": "AVGO",
+                    "name": "Broadcom Inc.",
+                    "weight_pct": 12.25
+                }
+            ]
+        },
+        {
+            "symbol": "DFEN",
+            "name": "Direxion Daily Aerospace & Defense Bull 3X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "GE",
+                    "name": "GE Aerospace",
+                    "weight_pct": 13.4
+                },
+                {
+                    "symbol": "RTX",
+                    "name": "RTX Corporation",
+                    "weight_pct": 11.3
+                },
+                {
+                    "symbol": "BA",
+                    "name": "The Boeing Company",
+                    "weight_pct": 6.2
+                },
+                {
+                    "symbol": "LMT",
+                    "name": "Lockheed Martin Corp.",
+                    "weight_pct": 3.5
+                },
+                {
+                    "symbol": "LHX",
+                    "name": "L3Harris Technologies Inc.",
+                    "weight_pct": 3.5
+                },
+                {
+                    "symbol": "NOC",
+                    "name": "Northrop Grumman Corp.",
+                    "weight_pct": 3.4
+                },
+                {
+                    "symbol": "HWM",
+                    "name": "Howmet Aerospace Inc.",
+                    "weight_pct": 3.2
+                },
+                {
+                    "symbol": "TDG",
+                    "name": "TransDigm Group Inc.",
+                    "weight_pct": 3
+                },
+                {
+                    "symbol": "GD",
+                    "name": "General Dynamics Corp.",
+                    "weight_pct": 3
+                },
+                {
+                    "symbol": "AXON",
+                    "name": "Axon Enterprise, Inc.",
+                    "weight_pct": 2.9
+                }
+            ]
+        },
+        {
+            "symbol": "WANT",
+            "name": "Direxion Daily Consumer Discretionary Bull 3X Shares",
+            "top_holdings": [
+                {
+                    "symbol": "AMZN",
+                    "name": "Amazon.com, Inc.",
+                    "weight_pct": 15.5
+                },
+                {
+                    "symbol": "TSLA",
+                    "name": "Tesla, Inc.",
+                    "weight_pct": 13.8
+                },
+                {
+                    "symbol": "HD",
+                    "name": "The Home Depot, Inc.",
+                    "weight_pct": 4.15
+                },
+                {
+                    "symbol": "MCD",
+                    "name": "McDonald's Corporation",
+                    "weight_pct": 2.96
+                },
+                {
+                    "symbol": "TJX",
+                    "name": "The TJX Companies, Inc.",
+                    "weight_pct": 2.61
+                },
+                {
+                    "symbol": "BKNG",
+                    "name": "Booking Holdings Inc.",
+                    "weight_pct": 2.54
+                },
+                {
+                    "symbol": "LOW",
+                    "name": "Lowe's Companies, Inc.",
+                    "weight_pct": 2.36
+                },
+                {
+                    "symbol": "SBUX",
+                    "name": "Starbucks Corporation",
+                    "weight_pct": 1.67
+                },
+                {
+                    "symbol": "ORLY",
+                    "name": "O'Reilly Automotive, Inc",
+                    "weight_pct": 1.28
+                },
+                {
+                    "symbol": "NKE",
+                    "name": "NIKE, Inc.",
+                    "weight_pct": 1.19
+                }
+            ]
+        },
+        {
+            "symbol": "LRCU",
+            "name": "Tradr 2X Long LRCX Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "LRCX",
+                    "name": "Lam Research Corp.",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "KLAG",
+            "name": "2x Long KLAC Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "KLAC",
+                    "name": "KLA Corporation",
+                    "weight_pct": 100
+                }
+            ]
+        },
+        {
+            "symbol": "MVLL",
+            "name": "GraniteShares 2x Long MRVL Daily ETF",
+            "top_holdings": [
+                {
+                    "symbol": "MRVL",
+                    "name": "Marvell Technology, Inc.",
+                    "weight_pct": 100
+                }
+            ]
+        }
+    ]
+}

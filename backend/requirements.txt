@@ -1,0 +1,6 @@
+ib_insync
+fastapi
+uvicorn[standard]
+websockets
+yahooquery
+duckdb
