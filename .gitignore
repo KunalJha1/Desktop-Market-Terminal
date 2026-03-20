@@ -8,7 +8,8 @@ __pycache__/
 
 .duckdb
 .db
-
+*.duckdb
+*.db
 # Distribution / packaging
 .Python
 build/
