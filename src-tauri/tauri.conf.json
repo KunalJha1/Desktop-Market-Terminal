@@ -40,7 +40,8 @@
         "all": true
       },
       "dialog": {
-        "open": true
+        "open": true,
+        "save": true
       },
       "os": {
         "all": true

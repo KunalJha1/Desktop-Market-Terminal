@@ -4,3 +4,5 @@ uvicorn[standard]
 websockets
 yahooquery
 duckdb
+pandas
+numpy

@@ -17,21 +17,26 @@ interface UseChartDataResult {
   source: 'tws' | 'yahoo' | 'cache' | 'mock';
 }
 
+// Timeframes that should use daily bars from the backend
+const DAILY_TIMEFRAMES = new Set<Timeframe>(['1D', '1W', '1M']);
+
 /**
  * Hook that provides OHLCV data for the chart.
  *
- * When TWS is connected, requests 1m historical data from the sidecar,
- * then resamples it into the requested timeframe.
- * Falls back to mock data when TWS is disconnected.
+ * For intraday timeframes (1m–4H): requests 1m bars, resamples client-side.
+ * For daily+ timeframes (1D, 1W, 1M): requests daily bars, resamples client-side.
+ * Falls back to mock data when backend returns nothing.
  */
 export function useChartData({ symbol, timeframe, sidecarWS, twsConnected }: UseChartDataOptions): UseChartDataResult {
-  const [rawBars1m, setRawBars1m] = useState<OHLCVBar[]>([]);
+  const [rawBars, setRawBars] = useState<OHLCVBar[]>([]);
+  const [rawBarSize, setRawBarSize] = useState<'1m' | '1d'>('1m');
   const [loading, setLoading] = useState(false);
   const [source, setSource] = useState<'tws' | 'yahoo' | 'cache' | 'mock'>('mock');
   const requestIdRef = useRef(0);
 
-  // Request 1m historical data from sidecar — always tries backend (TWS → Yahoo → cache)
-  // Only falls back to mock if sidecar is unavailable or returns zero bars
+  const useDaily = DAILY_TIMEFRAMES.has(timeframe);
+
+  // Request historical data from sidecar — daily bars for 1D+ timeframes, 1m for intraday
   useEffect(() => {
     if (!sidecarWS) {
       setSource('mock');
@@ -41,12 +46,14 @@ export function useChartData({ symbol, timeframe, sidecarWS, twsConnected }: Use
     const requestId = ++requestIdRef.current;
     setLoading(true);
 
-    // Send historical data request — sidecar picks TWS or Yahoo based on status
+    const barSize = useDaily ? '1 day' : '1 min';
+    const duration = useDaily ? '2 Y' : '5 D';
+
     sidecarWS.send({
       type: 'historical_request',
       symbol,
-      barSize: '1 min',
-      duration: '5 D',
+      barSize,
+      duration,
       requestId: `hist_${requestId}`,
     });
 
@@ -64,11 +71,12 @@ export function useChartData({ symbol, timeframe, sidecarWS, twsConnected }: Use
           volume: b.volume,
         }));
         if (bars.length > 0) {
-          setRawBars1m(bars);
+          setRawBars(bars);
+          setRawBarSize(useDaily ? '1d' : '1m');
           setSource((msg.source as 'tws' | 'yahoo' | 'cache') || 'tws');
         } else {
           // Backend returned zero bars — fall back to mock
-          setRawBars1m([]);
+          setRawBars([]);
           setSource('mock');
         }
         setLoading(false);
@@ -76,7 +84,7 @@ export function useChartData({ symbol, timeframe, sidecarWS, twsConnected }: Use
 
       if (msg.type === 'historical_error') {
         console.warn('Historical data error:', msg.error);
-        setRawBars1m([]);
+        setRawBars([]);
         setSource('mock');
         setLoading(false);
       }
@@ -89,11 +97,11 @@ export function useChartData({ symbol, timeframe, sidecarWS, twsConnected }: Use
       sidecarWS.off('historical_data', handler);
       sidecarWS.off('historical_error', handler);
     };
-  }, [symbol, sidecarWS, twsConnected]);
+  }, [symbol, sidecarWS, twsConnected, useDaily]);
 
-  // Listen for real-time bar updates to append
+  // Listen for real-time bar updates to append (intraday only)
   useEffect(() => {
-    if (!sidecarWS || !twsConnected) return;
+    if (!sidecarWS || !twsConnected || useDaily) return;
 
     sidecarWS.send({
       type: 'realtime_bars_subscribe',
@@ -112,7 +120,7 @@ export function useChartData({ symbol, timeframe, sidecarWS, twsConnected }: Use
         volume: msg.volume as number,
       };
 
-      setRawBars1m(prev => {
+      setRawBars(prev => {
         if (prev.length === 0) return [bar];
         const last = prev[prev.length - 1];
         if (bar.time === last.time) {
@@ -129,40 +137,73 @@ export function useChartData({ symbol, timeframe, sidecarWS, twsConnected }: Use
       sidecarWS.off('realtime_bar', handler);
       sidecarWS.send({ type: 'realtime_bars_unsubscribe', symbol });
     };
-  }, [symbol, twsConnected, sidecarWS]);
+  }, [symbol, twsConnected, sidecarWS, useDaily]);
 
-  // Resample 1m data into the requested timeframe
-  // Only use mock data if backend returned nothing (no real bars in DB)
+  // Resample raw bars into the requested timeframe
+  // Daily bars: 1D is pass-through, 1W/1M get resampled from daily
+  // Intraday bars: 1m is pass-through, 5m/15m/30m/1H/4H get resampled from 1m
   const bars = useMemo(() => {
-    if (rawBars1m.length > 0) {
-      return resampleBars(rawBars1m, timeframe);
+    if (rawBars.length > 0) {
+      // If raw data matches the timeframe exactly, skip resampling
+      if ((rawBarSize === '1d' && timeframe === '1D') || (rawBarSize === '1m' && timeframe === '1m')) {
+        return rawBars;
+      }
+      return resampleBars(rawBars, timeframe);
     }
-    if (source === 'mock') {
+    // Only fall back to mock when there is no backend connection at all.
+    // When sidecarWS exists, the request is in-flight or the DB returned empty —
+    // in either case show nothing rather than fake data that would be replaced on
+    // response and cause a visible flicker.
+    if (!sidecarWS) {
       return generateMockData(symbol, timeframe, 2000);
     }
     return [];
-  }, [rawBars1m, timeframe, symbol, source]);
+  }, [rawBars, rawBarSize, timeframe, symbol, sidecarWS]);
 
   return { bars, loading, source };
 }
 
 /**
- * Resample 1-minute bars into a higher timeframe.
+ * Return the bucket start timestamp (Unix ms) for a bar, given the target timeframe.
+ *
+ * Fixed-interval timeframes (1m–4H, 1D): simple floor division.
+ * 1W: floor to Monday 00:00 UTC — epoch was a Thursday so we subtract 4 days
+ *     before bucketing and add it back.
+ * 1M: floor to the first of the calendar month in UTC — fixed-ms math is wrong
+ *     because months have 28/29/30/31 days.
+ */
+function bucketFor(tsMs: number, timeframe: Timeframe): number {
+  if (timeframe === '1W') {
+    // Jan 1 1970 was a Thursday; Jan 5 1970 was a Monday.
+    // Offset so that floor-division aligns to Monday 00:00 UTC.
+    const MONDAY_OFFSET_MS = 4 * 86_400_000; // Thu→Mon = +4 days
+    return Math.floor((tsMs - MONDAY_OFFSET_MS) / 604_800_000) * 604_800_000 + MONDAY_OFFSET_MS;
+  }
+  if (timeframe === '1M') {
+    const d = new Date(tsMs);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  }
+  return Math.floor(tsMs / TIMEFRAME_MS[timeframe]) * TIMEFRAME_MS[timeframe];
+}
+
+/**
+ * Resample bars into a higher timeframe.
+ * Works for both 1m→intraday and 1d→weekly/monthly resampling.
+ * Volume is summed across all source bars in each bucket.
  */
 function resampleBars(bars1m: OHLCVBar[], timeframe: Timeframe): OHLCVBar[] {
-  if (timeframe === '1m') return bars1m;
+  if (timeframe === '1m' || timeframe === '1D') return bars1m;
 
-  const intervalMs = TIMEFRAME_MS[timeframe];
   const result: OHLCVBar[] = [];
   let current: OHLCVBar | null = null;
-  let bucketStart = 0;
+  let currentBucket = -1;
 
   for (const bar of bars1m) {
-    const bucket = Math.floor(bar.time / intervalMs) * intervalMs;
+    const bucket = bucketFor(bar.time, timeframe);
 
-    if (bucket !== bucketStart || !current) {
+    if (bucket !== currentBucket || !current) {
       if (current) result.push(current);
-      bucketStart = bucket;
+      currentBucket = bucket;
       current = {
         time: bucket,
         open: bar.open,

@@ -7,7 +7,7 @@ import { linkBus } from '../lib/link-bus';
 import ChartCanvas from '../chart/components/ChartCanvas';
 import ChartToolbar from '../chart/components/ChartToolbar';
 import IndicatorPanel from '../chart/components/IndicatorPanel';
-import IndicatorSettings from '../chart/components/IndicatorSettings';
+import IndicatorLegend from '../chart/components/IndicatorLegend';
 import ScriptEditor from '../chart/components/ScriptEditor';
 import { interpretScript } from '../chart/scripting/interpreter';
 import { loadChartState, saveChartState } from '../lib/chart-state';
@@ -112,12 +112,15 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   const handleToggleVisibility = useCallback((id: string) => {
     const engine = engineRef.current;
     if (!engine) return;
-    const indicators = engine.getActiveIndicators();
-    const ind = indicators.find(i => i.id === id);
-    if (ind) {
-      ind.visible = !ind.visible;
-      setActiveIndicators([...indicators]);
-    }
+    engine.toggleVisibility(id);
+    setActiveIndicators([...engine.getActiveIndicators()]);
+  }, []);
+
+  const handleUpdateColor = useCallback((id: string, outputKey: string, color: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.updateIndicatorColor(id, outputKey, color);
+    setActiveIndicators([...engine.getActiveIndicators()]);
   }, []);
 
   const handleRunScript = useCallback((id: string, src: string): ScriptResult => {
@@ -157,20 +160,22 @@ export default function ChartPage({ tabId }: ChartPageProps) {
         onLinkChannelChange={handleLinkChannelChange}
       />
 
-      <IndicatorSettings
-        indicators={activeIndicators}
-        onUpdateParams={handleUpdateParams}
-        onRemove={handleRemoveIndicator}
-        onToggleVisibility={handleToggleVisibility}
-      />
-
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
         <ChartCanvas
           bars={bars}
           chartType={chartType}
           timeframe={timeframe}
           engineRef={engineRef}
           activeScripts={activeScripts}
+        />
+
+        <IndicatorLegend
+          indicators={activeIndicators}
+          activeScripts={activeScripts}
+          onUpdateParams={handleUpdateParams}
+          onUpdateColor={handleUpdateColor}
+          onRemove={handleRemoveIndicator}
+          onToggleVisibility={handleToggleVisibility}
         />
 
         <ScriptEditor

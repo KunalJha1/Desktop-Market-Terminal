@@ -4,8 +4,12 @@ Runs in a background asyncio task. Priority order:
 1. Watchlist symbols (re-checked each loop iteration)
 2. All symbols from tickers.json
 
+Two passes per cycle:
+- Daily bars (2Y history, 6hr cache TTL) — fills 1D/1W/1M chart timeframes
+- Intraday 1m bars (5D history, 5min cache TTL) — fills 1m–4H timeframes
+
 Sleeps 10s between each symbol fetch to avoid rate-limiting.
-Skips symbols whose cache is still fresh (5-min TTL from historical.py).
+Skips symbols whose cache is still fresh.
 """
 
 import asyncio
@@ -13,12 +17,14 @@ import json
 import logging
 from pathlib import Path
 
-from historical import _get_conn, _cache_fresh, CACHE_TTL
+from db_utils import sync_db_session
+from historical import _cache_fresh, CACHE_TTL, CACHE_TTL_DAILY
 
 logger = logging.getLogger(__name__)
 
 TICKERS_PATH = Path(__file__).parent.parent / "data" / "tickers.json"
 SLEEP_BETWEEN = 10  # seconds between each symbol fetch
+PREFETCH_ROLE = "prefetch"
 
 
 def _load_all_symbols() -> list[str]:
@@ -65,7 +71,7 @@ class Prefetcher:
         logger.info("Prefetcher stopped")
 
     async def _loop(self):
-        """Main loop: watchlist first, then all symbols, then repeat."""
+        """Main loop: daily bars first (long history), then 1m bars, then repeat."""
         from historical import get_historical_bars
 
         # Wait a bit on startup so the sidecar and providers can settle
@@ -80,22 +86,54 @@ class Prefetcher:
                     if sym not in watchlist_set:
                         queue.append(sym)
 
+                # ── Pass 1: Daily bars (2Y history) ──
                 for symbol in queue:
-                    # Check if cache is already fresh — skip if so
                     try:
-                        conn = _get_conn()
-                        fresh = _cache_fresh(conn, symbol, "1 min")
-                        conn.close()
-                        if fresh:
+                        with sync_db_session() as conn:
+                            is_fresh, _ = _cache_fresh(conn, symbol, "1d", CACHE_TTL_DAILY)
+                        if is_fresh:
                             continue
                     except Exception:
                         pass
 
-                    # Fetch (the function handles TWS → Yahoo → cache fallback)
                     ib_client = None
                     if self._tws_connected and self._pool:
                         try:
-                            ib_client = await self._pool.get_or_create(950)
+                            ib_client = await self._pool.get_or_create(PREFETCH_ROLE)
+                        except Exception:
+                            ib_client = None
+
+                    try:
+                        bars, source = await get_historical_bars(
+                            symbol=symbol,
+                            ib=ib_client,
+                            tws_connected=self._tws_connected,
+                            duration="2 Y",
+                            bar_size="1 day",
+                        )
+                        if bars:
+                            logger.info(f"Prefetched {symbol} daily: {len(bars)} bars from {source}")
+                        else:
+                            logger.debug(f"Prefetch {symbol} daily: no bars available")
+                    except Exception as e:
+                        logger.debug(f"Prefetch {symbol} daily failed: {e}")
+
+                    await asyncio.sleep(SLEEP_BETWEEN)
+
+                # ── Pass 2: Intraday 1m bars (5D history) ──
+                for symbol in queue:
+                    try:
+                        with sync_db_session() as conn:
+                            is_fresh, _ = _cache_fresh(conn, symbol, "1m")
+                        if is_fresh:
+                            continue
+                    except Exception:
+                        pass
+
+                    ib_client = None
+                    if self._tws_connected and self._pool:
+                        try:
+                            ib_client = await self._pool.get_or_create(PREFETCH_ROLE)
                         except Exception:
                             ib_client = None
 
@@ -108,11 +146,11 @@ class Prefetcher:
                             bar_size="1 min",
                         )
                         if bars:
-                            logger.info(f"Prefetched {symbol}: {len(bars)} bars from {source}")
+                            logger.info(f"Prefetched {symbol} 1m: {len(bars)} bars from {source}")
                         else:
-                            logger.debug(f"Prefetch {symbol}: no bars available")
+                            logger.debug(f"Prefetch {symbol} 1m: no bars available")
                     except Exception as e:
-                        logger.debug(f"Prefetch {symbol} failed: {e}")
+                        logger.debug(f"Prefetch {symbol} 1m failed: {e}")
 
                     await asyncio.sleep(SLEEP_BETWEEN)
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Lock, Unlock, Link2, FolderOpen } from "lucide-react";
+import { Plus, Lock, Unlock, Link2, FolderOpen, Save } from "lucide-react";
 import { LINK_CHANNELS } from "../lib/link-channels";
 
 // US market holidays for 2025-2026 (NYSE/NASDAQ)
@@ -101,6 +101,7 @@ interface DashboardToolbarProps {
   onSetLinkChannel: (channel: number | null) => void;
   onAddComponent: () => void;
   onLoadWorkspace: () => void;
+  onSaveWorkspace: () => void;
 }
 
 export default function DashboardToolbar({
@@ -110,6 +111,7 @@ export default function DashboardToolbar({
   onSetLinkChannel,
   onAddComponent,
   onLoadWorkspace,
+  onSaveWorkspace,
 }: DashboardToolbarProps) {
   const [now, setNow] = useState(new Date());
   const [toast, setToast] = useState<string | null>(null);
@@ -190,6 +192,15 @@ export default function DashboardToolbar({
             ) : (
               <Unlock className="h-2.5 w-2.5 text-green" strokeWidth={1.5} />
             )}
+          </button>
+
+          {/* Save workspace */}
+          <button
+            onClick={onSaveWorkspace}
+            className={btnClass}
+            title="Save workspace (.diq)"
+          >
+            <Save className="h-2.5 w-2.5" strokeWidth={1.5} />
           </button>
 
           {/* Load workspace */}

@@ -7,6 +7,7 @@ import MiniChart from "../chart/components/MiniChart";
 import { useTabs } from "../lib/tabs";
 import { useLayout } from "../lib/layout";
 import type { LayoutComponent } from "../lib/layout-types";
+import { DEFAULT_WATCHLIST_SYMBOLS, useWatchlist } from "../lib/watchlist";
 
 const COMPONENT_TYPES = [
   { type: "quote", label: "Quote Card", defaultW: 4, defaultH: 8 },
@@ -15,8 +16,10 @@ const COMPONENT_TYPES = [
 ] as const;
 
 export default function DashboardPage() {
-  const { activeTabId } = useTabs();
+  const { activeTabId, ready: tabsReady } = useTabs();
+  const { symbols, setSymbols, ready: watchlistReady } = useWatchlist();
   const {
+    ready: layoutReady,
     getTabState,
     setTabLocked,
     setTabLinkChannel,
@@ -25,6 +28,7 @@ export default function DashboardPage() {
     updateComponent,
     setComponentLinkChannel,
     loadFromFile,
+    saveToFile,
   } = useLayout();
 
   const tabState = getTabState(activeTabId);
@@ -53,6 +57,29 @@ export default function DashboardPage() {
     };
   }, [showAddMenu]);
 
+  // Seed a default watchlist on first run (when the tab has no components)
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (!tabsReady || !layoutReady || !watchlistReady || seededRef.current) return;
+    seededRef.current = true;
+    const legacyWatchlist = layout.components.find((component) => component.type === "watchlist");
+    const legacySymbols = Array.isArray(legacyWatchlist?.config.symbols)
+      ? (legacyWatchlist?.config.symbols as string[])
+      : [];
+    if (symbols.length === 0 && legacySymbols.length > 0) {
+      setSymbols(legacySymbols);
+    } else if (symbols.length === 0) {
+      setSymbols(DEFAULT_WATCHLIST_SYMBOLS);
+    }
+    if (layout.components.length === 0) {
+      addComponent(activeTabId, "watchlist", {
+        w: 4, h: 12, x: 0, y: 0,
+        config: {},
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabsReady, layoutReady, watchlistReady, symbols.length]);
+
   const handleAddComponent = (type: string) => {
     const spec = COMPONENT_TYPES.find((c) => c.type === type);
     if (!spec) return;
@@ -73,7 +100,7 @@ export default function DashboardPage() {
 
     const defaultConfigs: Record<string, Record<string, unknown>> = {
       quote: { symbol: "AAPL" },
-      watchlist: { symbols: ["AAPL", "MSFT", "NVDA", "TSLA", "SPY"] },
+      watchlist: {},
       minichart: { symbol: "AAPL", timeframe: "1D", chartType: "candlestick" },
     };
 
@@ -167,6 +194,15 @@ export default function DashboardPage() {
     }
   };
 
+  // Wait for persisted state to load before rendering
+  if (!tabsReady || !layoutReady || !watchlistReady) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <span className="text-[10px] text-white/20">Loading workspace...</span>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col">
       <div className="relative">
@@ -176,7 +212,8 @@ export default function DashboardPage() {
           linkChannel={linkChannel}
           onSetLinkChannel={(ch) => setTabLinkChannel(activeTabId, ch)}
           onAddComponent={() => setShowAddMenu((v) => !v)}
-          onLoadWorkspace={() => loadFromFile()}
+          onLoadWorkspace={() => loadFromFile(activeTabId)}
+          onSaveWorkspace={() => saveToFile(activeTabId)}
         />
 
         {/* Add Component dropdown */}

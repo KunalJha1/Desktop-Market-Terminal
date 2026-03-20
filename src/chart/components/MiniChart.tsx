@@ -1,8 +1,9 @@
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import { ChartEngine } from '../core/ChartEngine';
-import { generateMockData } from '../mock-data';
+import { useChartData } from '../hooks/useChartData';
 import { indicatorRegistry } from '../indicators/registry';
 import type { Timeframe, ChartType, ActiveIndicator } from '../types';
+import { useTws } from '../../lib/tws';
 import { X, ChevronDown, Search, TrendingUp } from 'lucide-react';
 
 interface MiniChartProps {
@@ -69,11 +70,14 @@ export default function MiniChart({
   const indicatorMenuRef = useRef<HTMLDivElement>(null);
   const indicatorSearchRef = useRef<HTMLInputElement>(null);
 
-  // Generate mock data
-  const bars = useMemo(
-    () => generateMockData(symbol, timeframe, 500),
-    [symbol, timeframe],
-  );
+  // Pull real data from the sidecar (same path as ChartPage)
+  const { status, sidecarWS } = useTws();
+  const { bars } = useChartData({
+    symbol,
+    timeframe,
+    sidecarWS,
+    twsConnected: status === 'connected',
+  });
 
   // Price info
   const lastBar = bars.length > 0 ? bars[bars.length - 1] : null;

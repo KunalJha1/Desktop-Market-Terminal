@@ -6,6 +6,8 @@ import { linkBus } from "../lib/link-bus";
 import { getSymbolName, ALL_SYMBOLS, getEtfInfo } from "../lib/market-data";
 import type { Quote, EtfHolding } from "../lib/market-data";
 import { useWatchlistData } from "../lib/use-market-data";
+import { useTechScores } from "../lib/use-technicals";
+import { useWatchlist } from "../lib/watchlist";
 
 // ─── Column definitions ────────────────────────────────────────────
 interface ColDef {
@@ -25,6 +27,9 @@ const COLUMNS: ColDef[] = [
 
 const ROW_H = 24;
 const HEADER_H = 22;
+const TA_COL_W = 44;
+
+const AVAILABLE_TF = ["5m", "15m", "1h", "4h", "1d", "1w"] as const;
 
 // ─── Custom scripted columns ────────────────────────────────────────
 export interface CustomColumnDef {
@@ -92,13 +97,28 @@ export default function WatchlistCard({
   onConfigChange,
   onSymbolSelect,
 }: WatchlistCardProps) {
-  const symbols: string[] = (config.symbols as string[]) ?? [];
+  const {
+    symbols,
+    setSymbols,
+    addSymbol: addGlobalSymbol,
+    removeSymbol: removeGlobalSymbol,
+    replaceSymbol: replaceGlobalSymbol,
+    insertSymbolAt: insertGlobalSymbolAt,
+  } = useWatchlist();
   const savedColWidths = config.columnWidths as number[] | undefined;
+  const taTimeframes: string[] = (config.taTimeframes as string[]) ?? [];
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
 
   // Live market data
   const watchlistData = useWatchlistData(symbols);
+
+  // Technical analysis scores (polled every 60s)
+  const techScores = useTechScores(symbols, taTimeframes);
+
+  // TA timeframe selector popover
+  const [taPopoverOpen, setTaPopoverOpen] = useState(false);
+  const taPopoverRef = useRef<HTMLDivElement>(null);
 
   // ── Sorting ──
   const [sortCol, setSortCol] = useState<string | null>(null);
@@ -170,6 +190,24 @@ export default function WatchlistCard({
     };
   }, [contextMenu]);
 
+  // ── Dismiss TA popover on outside click / Escape ──
+  useEffect(() => {
+    if (!taPopoverOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (taPopoverRef.current && !taPopoverRef.current.contains(e.target as Node))
+        setTaPopoverOpen(false);
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setTaPopoverOpen(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [taPopoverOpen]);
+
   // ── Observe container width for multi-pane layout ──
   useEffect(() => {
     const el = containerRef.current;
@@ -186,12 +224,19 @@ export default function WatchlistCard({
     savedColWidths ?? COLUMNS.map((c) => c.defaultWidth),
   );
 
+  const persistConfig = useCallback(
+    (updates: Record<string, unknown>) => {
+      onConfigChange({ ...config, ...updates });
+    },
+    [config, onConfigChange],
+  );
+
   const persistCustomColumns = useCallback(
     (cols: CustomColumnDef[]) => {
       setCustomColumns(cols);
-      onConfigChange({ ...config, symbols, columnWidths: colWidths, customColumns: cols });
+      persistConfig({ columnWidths: colWidths, customColumns: cols });
     },
-    [config, symbols, colWidths, onConfigChange],
+    [colWidths, persistConfig],
   );
 
   // Compute custom column values for all symbols
@@ -211,9 +256,9 @@ export default function WatchlistCard({
   // Persist column widths on change
   const persistColWidths = useCallback(
     (widths: number[]) => {
-      onConfigChange({ ...config, symbols, columnWidths: widths });
+      persistConfig({ columnWidths: widths });
     },
-    [config, symbols, onConfigChange],
+    [persistConfig],
   );
 
   // ── Column resize drag ──
@@ -253,34 +298,40 @@ export default function WatchlistCard({
   const paneWidth = colWidths.reduce((a, b) => a + b, 0) + 8; // 8px padding
   const paneCount = Math.max(1, Math.floor(containerWidth / paneWidth));
 
+  // ── TA timeframe mutations ──
+  const updateTaTimeframes = useCallback(
+    (next: string[]) => {
+      persistConfig({ columnWidths: colWidths, taTimeframes: next });
+    },
+    [colWidths, persistConfig],
+  );
+
   // ── Symbol mutations ──
   const updateSymbols = useCallback(
     (next: string[]) => {
-      onConfigChange({ ...config, columnWidths: colWidths, symbols: next });
+      setSymbols(next);
     },
-    [config, colWidths, onConfigChange],
+    [setSymbols],
   );
 
   const removeSymbol = useCallback(
     (idx: number) => {
-      updateSymbols(symbols.filter((_, i) => i !== idx));
+      removeGlobalSymbol(idx);
     },
-    [symbols, updateSymbols],
+    [removeGlobalSymbol],
   );
 
   const replaceSymbol = useCallback(
     (idx: number, newSym: string) => {
-      const next = [...symbols];
-      next[idx] = newSym;
-      updateSymbols(next);
+      replaceGlobalSymbol(idx, newSym);
     },
-    [symbols, updateSymbols],
+    [replaceGlobalSymbol],
   );
 
   const addSymbol = useCallback(
     (sym: string) => {
       if (!sym || symbols.includes(sym)) return;
-      updateSymbols([...symbols, sym]);
+      addGlobalSymbol(sym);
 
       // Check if it's an ETF — prompt to add top holdings
       const etf = getEtfInfo(sym);
@@ -298,16 +349,14 @@ export default function WatchlistCard({
         }
       }
     },
-    [symbols, updateSymbols],
+    [addGlobalSymbol, symbols],
   );
 
   const insertSymbolAt = useCallback(
     (idx: number, sym: string) => {
-      const next = [...symbols];
-      next.splice(idx, 0, sym);
-      updateSymbols(next);
+      insertGlobalSymbolAt(idx, sym);
     },
-    [symbols, updateSymbols],
+    [insertGlobalSymbolAt],
   );
 
   // ── How many visible rows per pane? ──
@@ -392,6 +441,64 @@ export default function WatchlistCard({
           )}
         </div>
         <div className="flex items-center gap-0.5">
+          {/* Combined columns popover — TA scores + custom columns */}
+          <div ref={taPopoverRef} className="relative">
+            <button
+              onClick={() => setTaPopoverOpen((v) => !v)}
+              className={`rounded-sm px-1.5 py-0.5 text-[9px] font-medium transition-colors duration-75 ${
+                taTimeframes.length > 0 || customColumns.length > 0
+                  ? "bg-blue/20 text-blue hover:bg-blue/30"
+                  : "text-white/30 hover:bg-white/[0.06] hover:text-white/50"
+              }`}
+              title="Columns"
+            >
+              +
+            </button>
+            {taPopoverOpen && (
+              <div className="absolute right-0 top-full z-[120] mt-1 w-[150px] rounded-md border border-white/[0.08] bg-[#1C2128] py-1.5 shadow-xl shadow-black/40">
+                <p className="px-2.5 pb-1 pt-0.5 text-[8px] uppercase tracking-wider text-white/25">TA Scores</p>
+                {AVAILABLE_TF.map((tf) => (
+                  <label
+                    key={tf}
+                    className="flex cursor-pointer items-center gap-2 px-2.5 py-1 hover:bg-white/[0.04]"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={taTimeframes.includes(tf)}
+                      onChange={(e) => {
+                        const next = e.target.checked
+                          ? [...taTimeframes, tf]
+                          : taTimeframes.filter((t) => t !== tf);
+                        updateTaTimeframes(next);
+                      }}
+                      className="h-2.5 w-2.5 accent-blue"
+                    />
+                    <span className="font-mono text-[10px] text-white/60">{tf}</span>
+                  </label>
+                ))}
+                <div className="mx-2 my-1.5 border-t border-white/[0.06]" />
+                <p className="px-2.5 pb-1 text-[8px] uppercase tracking-wider text-white/25">Custom</p>
+                <button
+                  onClick={() => {
+                    setColumnEditor({
+                      id: `col_${Date.now()}`,
+                      label: "Score",
+                      width: 54,
+                      decimals: 0,
+                      colorize: true,
+                      expression: "changePct > 0 ? 75 : 25",
+                    });
+                    setColumnEditorIsNew(true);
+                    setTaPopoverOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[10px] text-white/40 hover:bg-white/[0.04] hover:text-white/70"
+                >
+                  <span className="text-[11px] leading-none text-white/30">+</span>
+                  Add column
+                </button>
+              </div>
+            )}
+          </div>
           <ComponentLinkMenu
             linkChannel={linkChannel}
             onSetLinkChannel={onSetLinkChannel}
@@ -426,7 +533,7 @@ export default function WatchlistCard({
                     key={col.key}
                     className={`relative select-none truncate px-1.5 text-[9px] font-medium uppercase tracking-wider cursor-pointer transition-colors duration-75 ${
                       sortCol === col.key ? "text-white/70" : "text-white/40 hover:text-white/55"
-                    } ${ci < COLUMNS.length - 1 || customColumns.length > 0 ? "border-r border-white/[0.06]" : ""}`}
+                    } ${ci < COLUMNS.length - 1 || customColumns.length > 0 || taTimeframes.length > 0 ? "border-r border-white/[0.06]" : ""}`}
                     style={{
                       width: colWidths[ci],
                       minWidth: col.minWidth,
@@ -455,7 +562,7 @@ export default function WatchlistCard({
                   <div
                     key={col.id}
                     className={`relative select-none truncate px-1.5 text-[9px] font-medium uppercase tracking-wider text-purple/70 cursor-pointer transition-colors duration-75 hover:text-purple ${
-                      ci < customColumns.length - 1 ? "border-r border-white/[0.06]" : ""
+                      ci < customColumns.length - 1 || taTimeframes.length > 0 ? "border-r border-white/[0.06]" : ""
                     }`}
                     style={{ width: col.width, minWidth: 40, textAlign: "right" }}
                     onDoubleClick={() => {
@@ -467,30 +574,24 @@ export default function WatchlistCard({
                     {col.label}
                   </div>
                 ))}
-                {/* Add custom column button */}
-                {paneIdx === 0 && (
-                  <button
-                    onClick={() => {
-                      setColumnEditor({
-                        id: `col_${Date.now()}`,
-                        label: "Score",
-                        width: 54,
-                        decimals: 0,
-                        colorize: true,
-                        expression: "changePct > 0 ? 75 : 25",
-                      });
-                      setColumnEditorIsNew(true);
-                    }}
-                    className="shrink-0 px-1 text-[9px] text-white/15 hover:text-white/40"
-                    title="Add custom column"
+                {/* TA Score column headers */}
+                {taTimeframes.map((tf, ti) => (
+                  <div
+                    key={`tah-${tf}`}
+                    className={`select-none truncate px-1 text-center text-[9px] font-medium uppercase tracking-wider text-blue/50 ${
+                      ti < taTimeframes.length - 1 ? "border-r border-white/[0.06]" : ""
+                    }`}
+                    style={{ width: TA_COL_W, minWidth: 36 }}
+                    title={`Technical score ${tf}`}
                   >
-                    +
-                  </button>
-                )}
+                    {tf}
+                  </div>
+                ))}
+
               </div>
 
               {/* Rows */}
-              <div className="flex-1 overflow-y-auto">
+              <div className="flex-1 overflow-y-auto scrollbar-none">
                 {pane.map((sym, rowIdx) => {
                   const globalIdx = paneIdx * symbolsPerPane + rowIdx;
                   return (
@@ -518,6 +619,8 @@ export default function WatchlistCard({
                       }
                       customColumns={customColumns}
                       customValues={sym ? (customColValues[sym] ?? {}) : {}}
+                      taTimeframes={taTimeframes}
+                      taScores={sym ? Object.fromEntries(techScores.get(sym) ?? new Map()) as Record<string, number | null> : {}}
                     />
                   );
                 })}
@@ -688,7 +791,7 @@ export default function WatchlistCard({
             </div>
 
             {/* Holdings list */}
-            <div className="max-h-[240px] overflow-y-auto px-2 py-2">
+            <div className="max-h-[240px] overflow-y-auto scrollbar-none px-2 py-2">
               {etfPrompt.holdings.map((h) => (
                 <label
                   key={h.symbol}
@@ -791,6 +894,8 @@ interface WatchlistRowProps {
   onContextMenu: (x: number, y: number) => void;
   customColumns: CustomColumnDef[];
   customValues: Record<string, number | string | null>;
+  taTimeframes: string[];
+  taScores: Record<string, number | null>;
 }
 
 function WatchlistRow({
@@ -808,6 +913,8 @@ function WatchlistRow({
   onContextMenu,
   customColumns,
   customValues,
+  taTimeframes,
+  taScores,
 }: WatchlistRowProps) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
@@ -1140,7 +1247,7 @@ function WatchlistRow({
 
       {/* Change % */}
       <div
-        className={`truncate ${customColumns.length > 0 ? "border-r border-white/[0.06]" : ""} px-1.5 text-right font-mono text-[10px] font-medium ${
+        className={`truncate ${customColumns.length > 0 || taTimeframes.length > 0 ? "border-r border-white/[0.06]" : ""} px-1.5 text-right font-mono text-[10px] font-medium ${
           quote ? changeColor(quote.changePct) : "text-white/30"
         }`}
         style={{ width: colWidths[3], minWidth: COLUMNS[3].minWidth }}
@@ -1161,10 +1268,35 @@ function WatchlistRow({
               isNum && col.colorize
                 ? val > 50 ? "text-green font-medium" : val < 50 ? "text-red font-medium" : "text-white/50"
                 : "text-white/50"
-            } ${ci < customColumns.length - 1 ? "border-r border-white/[0.06]" : ""}`}
+            } ${ci < customColumns.length - 1 || taTimeframes.length > 0 ? "border-r border-white/[0.06]" : ""}`}
             style={{ width: col.width, minWidth: 40 }}
           >
             {val != null ? (isNum ? (val as number).toFixed(col.decimals ?? 0) : String(val)) : "—"}
+          </div>
+        );
+      })}
+
+      {/* TA score cells */}
+      {taTimeframes.map((tf, ti) => {
+        const score = taScores[tf] ?? null;
+        return (
+          <div
+            key={`ta-${tf}`}
+            className={`truncate px-1 text-center font-mono text-[10px] font-medium ${
+              ti < taTimeframes.length - 1 ? "border-r border-white/[0.06]" : ""
+            } ${
+              score === null
+                ? "text-white/15"
+                : score > 60
+                  ? "text-green"
+                  : score < 40
+                    ? "text-red"
+                    : "text-white/40"
+            }`}
+            style={{ width: TA_COL_W, minWidth: 36 }}
+            title={`${tf} technical score: ${score ?? "no data"}`}
+          >
+            {score === null ? "—" : score}
           </div>
         );
       })}

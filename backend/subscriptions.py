@@ -10,22 +10,22 @@ from connection_pool import ConnectionPool
 
 logger = logging.getLogger(__name__)
 
-WATCHLIST_BASE_ID = 1000
 WATCHLIST_CAP = 20
-QUOTE_BASE_ID = 2000
 
 
 @dataclass
 class WatchlistSlot:
-    client_id: int
+    role: str
+    client_id: int | None = None
     symbols: set[str] = field(default_factory=set)
     tickers: dict[str, Ticker] = field(default_factory=dict)
 
 
 @dataclass
 class QuoteSlot:
-    client_id: int
+    role: str
     quote_id: str
+    client_id: int | None = None
     symbol: str | None = None
     ticker: Ticker | None = None
 
@@ -35,7 +35,7 @@ class SubscriptionManager:
         self._pool = pool
         self._watchlist_slots: list[WatchlistSlot] = []
         self._quote_slots: dict[str, QuoteSlot] = {}  # quoteId -> QuoteSlot
-        self._next_quote_id_counter = 0
+        self._next_watchlist_slot_index = 0
         self._tick_callback: callable | None = None
 
     def set_tick_callback(self, cb):
@@ -65,7 +65,7 @@ class SubscriptionManager:
         # Disconnect empty slots
         empty_slots = [s for s in self._watchlist_slots if not s.symbols]
         for slot in empty_slots:
-            await self._pool.disconnect(slot.client_id)
+            await self._pool.disconnect(slot.role)
             self._watchlist_slots.remove(slot)
 
     async def _watchlist_sub(self, symbol: str):
@@ -75,7 +75,8 @@ class SubscriptionManager:
             slot = await self._create_watchlist_slot()
 
         try:
-            ib = await self._pool.get_or_create(slot.client_id)
+            ib = await self._pool.get_or_create(slot.role)
+            slot.client_id = self._pool.get_client_id(slot.role)
             contract = Stock(symbol, "SMART", "USD")
             ticker = ib.reqMktData(contract, genericTickList="", snapshot=False)
             ticker.updateEvent += lambda t: self._on_watchlist_tick(symbol, t)
@@ -92,7 +93,7 @@ class SubscriptionManager:
         """Unsubscribe a single watchlist symbol."""
         for slot in self._watchlist_slots:
             if symbol in slot.symbols:
-                ib = self._pool.get_client(slot.client_id)
+                ib = self._pool.get_client(slot.role)
                 ticker = slot.tickers.pop(symbol, None)
                 if ib and ticker and ib.isConnected():
                     ib.cancelMktData(ticker.contract)
@@ -107,8 +108,8 @@ class SubscriptionManager:
         return None
 
     async def _create_watchlist_slot(self) -> WatchlistSlot:
-        client_id = WATCHLIST_BASE_ID + len(self._watchlist_slots)
-        slot = WatchlistSlot(client_id=client_id)
+        slot = WatchlistSlot(role=f"watchlist:{self._next_watchlist_slot_index}")
+        self._next_watchlist_slot_index += 1
         self._watchlist_slots.append(slot)
         return slot
 
@@ -129,13 +130,12 @@ class SubscriptionManager:
             await self._quote_cancel_ticker(slot)
             slot.symbol = symbol
         else:
-            client_id = QUOTE_BASE_ID + self._next_quote_id_counter
-            self._next_quote_id_counter += 1
-            slot = QuoteSlot(client_id=client_id, quote_id=quote_id, symbol=symbol)
+            slot = QuoteSlot(role=f"quote:{quote_id}", quote_id=quote_id, symbol=symbol)
             self._quote_slots[quote_id] = slot
 
         try:
-            ib = await self._pool.get_or_create(slot.client_id)
+            ib = await self._pool.get_or_create(slot.role)
+            slot.client_id = self._pool.get_client_id(slot.role)
             contract = Stock(symbol, "SMART", "USD")
             ticker = ib.reqMktData(contract, genericTickList="", snapshot=False)
             ticker.updateEvent += lambda t: self._on_quote_tick(quote_id, symbol, t)
@@ -150,12 +150,12 @@ class SubscriptionManager:
         if not slot:
             return
         await self._quote_cancel_ticker(slot)
-        await self._pool.disconnect(slot.client_id)
+        await self._pool.disconnect(slot.role)
         logger.info(f"Quote unsub: {quote_id}, disconnected client {slot.client_id}")
 
     async def _quote_cancel_ticker(self, slot: QuoteSlot):
         if slot.ticker:
-            ib = self._pool.get_client(slot.client_id)
+            ib = self._pool.get_client(slot.role)
             if ib and ib.isConnected():
                 ib.cancelMktData(slot.ticker.contract)
             slot.ticker = None
@@ -197,7 +197,6 @@ class SubscriptionManager:
         # Quotes
         old_quotes = list(self._quote_slots.items())
         self._quote_slots.clear()
-        self._next_quote_id_counter = 0
         for quote_id, slot in old_quotes:
             if slot.symbol:
                 await self.quote_subscribe(quote_id, slot.symbol)

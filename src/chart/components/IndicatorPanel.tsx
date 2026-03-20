@@ -36,7 +36,10 @@ export default function IndicatorPanel({ open, onClose, onAddIndicator }: Indica
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [open, onClose]);
 
-  const indicators = useMemo(() => Object.values(indicatorRegistry), []);
+  const indicators = useMemo(
+    () => Object.entries(indicatorRegistry).map(([key, meta]) => ({ key, ...meta })),
+    [],
+  );
 
   const filtered = useMemo(() => {
     if (!search.trim()) return indicators;
@@ -73,7 +76,7 @@ export default function IndicatorPanel({ open, onClose, onAddIndicator }: Indica
       </div>
 
       {/* Categories */}
-      <div className="max-h-[320px] overflow-y-auto">
+      <div className="max-h-[320px] overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
         {categories.map((cat) => {
           const items = filtered.filter((ind) => ind.category === cat.key);
           if (items.length === 0) return null;
@@ -84,8 +87,8 @@ export default function IndicatorPanel({ open, onClose, onAddIndicator }: Indica
               </div>
               {items.map((ind) => (
                 <button
-                  key={ind.name}
-                  onClick={() => { onAddIndicator(ind.name); onClose(); }}
+                  key={ind.key}
+                  onClick={() => { onAddIndicator(ind.key); onClose(); }}
                   className="w-full text-left px-3 py-1.5 text-[11px] text-text-secondary
                              hover:text-text-primary hover:bg-hover transition-colors duration-120
                              flex items-center justify-between"

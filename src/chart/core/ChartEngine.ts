@@ -98,10 +98,15 @@ export class ChartEngine {
     const meta = indicatorRegistry[name];
     if (!meta) return '';
     const id = `ind_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const colors: Record<string, string> = {};
+    for (const output of meta.outputs) {
+      colors[output.key] = output.color;
+    }
     const indicator: ActiveIndicator = {
       id,
       name,
       params: { ...meta.defaultParams },
+      colors,
       visible: true,
       data: [],
     };
@@ -121,6 +126,20 @@ export class ChartEngine {
     if (!ind) return;
     ind.params = { ...ind.params, ...params };
     this.computeSingleIndicator(ind);
+    this.markDirty();
+  }
+
+  updateIndicatorColor(id: string, outputKey: string, color: string) {
+    const ind = this.activeIndicators.find(i => i.id === id);
+    if (!ind) return;
+    ind.colors[outputKey] = color;
+    this.markDirty();
+  }
+
+  toggleVisibility(id: string) {
+    const ind = this.activeIndicators.find(i => i.id === id);
+    if (!ind) return;
+    ind.visible = !ind.visible;
     this.markDirty();
   }
 
@@ -202,7 +221,7 @@ export class ChartEngine {
   private getOscillatorPanes(): ActiveIndicator[] {
     return this.activeIndicators.filter(ind => {
       const meta = indicatorRegistry[ind.name];
-      return meta && meta.category === 'oscillator' && ind.visible;
+      return meta && (meta.category === 'oscillator' || meta.category === 'volume') && ind.visible;
     });
   }
 
@@ -323,7 +342,7 @@ export class ChartEngine {
 
     // Crosshair & tooltip (with indicator labels)
     this.crosshair.render(this.renderer, this.viewport, this.scaleX, this.width, this.height);
-    this.tooltip.render(this.renderer, this.viewport, this.crosshair.hit, this.activeIndicators);
+    this.tooltip.render(this.renderer, this.viewport, this.crosshair.hit);
   }
 
   private renderOverlays() {
@@ -339,6 +358,8 @@ export class ChartEngine {
         const output = meta.outputs[oi];
         if (!output || !series) continue;
 
+        const drawColor = ind.colors?.[output.key] ?? output.color;
+
         if (output.style === 'fill' && oi + 1 < ind.data.length) {
           const nextSeries = ind.data[oi + 1];
           const fillPoints: [number, number][] = [];
@@ -351,7 +372,7 @@ export class ChartEngine {
           }
           if (fillPoints.length > 1) {
             const areaPoints = [...fillPoints, ...fillPoints2.reverse()];
-            this.renderer.fillArea(areaPoints, output.color + '20');
+            this.renderer.fillArea(areaPoints, drawColor + '20');
           }
         }
 
@@ -360,7 +381,7 @@ export class ChartEngine {
             if (isNaN(series[i])) continue;
             const x = this.viewport.barToPixelX(i);
             const y = this.viewport.priceToPixelY(series[i]);
-            this.renderer.rect(x - 2, y - 2, 4, 4, output.color);
+            this.renderer.rect(x - 2, y - 2, 4, 4, drawColor);
           }
           continue;
         }
@@ -372,7 +393,7 @@ export class ChartEngine {
           points.push([this.viewport.barToPixelX(i), this.viewport.priceToPixelY(series[i])]);
         }
         if (points.length > 1) {
-          this.renderer.polyline(points, output.color, output.lineWidth || 1);
+          this.renderer.polyline(points, drawColor, output.lineWidth || 1);
         }
       }
     }
@@ -451,6 +472,8 @@ export class ChartEngine {
         const range = max - min;
         const toY = (v: number) => pane.top + ((max - v) / range) * pane.height;
 
+        const subDrawColor = ind.colors?.[output.key] ?? output.color;
+
         if (output.style === 'histogram') {
           const zeroY = toY(0);
           const barW = Math.max(1, this.viewport.barWidth * 0.6);
@@ -470,7 +493,7 @@ export class ChartEngine {
           points.push([this.viewport.barToPixelX(i), toY(series[i])]);
         }
         if (points.length > 1) {
-          this.renderer.polyline(points, output.color, output.lineWidth || 1);
+          this.renderer.polyline(points, subDrawColor, output.lineWidth || 1);
         }
       }
     });

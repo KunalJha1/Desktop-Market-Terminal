@@ -13,13 +13,17 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from pydantic import BaseModel
 from ib_insync import Ticker, util
 
 from connection_pool import ConnectionPool
 from subscriptions import SubscriptionManager
 from yahoo_provider import YahooProvider
-from historical import get_historical_bars, save_realtime_bar
+from historical import get_historical_bars, save_realtime_bar, shutdown_db, invalidate_yahoo_cache
 from prefetch import Prefetcher
+from score_worker import TechnicalsScorer, read_scores
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,8 +41,10 @@ pool: ConnectionPool | None = None
 subs: SubscriptionManager | None = None
 yahoo: YahooProvider | None = None
 prefetcher: Prefetcher | None = None
+scorer: TechnicalsScorer | None = None
 flush_task: asyncio.Task | None = None
 tws_connected: bool = False
+HISTORICAL_ROLE = "historical"
 
 # Desired subscriptions — tracked independently of provider so we can switch
 desired_watchlist: list[str] = []
@@ -47,6 +53,7 @@ desired_quotes: dict[str, str] = {}  # quoteId -> symbol
 # Real-time bar subscriptions: symbol -> set of barSize strings
 realtime_bar_subs: dict[str, set[str]] = {}
 realtime_bar_tickers: dict[str, object] = {}  # symbol -> ib_insync RealTimeBarList
+realtime_bar_roles: dict[str, str] = {}
 
 
 def _safe(v) -> float | None:
@@ -154,6 +161,17 @@ async def activate_tws():
     prefetcher.set_tws_state(True, pool)
     logger.info("Switching to TWS provider")
 
+    # Invalidate Yahoo-sourced cache for watchlist symbols so the prefetcher
+    # re-fetches them from TWS on its next cycle (TWS data overwrites Yahoo).
+    # Run in executor so the sync DB call doesn't block the event loop.
+    symbols_to_invalidate = list(desired_watchlist) if desired_watchlist else None
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, invalidate_yahoo_cache, symbols_to_invalidate)
+    logger.info(
+        f"Yahoo cache invalidated for {symbols_to_invalidate or 'all symbols'} — "
+        f"prefetcher will overwrite with TWS data"
+    )
+
     # Re-subscribe everything through IB
     if desired_watchlist:
         try:
@@ -205,7 +223,7 @@ async def activate_yahoo():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global pool, subs, yahoo, prefetcher, flush_task
+    global pool, subs, yahoo, prefetcher, scorer, flush_task
     pool = ConnectionPool(on_status_change=on_status_change)
     subs = SubscriptionManager(pool)
     subs.set_tick_callback(on_ib_tick)
@@ -214,27 +232,55 @@ async def lifespan(app: FastAPI):
     yahoo.set_tick_callback(on_yahoo_tick)
 
     prefetcher = Prefetcher()
+    scorer = TechnicalsScorer()
 
     # Start ib_insync event loop integration
     util.patchAsyncio()
 
     flush_task = asyncio.ensure_future(flush_ticks())
     prefetcher.start()
+    scorer.start()
     yield
 
     flush_task.cancel()
     prefetcher.stop()
+    scorer.stop()
     yahoo.stop()
     if pool:
         await pool.disconnect_all()
+    shutdown_db()
 
 
 app = FastAPI(lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    max_age=86400,
+)
 
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/technicals/scores")
+async def get_technical_scores(symbols: str = ""):
+    """
+    Return cached technical scores for the requested symbols.
+
+    Query param: symbols — comma-separated list, e.g. ?symbols=AAPL,MSFT
+    Returns a list of { symbol, 1m, 5m, 1h, 4h, last_updated_utc }.
+    Scores are null when there is insufficient history.
+    """
+    if not symbols:
+        return []
+    sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, read_scores, sym_list)
 
 
 @app.websocket("/ws")
@@ -288,8 +334,9 @@ async def ws_endpoint(websocket: WebSocket):
                 desired_watchlist.clear()
                 desired_watchlist.extend(symbols)
 
-                # Update prefetcher so watchlist symbols get priority
+                # Update prefetcher and scorer
                 prefetcher.set_watchlist(symbols)
+                scorer.set_symbols(symbols)
 
                 if tws_connected:
                     # Route to TWS
@@ -344,7 +391,7 @@ async def ws_endpoint(websocket: WebSocket):
                 ib_client = None
                 if tws_connected:
                     try:
-                        ib_client = await pool.get_or_create(900)  # dedicated client for historical
+                        ib_client = await pool.get_or_create(HISTORICAL_ROLE)
                     except Exception:
                         ib_client = None
 
@@ -386,7 +433,8 @@ async def ws_endpoint(websocket: WebSocket):
                 if tws_connected and symbol not in realtime_bar_tickers:
                     try:
                         from ib_insync import Stock
-                        ib_client = await pool.get_or_create(901)  # dedicated client for RT bars
+                        role = realtime_bar_roles.setdefault(symbol, f"realtime-bars:{symbol}")
+                        ib_client = await pool.get_or_create(role)
                         contract = Stock(symbol, "SMART", "USD")
                         rt_bars = ib_client.reqRealTimeBars(
                             contract, barSize=5, whatToShow="TRADES", useRTH=False
@@ -426,11 +474,17 @@ async def ws_endpoint(websocket: WebSocket):
                 realtime_bar_subs.pop(symbol, None)
 
                 rt = realtime_bar_tickers.pop(symbol, None)
+                role = realtime_bar_roles.pop(symbol, None)
                 if rt and tws_connected:
                     try:
-                        ib_client = pool.get_client(901)
+                        ib_client = pool.get_client(role) if role else None
                         if ib_client and ib_client.isConnected():
                             ib_client.cancelRealTimeBars(rt)
+                    except Exception:
+                        pass
+                if role:
+                    try:
+                        await pool.disconnect(role)
                     except Exception:
                         pass
 

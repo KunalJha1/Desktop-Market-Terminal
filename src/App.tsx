@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
 import AuthLayout from "./layouts/AuthLayout";
@@ -8,12 +9,39 @@ import Terms from "./pages/auth/Terms";
 import Dashboard from "./pages/Dashboard";
 import { LayoutProvider, useLayout } from "./lib/layout";
 import { TwsProvider } from "./lib/tws";
-import { TabProvider } from "./lib/tabs";
+import { TabProvider, useTabs } from "./lib/tabs";
+import { appWindow } from "@tauri-apps/api/window";
+import { WatchlistProvider, useWatchlist } from "./lib/watchlist";
 
 function LayoutGate({ children }: { children: React.ReactNode }) {
-  const { ready } = useLayout();
-  if (!ready) return null;
+  const { ready: layoutReady } = useLayout();
+  const { ready: tabsReady } = useTabs();
+  const { ready: watchlistReady } = useWatchlist();
+  if (!layoutReady || !tabsReady || !watchlistReady) return null;
   return <>{children}</>;
+}
+
+let isClosing = false;
+
+function CloseGuard() {
+  const { flushSave: flushLayout } = useLayout();
+  const { flushSave: flushTabs } = useTabs();
+  const { flushSave: flushWatchlist } = useWatchlist();
+
+  useEffect(() => {
+    const unlisten = appWindow.onCloseRequested(async (event) => {
+      if (isClosing) return;
+      isClosing = true;
+      event.preventDefault();
+      await Promise.all([flushLayout(), flushTabs(), flushWatchlist()]);
+      await appWindow.close();
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [flushLayout, flushTabs, flushWatchlist]);
+
+  return null;
 }
 
 function AppRoutes() {
@@ -24,16 +52,19 @@ function AppRoutes() {
   if (session) {
     return (
       <LayoutProvider>
-        <TwsProvider>
-          <LayoutGate>
-              <TabProvider>
+        <TabProvider>
+          <WatchlistProvider>
+            <TwsProvider>
+              <LayoutGate>
+                <CloseGuard />
                 <Routes>
                   <Route path="/dashboard" element={<Dashboard />} />
                   <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Routes>
-              </TabProvider>
-          </LayoutGate>
-        </TwsProvider>
+              </LayoutGate>
+            </TwsProvider>
+          </WatchlistProvider>
+        </TabProvider>
       </LayoutProvider>
     );
   }

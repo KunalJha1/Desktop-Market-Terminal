@@ -32,6 +32,7 @@ export interface ActiveIndicator {
   id: string;
   name: string;
   params: Record<string, number>;
+  colors: Record<string, string>;  // per-output color overrides keyed by output.key
   visible: boolean;
   data: number[][];  // one array per output
 }
