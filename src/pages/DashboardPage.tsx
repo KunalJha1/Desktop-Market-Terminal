@@ -28,7 +28,7 @@ export default function DashboardPage() {
     updateComponent,
     setComponentLinkChannel,
     loadFromFile,
-    saveToFile,
+    flushSave,
   } = useLayout();
 
   const tabState = getTabState(activeTabId);
@@ -84,33 +84,22 @@ export default function DashboardPage() {
     const spec = COMPONENT_TYPES.find((c) => c.type === type);
     if (!spec) return;
 
-    // Find first open x position in row 0
-    const occupied = new Set(
-      layout.components.map((c) => `${c.x},${c.y}`),
-    );
-    let x = 0;
-    let y = 0;
-    while (occupied.has(`${x},${y}`)) {
-      x += spec.defaultW;
-      if (x + spec.defaultW > layout.columns) {
-        x = 0;
-        y += spec.defaultH;
-      }
-    }
-
     const defaultConfigs: Record<string, Record<string, unknown>> = {
       quote: { symbol: "AAPL" },
       watchlist: {},
       minichart: { symbol: "AAPL", timeframe: "1D", chartType: "candlestick" },
     };
 
+    // Drop at (0,0) — user can drag it wherever they want
     addComponent(activeTabId, type, {
       w: spec.defaultW,
       h: spec.defaultH,
-      x,
-      y,
+      x: 0,
+      y: 0,
       config: defaultConfigs[type] ?? {},
     });
+    // Auto-unlock so the new component can be dragged immediately
+    if (locked) setTabLocked(activeTabId, false);
     setShowAddMenu(false);
   };
 
@@ -212,8 +201,12 @@ export default function DashboardPage() {
           linkChannel={linkChannel}
           onSetLinkChannel={(ch) => setTabLinkChannel(activeTabId, ch)}
           onAddComponent={() => setShowAddMenu((v) => !v)}
-          onLoadWorkspace={() => loadFromFile(activeTabId)}
-          onSaveWorkspace={() => saveToFile(activeTabId)}
+          onLoadWorkspace={() => {
+            void loadFromFile();
+          }}
+          onSaveWorkspace={() => {
+            void flushSave();
+          }}
         />
 
         {/* Add Component dropdown */}

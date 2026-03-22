@@ -1,18 +1,17 @@
-"""Historical bar storage (DuckDB) + fetching from TWS / Yahoo Finance."""
+"""Historical bar storage (SQLite) + fetching from TWS / Yahoo Finance."""
 
 import asyncio
 import logging
+import sqlite3
 import time
-from contextlib import asynccontextmanager
-
-import duckdb
+from datetime import date, datetime, timezone
 
 from db_utils import (
     DB_DIR,
     DB_PATH,
-    checkpoint_and_close,
     db_session as _raw_db_session,
-    get_conn as _raw_get_conn,
+    execute_many_with_retry,
+    execute_one_tx_with_retry,
     sync_db_session,
 )
 
@@ -44,7 +43,27 @@ def _get_fetch_lock(symbol: str, bar_size: str) -> asyncio.Lock:
     return _fetch_locks[key]
 
 
-def _latest_bar_ts(conn: duckdb.DuckDBPyConnection, symbol: str, table: str) -> int | None:
+def _normalize_what_to_show(what_to_show: str) -> str:
+    mode = (what_to_show or "TRADES").upper()
+    if mode not in {"TRADES", "BID", "ASK"}:
+        return "TRADES"
+    return mode
+
+
+def _table_for_series(bar_size: str, what_to_show: str) -> str:
+    base = "ohlcv_1d" if bar_size == "1d" else ("ohlcv_1m" if bar_size == "1m" else "ohlcv_5s")
+    mode = _normalize_what_to_show(what_to_show)
+    if mode == "TRADES" or base == "ohlcv_5s":
+        return base
+    return f"{base}_{mode.lower()}"
+
+
+def _cache_key_for_series(bar_size: str, what_to_show: str) -> str:
+    mode = _normalize_what_to_show(what_to_show)
+    return bar_size if mode == "TRADES" else f"{bar_size}_{mode.lower()}"
+
+
+def _latest_bar_ts(conn: sqlite3.Connection, symbol: str, table: str) -> int | None:
     """Return the Unix ms timestamp of the most recent cached bar, or None."""
     row = conn.execute(
         f"SELECT MAX(ts) FROM {table} WHERE symbol = ?", [symbol]
@@ -107,59 +126,67 @@ def _incremental_yahoo_period(last_ts_ms: int | None, default: str, is_daily: bo
         return "2y"
 
 
-def _get_conn() -> duckdb.DuckDBPyConnection:
-    """Return the singleton DuckDB connection, initialising schema on first call."""
-    global _schema_initialized
-    conn = _raw_get_conn()
-    if not _schema_initialized:
-        _ensure_schema(conn)
-        _schema_initialized = True
-    return conn
-
-
-@asynccontextmanager
-async def _db_session():
-    """Like db_utils.db_session() but also ensures the schema is initialised."""
-    async with _raw_db_session() as conn:
-        global _schema_initialized
-        if not _schema_initialized:
-            _ensure_schema(conn)
-            _schema_initialized = True
-        yield conn
-
-
-def _ensure_schema(conn: duckdb.DuckDBPyConnection):
+def _ensure_schema(conn: sqlite3.Connection):
     """Create tables + indexes on first use."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ohlcv_1m (
-            symbol   VARCHAR NOT NULL,
-            ts       BIGINT  NOT NULL,   -- Unix ms
-            open     DOUBLE  NOT NULL,
-            high     DOUBLE  NOT NULL,
-            low      DOUBLE  NOT NULL,
-            close    DOUBLE  NOT NULL,
-            volume   DOUBLE  NOT NULL,
+            symbol   TEXT    NOT NULL,
+            ts       INTEGER NOT NULL,   -- Unix ms
+            open     REAL    NOT NULL,
+            high     REAL    NOT NULL,
+            low      REAL    NOT NULL,
+            close    REAL    NOT NULL,
+            volume   REAL    NOT NULL,
             PRIMARY KEY (symbol, ts)
         )
     """)
-    # Covering index: symbol + ts descending → fast range scans for chart rendering
-    # DuckDB sorts the primary key automatically, but explicit index helps queries
-    # that filter by symbol and order by ts
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_ohlcv_1m_sym_ts
         ON ohlcv_1m (symbol, ts)
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ohlcv_1m_bid (
+            symbol   TEXT    NOT NULL,
+            ts       INTEGER NOT NULL,
+            open     REAL    NOT NULL,
+            high     REAL    NOT NULL,
+            low      REAL    NOT NULL,
+            close    REAL    NOT NULL,
+            volume   REAL    NOT NULL,
+            PRIMARY KEY (symbol, ts)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ohlcv_1m_bid_sym_ts
+        ON ohlcv_1m_bid (symbol, ts)
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ohlcv_1m_ask (
+            symbol   TEXT    NOT NULL,
+            ts       INTEGER NOT NULL,
+            open     REAL    NOT NULL,
+            high     REAL    NOT NULL,
+            low      REAL    NOT NULL,
+            close    REAL    NOT NULL,
+            volume   REAL    NOT NULL,
+            PRIMARY KEY (symbol, ts)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ohlcv_1m_ask_sym_ts
+        ON ohlcv_1m_ask (symbol, ts)
     """)
 
     # Daily bars for longer-term charts (1D, 1W, 1M timeframes)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ohlcv_1d (
-            symbol   VARCHAR NOT NULL,
-            ts       BIGINT  NOT NULL,   -- Unix ms
-            open     DOUBLE  NOT NULL,
-            high     DOUBLE  NOT NULL,
-            low      DOUBLE  NOT NULL,
-            close    DOUBLE  NOT NULL,
-            volume   DOUBLE  NOT NULL,
+            symbol   TEXT    NOT NULL,
+            ts       INTEGER NOT NULL,   -- Unix ms
+            open     REAL    NOT NULL,
+            high     REAL    NOT NULL,
+            low      REAL    NOT NULL,
+            close    REAL    NOT NULL,
+            volume   REAL    NOT NULL,
             PRIMARY KEY (symbol, ts)
         )
     """)
@@ -167,17 +194,49 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection):
         CREATE INDEX IF NOT EXISTS idx_ohlcv_1d_sym_ts
         ON ohlcv_1d (symbol, ts)
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ohlcv_1d_bid (
+            symbol   TEXT    NOT NULL,
+            ts       INTEGER NOT NULL,
+            open     REAL    NOT NULL,
+            high     REAL    NOT NULL,
+            low      REAL    NOT NULL,
+            close    REAL    NOT NULL,
+            volume   REAL    NOT NULL,
+            PRIMARY KEY (symbol, ts)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ohlcv_1d_bid_sym_ts
+        ON ohlcv_1d_bid (symbol, ts)
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ohlcv_1d_ask (
+            symbol   TEXT    NOT NULL,
+            ts       INTEGER NOT NULL,
+            open     REAL    NOT NULL,
+            high     REAL    NOT NULL,
+            low      REAL    NOT NULL,
+            close    REAL    NOT NULL,
+            volume   REAL    NOT NULL,
+            PRIMARY KEY (symbol, ts)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ohlcv_1d_ask_sym_ts
+        ON ohlcv_1d_ask (symbol, ts)
+    """)
 
     # Secondary 5s bars for active chart symbols (30-day cache per CLAUDE.md)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ohlcv_5s (
-            symbol   VARCHAR NOT NULL,
-            ts       BIGINT  NOT NULL,
-            open     DOUBLE  NOT NULL,
-            high     DOUBLE  NOT NULL,
-            low      DOUBLE  NOT NULL,
-            close    DOUBLE  NOT NULL,
-            volume   DOUBLE  NOT NULL,
+            symbol   TEXT    NOT NULL,
+            ts       INTEGER NOT NULL,
+            open     REAL    NOT NULL,
+            high     REAL    NOT NULL,
+            low      REAL    NOT NULL,
+            close    REAL    NOT NULL,
+            volume   REAL    NOT NULL,
             PRIMARY KEY (symbol, ts)
         )
     """)
@@ -189,22 +248,26 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection):
     # Metadata: track when each symbol was last fetched and from which source
     conn.execute("""
         CREATE TABLE IF NOT EXISTS fetch_meta (
-            symbol     VARCHAR NOT NULL,
-            bar_size   VARCHAR NOT NULL,
-            fetched_at BIGINT  NOT NULL,  -- Unix ms
-            source     VARCHAR NOT NULL DEFAULT 'yahoo',
+            symbol     TEXT    NOT NULL,
+            bar_size   TEXT    NOT NULL,
+            fetched_at INTEGER NOT NULL,  -- Unix ms
+            source     TEXT    NOT NULL DEFAULT 'yahoo',
             PRIMARY KEY (symbol, bar_size)
         )
     """)
-    # Migrate existing rows that lack the source column (added in this version)
-    try:
-        conn.execute("ALTER TABLE fetch_meta ADD COLUMN IF NOT EXISTS source VARCHAR DEFAULT 'yahoo'")
-    except Exception:
-        pass  # Column already exists or DuckDB version doesn't support IF NOT EXISTS here
+    conn.commit()
+
+
+def _init_schema(conn: sqlite3.Connection):
+    """Initialise schema once per process."""
+    global _schema_initialized
+    if not _schema_initialized:
+        _ensure_schema(conn)
+        _schema_initialized = True
 
 
 def _cache_fresh(
-    conn: duckdb.DuckDBPyConnection, symbol: str, bar_size: str, ttl: float = CACHE_TTL
+    conn: sqlite3.Connection, symbol: str, bar_size: str, ttl: float = CACHE_TTL
 ) -> tuple[bool, str]:
     """Check if cached data is fresh enough. Returns (is_fresh, source)."""
     row = conn.execute(
@@ -218,7 +281,7 @@ def _cache_fresh(
     return age_s < ttl, source
 
 
-def _read_cached(conn: duckdb.DuckDBPyConnection, symbol: str, limit_days: int = 5, table: str = "ohlcv_1m") -> list[dict]:
+def _read_cached(conn: sqlite3.Connection, symbol: str, limit_days: int = 5, table: str = "ohlcv_1m") -> list[dict]:
     """Read cached bars, most recent `limit_days` days."""
     cutoff_ms = int((time.time() - limit_days * 86400) * 1000)
     rows = conn.execute(
@@ -237,77 +300,83 @@ def _read_cached(conn: duckdb.DuckDBPyConnection, symbol: str, limit_days: int =
 
 
 def _write_bars(
-    conn: duckdb.DuckDBPyConnection,
+    conn: sqlite3.Connection,
     symbol: str,
     bars: list[dict],
     bar_size: str = "1m",
     source: str = "yahoo",
+    what_to_show: str = "TRADES",
 ):
     """
-    Upsert bars into DuckDB.
+    Upsert bars into SQLite.
 
     TWS writes use INSERT OR REPLACE (authoritative — always overwrites).
     Yahoo writes use INSERT OR IGNORE (gap-fill only — never overwrites TWS bars).
     """
     if not bars:
         return
-    if bar_size == "1d":
-        table = "ohlcv_1d"
-    elif bar_size == "1m":
-        table = "ohlcv_1m"
-    else:
-        table = "ohlcv_5s"
+    table = _table_for_series(bar_size, what_to_show)
+    cache_key = _cache_key_for_series(bar_size, what_to_show)
+
+    bar_params = [
+        (symbol, b["time"], b["open"], b["high"], b["low"], b["close"], b["volume"])
+        for b in bars
+    ]
 
     if source == "tws":
         # TWS is authoritative — overwrite any existing bar
-        conn.executemany(
+        execute_many_with_retry(
+            conn,
             f"""
             INSERT OR REPLACE INTO {table} (symbol, ts, open, high, low, close, volume)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            [
-                (symbol, b["time"], b["open"], b["high"], b["low"], b["close"], b["volume"])
-                for b in bars
-            ],
+            bar_params,
         )
         # TWS always updates fetch_meta unconditionally
-        conn.execute(
+        execute_one_tx_with_retry(
+            conn,
             """
             INSERT OR REPLACE INTO fetch_meta (symbol, bar_size, fetched_at, source)
             VALUES (?, ?, ?, ?)
             """,
-            [symbol, bar_size, int(time.time() * 1000), "tws"],
-        )
+                (symbol, cache_key, int(time.time() * 1000), "tws"),
+            )
     else:
         # Yahoo — gap-fill only: never overwrite bars that may be from TWS
-        conn.executemany(
+        execute_many_with_retry(
+            conn,
             f"""
             INSERT OR IGNORE INTO {table} (symbol, ts, open, high, low, close, volume)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            [
-                (symbol, b["time"], b["open"], b["high"], b["low"], b["close"], b["volume"])
-                for b in bars
-            ],
+            bar_params,
         )
         # Yahoo only updates fetch_meta if the current source is not TWS
         existing = conn.execute(
             "SELECT source FROM fetch_meta WHERE symbol = ? AND bar_size = ?",
-            [symbol, bar_size],
+            [symbol, cache_key],
         ).fetchone()
         if not existing or existing[0] != "tws":
-            conn.execute(
+            execute_one_tx_with_retry(
+                conn,
                 """
                 INSERT OR REPLACE INTO fetch_meta (symbol, bar_size, fetched_at, source)
                 VALUES (?, ?, ?, ?)
                 """,
-                [symbol, bar_size, int(time.time() * 1000), "yahoo"],
+                (symbol, cache_key, int(time.time() * 1000), "yahoo"),
             )
 
 
 # ── TWS historical fetch ─────────────────────────────────────────────
 
-async def fetch_from_tws(ib, symbol: str, duration: str = "5 D", bar_size: str = "1 min") -> list[dict]:
+async def fetch_from_tws(
+    ib,
+    symbol: str,
+    duration: str = "5 D",
+    bar_size: str = "1 min",
+    what_to_show: str = "TRADES",
+) -> list[dict]:
     """Fetch historical bars from TWS via ib_insync."""
     from ib_insync import Stock
 
@@ -317,15 +386,20 @@ async def fetch_from_tws(ib, symbol: str, duration: str = "5 D", bar_size: str =
         endDateTime="",
         durationStr=duration,
         barSizeSetting=bar_size,
-        whatToShow="TRADES",
+        whatToShow=_normalize_what_to_show(what_to_show),
         useRTH=False,
         formatDate=2,  # UTC timestamp
     )
 
     result = []
     for b in bars:
-        # ib_insync returns datetime objects; convert to Unix ms
-        ts_ms = int(b.date.timestamp() * 1000) if hasattr(b.date, 'timestamp') else int(b.date) * 1000
+        # ib_insync returns datetime for intraday, date for daily bars
+        if isinstance(b.date, datetime):
+            ts_ms = int(b.date.timestamp() * 1000)
+        elif isinstance(b.date, date):
+            ts_ms = int(datetime.combine(b.date, datetime.min.time(), tzinfo=timezone.utc).timestamp() * 1000)
+        else:
+            ts_ms = int(b.date) * 1000
         result.append({
             "time": ts_ms,
             "open": float(b.open),
@@ -394,30 +468,33 @@ async def get_historical_bars(
     tws_connected: bool = False,
     duration: str = "5 D",
     bar_size: str = "1 min",
+    what_to_show: str = "TRADES",
 ) -> tuple[list[dict], str]:
     """
     Get historical bars for a symbol. Returns (bars, source).
 
     Strategy:
     1. Acquire per-symbol lock (prevents duplicate concurrent fetches)
-    2. Check DuckDB cache — if fresh, return immediately
+    2. Check cache — if fresh, return immediately
        - If cached source is 'tws', skip Yahoo even if TWS is now disconnected
-    3. If TWS connected, fetch from TWS → save to DuckDB → return
-    4. Else, fetch from Yahoo → save to DuckDB → return
+    3. If TWS connected, fetch from TWS → save → return
+    4. Else, fetch from Yahoo → save → return
        - Yahoo uses INSERT OR IGNORE so it never overwrites TWS bars
     5. If fetch fails, return stale cache if available
     """
     is_daily = bar_size in ("1 day", "1d")
-    cache_key = "1d" if is_daily else "1m"
-    ttl = CACHE_TTL_DAILY if is_daily else CACHE_TTL
-    table = "ohlcv_1d" if is_daily else "ohlcv_1m"
     db_bar_size = "1d" if is_daily else "1m"
+    what_to_show = _normalize_what_to_show(what_to_show)
+    cache_key = _cache_key_for_series(db_bar_size, what_to_show)
+    ttl = CACHE_TTL_DAILY if is_daily else CACHE_TTL
+    table = _table_for_series(db_bar_size, what_to_show)
     lookback_days = 730 if is_daily else 7
 
     lock = _get_fetch_lock(symbol, db_bar_size)
     async with lock:
         # ── Step 1: DB read (lock held briefly) ──────────────────────────
-        async with _db_session() as conn:
+        async with _raw_db_session() as conn:
+            _init_schema(conn)
             is_fresh, cached_source = _cache_fresh(conn, symbol, cache_key, ttl)
             if is_fresh:
                 cached = _read_cached(conn, symbol, limit_days=lookback_days, table=table)
@@ -446,21 +523,30 @@ async def get_historical_bars(
                 tws_bar = "1 day" if is_daily else bar_size
                 tws_default_dur = "2 Y" if is_daily else duration
                 tws_dur = _incremental_tws_duration(last_ts_ms, tws_default_dur, is_daily)
-                fetched_bars = await fetch_from_tws(ib, symbol, tws_dur, tws_bar)
+                fetched_bars = await fetch_from_tws(ib, symbol, tws_dur, tws_bar, what_to_show)
                 if fetched_bars:
                     fetch_source = "tws"
                     logger.info(
                         f"Fetched {len(fetched_bars)} {cache_key} bars from TWS for {symbol} "
-                        f"(duration={tws_dur})"
+                        f"(duration={tws_dur}, whatToShow={what_to_show})"
                     )
             except Exception as e:
                 logger.warning(f"TWS historical fetch failed for {symbol}: {e}")
 
         if not fetched_bars:
+            if what_to_show != "TRADES":
+                async with _raw_db_session() as conn:
+                    _init_schema(conn)
+                    cached = _read_cached(conn, symbol, limit_days=lookback_days, table=table)
+                if cached:
+                    logger.info(f"Returning stale {what_to_show} cache for {symbol} ({len(cached)} bars)")
+                    return cached, "cache"
+                return [], "none"
             # If cached source is TWS and we're offline, return stale TWS data
             # rather than overwriting with Yahoo (TWS data is authoritative).
             if cached_source == "tws":
-                async with _db_session() as conn:
+                async with _raw_db_session() as conn:
+                    _init_schema(conn)
                     cached = _read_cached(conn, symbol, limit_days=lookback_days, table=table)
                 if cached:
                     logger.info(
@@ -485,12 +571,14 @@ async def get_historical_bars(
 
         # ── Step 3: DB write + read (lock held briefly) ───────────────────
         if fetched_bars:
-            async with _db_session() as conn:
-                _write_bars(conn, symbol, fetched_bars, db_bar_size, source=fetch_source)
+            async with _raw_db_session() as conn:
+                _init_schema(conn)
+                _write_bars(conn, symbol, fetched_bars, db_bar_size, source=fetch_source, what_to_show=what_to_show)
                 return _read_cached(conn, symbol, limit_days=lookback_days, table=table), fetch_source
 
         # Stale cache fallback
-        async with _db_session() as conn:
+        async with _raw_db_session() as conn:
+            _init_schema(conn)
             cached = _read_cached(conn, symbol, limit_days=lookback_days, table=table)
         if cached:
             logger.info(f"Returning stale cache for {symbol} ({len(cached)} bars)")
@@ -500,13 +588,20 @@ async def get_historical_bars(
 
 
 def save_realtime_bar(symbol: str, bar: dict):
-    """Save a single real-time bar to DuckDB (called from the RT bar callback).
+    """Save a single real-time bar to SQLite (called from the RT bar callback).
 
-    Uses the shared sync DB session so callback writes do not race async fetches
-    or executor-thread reads on Windows.
+    Uses sync_db_session so callback writes are safe from any thread.
     """
     with sync_db_session() as conn:
+        _init_schema(conn)
         _write_bars(conn, symbol, [bar], "5s", source="tws")
+
+
+def save_realtime_bar_1m(symbol: str, bar: dict):
+    """Upsert a single 1m bar to SQLite (partial bars overwrite)."""
+    with sync_db_session() as conn:
+        _init_schema(conn)
+        _write_bars(conn, symbol, [bar], "1m", source="tws")
 
 
 def invalidate_yahoo_cache(symbols: list[str] | None = None):
@@ -521,6 +616,7 @@ def invalidate_yahoo_cache(symbols: list[str] | None = None):
     """
     try:
         with sync_db_session() as conn:
+            _init_schema(conn)
             if symbols:
                 placeholders = ", ".join("?" * len(symbols))
                 conn.execute(
@@ -536,5 +632,5 @@ def invalidate_yahoo_cache(symbols: list[str] | None = None):
 
 
 def shutdown_db():
-    """Checkpoint the DuckDB WAL to ensure all writes are persisted before shutdown."""
-    checkpoint_and_close()
+    """No-op — SQLite WAL does not require explicit checkpoint on shutdown."""
+    pass

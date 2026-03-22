@@ -32,8 +32,23 @@ export class ScaleX {
 
       const label = this.formatTime(bars[i].time);
       renderer.textSmall(label, x, axisTop + TIME_AXIS_HEIGHT / 2, COLORS.textMuted, 'center');
+    }
+  }
 
-      // Subtle grid line
+  renderGrid(renderer: Renderer, viewport: Viewport, bars: OHLCVBar[], canvasHeight: number, canvasWidth: number) {
+    const axisTop = canvasHeight - TIME_AXIS_HEIGHT;
+    const priceAxisX = canvasWidth - 70;
+
+    const minPixelSpacing = 80;
+    const barsPerLabel = Math.max(1, Math.ceil(minPixelSpacing / viewport.barWidth));
+
+    const start = Math.max(0, Math.floor(viewport.startIndex));
+    const end = Math.min(bars.length, Math.ceil(viewport.endIndex));
+
+    for (let i = start; i < end; i++) {
+      if ((i - start) % barsPerLabel !== 0) continue;
+      const x = viewport.barToPixelX(i);
+      if (x < viewport.chartLeft || x > priceAxisX) continue;
       renderer.line(x, viewport.chartTop, x, axisTop, COLORS.gridLine);
     }
   }

@@ -40,7 +40,7 @@ def _load_all_symbols() -> list[str]:
 
 
 class Prefetcher:
-    """Background task that gradually populates the DuckDB with historical bars."""
+    """Background task that gradually populates the DB with historical bars."""
 
     def __init__(self):
         self._task: asyncio.Task | None = None
@@ -51,7 +51,7 @@ class Prefetcher:
         self._pool = None
 
     def set_watchlist(self, symbols: list[str]):
-        self._watchlist = list(symbols)
+        self._watchlist = [s for s in symbols if s]
 
     def set_tws_state(self, connected: bool, pool=None):
         self._tws_connected = connected
@@ -61,7 +61,7 @@ class Prefetcher:
         if self._task is not None:
             return
         logger.info(f"Prefetcher started ({len(self._all_symbols)} symbols in universe)")
-        self._task = asyncio.ensure_future(self._loop())
+        self._task = asyncio.get_running_loop().create_task(self._loop())
 
     def stop(self):
         if self._task is None:

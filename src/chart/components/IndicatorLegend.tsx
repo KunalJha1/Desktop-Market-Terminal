@@ -90,6 +90,7 @@ interface IndicatorLegendProps {
   onUpdateColor: (id: string, outputKey: string, color: string) => void;
   onRemove: (id: string) => void;
   onToggleVisibility: (id: string) => void;
+  onSetDefaultColor?: (indicatorName: string, outputKey: string, color: string) => void;
 }
 
 export default function IndicatorLegend({
@@ -99,6 +100,7 @@ export default function IndicatorLegend({
   onUpdateColor,
   onRemove,
   onToggleVisibility,
+  onSetDefaultColor,
 }: IndicatorLegendProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -327,6 +329,24 @@ export default function IndicatorLegend({
                           padding: 0,
                         }}
                       />
+                      {onSetDefaultColor && (
+                        <button
+                          onClick={() => onSetDefaultColor(ind.name, output.key, c)}
+                          style={{
+                            fontSize: 8,
+                            color: '#8B949E',
+                            fontFamily: "'JetBrains Mono', monospace",
+                            border: '1px solid #21262D',
+                            background: 'none',
+                            padding: '1px 4px',
+                            borderRadius: 2,
+                            cursor: 'pointer',
+                          }}
+                          title="Set default for new indicators"
+                        >
+                          Default
+                        </button>
+                      )}
                       {isPickerOpen && (
                         <ColorSwatchPicker
                           color={c}

@@ -79,15 +79,21 @@ class YahooProvider:
         self._tick_callback = cb
 
     def set_watchlist(self, symbols: list[str]):
-        self._watchlist = list(symbols)
+        self._watchlist = [s for s in symbols if s]
         # Trigger an immediate fetch if running, so new symbols don't wait for next poll
         if self._task is not None and symbols:
-            asyncio.ensure_future(self._fetch_and_emit())
+            try:
+                asyncio.get_running_loop().create_task(self._fetch_and_emit())
+            except RuntimeError:
+                pass
 
     def add_quote(self, quote_id: str, symbol: str):
         self._quotes[quote_id] = symbol
         if self._task is not None:
-            asyncio.ensure_future(self._fetch_and_emit())
+            try:
+                asyncio.get_running_loop().create_task(self._fetch_and_emit())
+            except RuntimeError:
+                pass
 
     def remove_quote(self, quote_id: str):
         self._quotes.pop(quote_id, None)
@@ -96,7 +102,7 @@ class YahooProvider:
         if self._task is not None:
             return
         logger.info("Yahoo provider started")
-        self._task = asyncio.ensure_future(self._poll_loop())
+        self._task = asyncio.get_running_loop().create_task(self._poll_loop())
 
     def stop(self):
         if self._task is None:

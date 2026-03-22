@@ -2,9 +2,10 @@ import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
 import { ChartEngine } from '../core/ChartEngine';
 import { useChartData } from '../hooks/useChartData';
 import { indicatorRegistry } from '../indicators/registry';
-import type { Timeframe, ChartType, ActiveIndicator } from '../types';
+import type { Timeframe, ChartType, ActiveIndicator, YScaleMode } from '../types';
 import { useTws } from '../../lib/tws';
-import { X, ChevronDown, Search, TrendingUp } from 'lucide-react';
+import { X, ChevronDown, Search, TrendingUp, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import IndicatorLegend from './IndicatorLegend';
 
 interface MiniChartProps {
   config: Record<string, unknown>;
@@ -59,6 +60,7 @@ export default function MiniChart({
   const symbol = (config.symbol as string) || 'AAPL';
   const timeframe = (config.timeframe as Timeframe) || '5m';
   const chartType = (config.chartType as ChartType) || 'candlestick';
+  const yScaleMode = (config.yScaleMode as YScaleMode) || 'auto';
 
   const [showLinkMenu, setShowLinkMenu] = useState(false);
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
@@ -71,13 +73,13 @@ export default function MiniChart({
   const indicatorSearchRef = useRef<HTMLInputElement>(null);
 
   // Pull real data from the sidecar (same path as ChartPage)
-  const { status, sidecarWS } = useTws();
-  const { bars } = useChartData({
+  const { sidecarPort } = useTws();
+  const { bars, source } = useChartData({
     symbol,
     timeframe,
-    sidecarWS,
-    twsConnected: status === 'connected',
+    sidecarPort,
   });
+  const stopperPx = (config.stopperPx as number) ?? 80;
 
   // Price info
   const lastBar = bars.length > 0 ? bars[bars.length - 1] : null;
@@ -132,6 +134,19 @@ export default function MiniChart({
     engineRef.current?.setTimeframe(timeframe);
   }, [timeframe]);
 
+  // Push Y-scale mode to engine
+  useEffect(() => {
+    engineRef.current?.setYScaleMode(yScaleMode);
+  }, [yScaleMode]);
+
+  // Live mode + stopper
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.setLiveMode(source === 'tws');
+    engine.setStopperPx(stopperPx);
+  }, [source, stopperPx]);
+
   // Close dropdowns on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -169,19 +184,51 @@ export default function MiniChart({
     setShowChartTypeMenu(false);
   };
 
+  const setYScaleModeValue = (mode: YScaleMode) => {
+    onConfigChange({ ...config, yScaleMode: mode });
+  };
+
   const addIndicator = (name: string) => {
     const engine = engineRef.current;
     if (!engine) return;
-    engine.addIndicator(name);
+    const id = engine.addIndicator(name);
+    if (id) {
+      const defaults =
+        (config.indicatorColorDefaults as Record<string, Record<string, string>> | undefined)?.[name];
+      if (defaults) {
+        for (const [outputKey, color] of Object.entries(defaults)) {
+          engine.updateIndicatorColor(id, outputKey, color);
+        }
+      }
+    }
     syncIndicators();
-    setShowIndicatorMenu(false);
-    setIndicatorSearch('');
   };
 
   const removeIndicator = (id: string) => {
     const engine = engineRef.current;
     if (!engine) return;
     engine.removeIndicator(id);
+    syncIndicators();
+  };
+
+  const updateIndicatorParams = (id: string, params: Record<string, number>) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.updateIndicatorParams(id, params);
+    syncIndicators();
+  };
+
+  const updateIndicatorColor = (id: string, outputKey: string, color: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.updateIndicatorColor(id, outputKey, color);
+    syncIndicators();
+  };
+
+  const toggleIndicatorVisibility = (id: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.toggleVisibility(id);
     syncIndicators();
   };
 
@@ -192,7 +239,10 @@ export default function MiniChart({
   };
 
   // Filtered indicators for search
-  const allIndicators = useMemo(() => Object.values(indicatorRegistry), []);
+  const allIndicators = useMemo(
+    () => Object.entries(indicatorRegistry).map(([key, meta]) => ({ key, ...meta })),
+    [],
+  );
   const filteredIndicators = useMemo(() => {
     if (!indicatorSearch.trim()) return allIndicators;
     const q = indicatorSearch.toLowerCase();
@@ -202,6 +252,9 @@ export default function MiniChart({
   }, [indicatorSearch, allIndicators]);
 
   const currentChartType = CHART_TYPES.find((ct) => ct.value === chartType);
+  const emptyScripts = useMemo(() => new Map(), []);
+  const indicatorColorDefaults =
+    (config.indicatorColorDefaults as Record<string, Record<string, string>> | undefined) ?? {};
 
   return (
     <div
@@ -511,11 +564,11 @@ export default function MiniChart({
                           {cat.label}
                         </div>
                         {items.map((ind) => {
-                          const isActive = activeIndicators.some((ai) => ai.name === ind.name);
+                          const isActive = activeIndicators.some((ai) => ai.name === ind.key);
                           return (
                             <button
-                              key={ind.name}
-                              onClick={() => addIndicator(ind.name)}
+                              key={ind.key}
+                              onClick={() => addIndicator(ind.key)}
                               className="flex items-center justify-between w-full px-2 py-1 hover:bg-[#1C2128] text-left"
                               style={{
                                 fontFamily: '"JetBrains Mono", monospace',
@@ -550,6 +603,92 @@ export default function MiniChart({
               </div>
             )}
           </div>
+
+          {/* Zoom controls */}
+          <button
+            onClick={() => engineRef.current?.zoomOut()}
+            className="flex items-center justify-center hover:bg-[#1C2128]"
+            style={{
+              width: 16,
+              height: 16,
+              borderRadius: 2,
+              border: 'none',
+              background: 'transparent',
+              color: '#8B949E',
+              cursor: 'pointer',
+            }}
+            title="Zoom out"
+          >
+            <ZoomOut size={10} />
+          </button>
+          <button
+            onClick={() => engineRef.current?.zoomIn()}
+            className="flex items-center justify-center hover:bg-[#1C2128]"
+            style={{
+              width: 16,
+              height: 16,
+              borderRadius: 2,
+              border: 'none',
+              background: 'transparent',
+              color: '#8B949E',
+              cursor: 'pointer',
+            }}
+            title="Zoom in"
+          >
+            <ZoomIn size={10} />
+          </button>
+          <button
+            onClick={() => engineRef.current?.resetZoom()}
+            className="flex items-center justify-center hover:bg-[#1C2128]"
+            style={{
+              width: 16,
+              height: 16,
+              borderRadius: 2,
+              border: 'none',
+              background: 'transparent',
+              color: '#8B949E',
+              cursor: 'pointer',
+            }}
+            title="Reset zoom"
+          >
+            <RotateCcw size={10} />
+          </button>
+
+          {source === 'tws' && (
+            <div className="flex items-center gap-0.5 ml-1">
+              <span
+                style={{
+                  fontFamily: '"JetBrains Mono", monospace',
+                  fontSize: 8,
+                  color: '#8B949E',
+                }}
+              >
+                Stop
+              </span>
+              <input
+                type="number"
+                min={0}
+                max={200}
+                value={stopperPx}
+                onChange={(e) => {
+                  const next = Math.max(0, Math.min(200, Number(e.target.value) || 0));
+                  onConfigChange({ ...config, stopperPx: next });
+                }}
+                style={{
+                  width: 36,
+                  background: 'transparent',
+                  border: 'none',
+                  borderBottom: '1px solid #21262D',
+                  outline: 'none',
+                  fontFamily: '"JetBrains Mono", monospace',
+                  fontSize: 8,
+                  color: '#8B949E',
+                  textAlign: 'right',
+                  padding: 0,
+                }}
+              />
+            </div>
+          )}
 
           {/* Separator */}
           <div style={{ width: 1, height: 12, backgroundColor: '#21262D', margin: '0 1px' }} />
@@ -660,6 +799,123 @@ export default function MiniChart({
           ref={canvasRef}
           className="absolute inset-0"
           style={{ cursor: 'crosshair' }}
+        />
+        <div
+          style={{
+            position: 'absolute',
+            right: 6,
+            bottom: source === 'tws' ? 24 : 4,
+            display: 'flex',
+            gap: 4,
+            padding: '1px 3px',
+            backgroundColor: 'rgba(13,17,23,0.7)',
+            border: '1px solid rgba(33,38,45,0.7)',
+            borderRadius: 3,
+            backdropFilter: 'blur(2px)',
+          }}
+        >
+          <button
+            onClick={() => setYScaleModeValue('auto')}
+            style={{
+              fontFamily: '"JetBrains Mono", monospace',
+              fontSize: 8,
+              padding: '1px 3px',
+              borderRadius: 2,
+              border: 'none',
+              cursor: 'pointer',
+              backgroundColor: yScaleMode === 'auto' ? '#1A56DB' : 'transparent',
+              color: yScaleMode === 'auto' ? '#E6EDF3' : '#8B949E',
+              lineHeight: 1,
+            }}
+            title="Auto scale"
+          >
+            A
+          </button>
+          <button
+            onClick={() => setYScaleModeValue('log')}
+            style={{
+              fontFamily: '"JetBrains Mono", monospace',
+              fontSize: 8,
+              padding: '1px 3px',
+              borderRadius: 2,
+              border: 'none',
+              cursor: 'pointer',
+              backgroundColor: yScaleMode === 'log' ? '#1A56DB' : 'transparent',
+              color: yScaleMode === 'log' ? '#E6EDF3' : '#8B949E',
+              lineHeight: 1,
+            }}
+            title="Log scale"
+          >
+            L
+          </button>
+        </div>
+        {source === 'tws' && (
+          <div
+            style={{
+              position: 'absolute',
+              right: 6,
+              bottom: 4,
+              height: 16,
+              padding: '0 6px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              backgroundColor: 'rgba(13,17,23,0.7)',
+              border: '1px solid rgba(33,38,45,0.7)',
+              borderRadius: 3,
+              backdropFilter: 'blur(2px)',
+            }}
+          >
+            <span
+              style={{
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 8,
+                color: '#8B949E',
+              }}
+            >
+              Stop
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={200}
+              step={2}
+              value={stopperPx}
+              onChange={(e) => {
+                onConfigChange({ ...config, stopperPx: Number(e.target.value) });
+              }}
+              style={{ width: 70 }}
+            />
+            <span
+              style={{
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 8,
+                color: '#8B949E',
+              }}
+            >
+              {stopperPx}px
+            </span>
+          </div>
+        )}
+        <IndicatorLegend
+          indicators={activeIndicators}
+          activeScripts={emptyScripts}
+          onUpdateParams={updateIndicatorParams}
+          onUpdateColor={updateIndicatorColor}
+          onRemove={removeIndicator}
+          onToggleVisibility={toggleIndicatorVisibility}
+          onSetDefaultColor={(indicatorName, outputKey, color) => {
+            onConfigChange({
+              ...config,
+              indicatorColorDefaults: {
+                ...indicatorColorDefaults,
+                [indicatorName]: {
+                  ...(indicatorColorDefaults[indicatorName] ?? {}),
+                  [outputKey]: color,
+                },
+              },
+            });
+          }}
         />
       </div>
     </div>

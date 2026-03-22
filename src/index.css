@@ -11,6 +11,60 @@
   display: none;
 }
 
+.scrollbar-dark {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) #0d1117;
+}
+
+.scrollbar-dark::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.scrollbar-dark::-webkit-scrollbar-track {
+  background: #0d1117;
+}
+
+.scrollbar-dark::-webkit-scrollbar-thumb {
+  border: 2px solid #0d1117;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.scrollbar-dark::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.scrollbar-watchlist {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.scrollbar-watchlist::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.scrollbar-watchlist::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-watchlist::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  background-clip: padding-box;
+}
+
+.scrollbar-watchlist::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28);
+  background-clip: padding-box;
+}
+
+.scrollbar-watchlist::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -23,6 +77,8 @@ body,
   height: 100%;
   width: 100%;
   overflow: hidden;
+  background-color: #0D1117;
+  color: #e6edf3;
   font-family: "Inter", "Geist Sans", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

@@ -24,20 +24,24 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   const [timeframe, setTimeframe] = useState<Timeframe>(persisted?.timeframe ?? '1D');
   const [chartType, setChartType] = useState<ChartType>(persisted?.chartType ?? 'candlestick');
   const [linkChannel, setLinkChannel] = useState<number | null>(persisted?.linkChannel ?? null);
+  const [stopperPx, setStopperPx] = useState<number>(persisted?.stopperPx ?? 80);
+  const [indicatorColorDefaults, setIndicatorColorDefaults] = useState<Record<string, Record<string, string>>>(
+    persisted?.indicatorColorDefaults ?? {},
+  );
   const [indicatorPanelOpen, setIndicatorPanelOpen] = useState(false);
   const [scriptEditorOpen, setScriptEditorOpen] = useState(false);
   const [activeIndicators, setActiveIndicators] = useState<ActiveIndicator[]>([]);
   const [activeScripts, setActiveScripts] = useState<Map<string, ScriptResult>>(new Map());
+  const restoredIndicatorsRef = useRef(false);
 
   const engineRef = useRef<ChartEngine | null>(null);
 
   // TWS data hook
-  const { status, sidecarWS } = useTws();
+  const { sidecarPort } = useTws();
   const { bars, loading, source } = useChartData({
     symbol,
     timeframe,
-    sidecarWS,
-    twsConnected: status === 'connected',
+    sidecarPort,
   });
 
   // Subscribe to link bus for symbol changes
@@ -52,15 +56,32 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   // Persist chart state on changes
   useEffect(() => {
     if (!tabId) return;
-    saveChartState(tabId, { symbol, timeframe, chartType, linkChannel });
-  }, [tabId, symbol, timeframe, chartType, linkChannel]);
+    saveChartState(tabId, {
+      symbol,
+      timeframe,
+      chartType,
+      linkChannel,
+      indicators: activeIndicators.map((indicator) => indicator.name),
+      stopperPx,
+      indicatorColorDefaults,
+    });
+  }, [tabId, symbol, timeframe, chartType, linkChannel, activeIndicators, stopperPx, indicatorColorDefaults]);
 
   // Re-add persisted indicators once engine is ready
   useEffect(() => {
-    if (!persisted?.indicators || !engineRef.current) return;
+    if (restoredIndicatorsRef.current || !engineRef.current || !persisted?.indicators?.length) return;
+    restoredIndicatorsRef.current = true;
     const engine = engineRef.current;
     for (const indName of persisted.indicators) {
-      engine.addIndicator(indName);
+      const id = engine.addIndicator(indName);
+      if (id) {
+        const defaults = indicatorColorDefaults[indName];
+        if (defaults) {
+          for (const [outputKey, color] of Object.entries(defaults)) {
+            engine.updateIndicatorColor(id, outputKey, color);
+          }
+        }
+      }
     }
     setActiveIndicators([...engine.getActiveIndicators()]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -91,9 +112,15 @@ export default function ChartPage({ tabId }: ChartPageProps) {
     if (!engine) return;
     const id = engine.addIndicator(name);
     if (id) {
+      const defaults = indicatorColorDefaults[name];
+      if (defaults) {
+        for (const [outputKey, color] of Object.entries(defaults)) {
+          engine.updateIndicatorColor(id, outputKey, color);
+        }
+      }
       setActiveIndicators([...engine.getActiveIndicators()]);
     }
-  }, []);
+  }, [indicatorColorDefaults]);
 
   const handleRemoveIndicator = useCallback((id: string) => {
     const engine = engineRef.current;
@@ -121,6 +148,16 @@ export default function ChartPage({ tabId }: ChartPageProps) {
     if (!engine) return;
     engine.updateIndicatorColor(id, outputKey, color);
     setActiveIndicators([...engine.getActiveIndicators()]);
+  }, []);
+
+  const handleSetDefaultColor = useCallback((indicatorName: string, outputKey: string, color: string) => {
+    setIndicatorColorDefaults((prev) => ({
+      ...prev,
+      [indicatorName]: {
+        ...(prev[indicatorName] ?? {}),
+        [outputKey]: color,
+      },
+    }));
   }, []);
 
   const handleRunScript = useCallback((id: string, src: string): ScriptResult => {
@@ -158,6 +195,11 @@ export default function ChartPage({ tabId }: ChartPageProps) {
         loading={loading}
         linkChannel={linkChannel}
         onLinkChannelChange={handleLinkChannelChange}
+        stopperPx={stopperPx}
+        onStopperPxChange={setStopperPx}
+        onZoomIn={() => engineRef.current?.zoomIn()}
+        onZoomOut={() => engineRef.current?.zoomOut()}
+        onZoomReset={() => engineRef.current?.resetZoom()}
       />
 
       <div className="flex flex-1 overflow-hidden relative">
@@ -167,6 +209,9 @@ export default function ChartPage({ tabId }: ChartPageProps) {
           timeframe={timeframe}
           engineRef={engineRef}
           activeScripts={activeScripts}
+          liveMode={source === 'tws'}
+          stopperPx={stopperPx}
+          onStopperPxChange={setStopperPx}
         />
 
         <IndicatorLegend
@@ -176,6 +221,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
           onUpdateColor={handleUpdateColor}
           onRemove={handleRemoveIndicator}
           onToggleVisibility={handleToggleVisibility}
+          onSetDefaultColor={handleSetDefaultColor}
         />
 
         <ScriptEditor

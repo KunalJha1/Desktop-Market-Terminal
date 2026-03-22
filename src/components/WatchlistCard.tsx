@@ -1,13 +1,22 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { X } from "lucide-react";
+import { useState, useRef, useCallback, useEffect, useMemo, type MutableRefObject } from "react";
+import { createPortal } from "react-dom";
+import { X, GripVertical } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
 import { getChannelById } from "../lib/link-channels";
 import { linkBus } from "../lib/link-bus";
-import { getSymbolName, ALL_SYMBOLS, getEtfInfo } from "../lib/market-data";
+import { getSymbolName, SEARCHABLE_SYMBOLS, getEtfInfo } from "../lib/market-data";
 import type { Quote, EtfHolding } from "../lib/market-data";
-import { useWatchlistData } from "../lib/use-market-data";
+import { useWatchlistData, type SymbolStatus } from "../lib/use-market-data";
 import { useTechScores } from "../lib/use-technicals";
+import { useIndicatorValues } from "../lib/use-indicators";
 import { useWatchlist } from "../lib/watchlist";
+import {
+  type CustomColumnDef,
+  type ExpressionColumn,
+  migrateColumn,
+} from "../lib/custom-column-types";
+import ColumnPopover from "./watchlist/ColumnPopover";
+import ColumnBuilderModal from "./watchlist/ColumnBuilderModal";
 
 // ─── Column definitions ────────────────────────────────────────────
 interface ColDef {
@@ -28,19 +37,25 @@ const COLUMNS: ColDef[] = [
 const ROW_H = 24;
 const HEADER_H = 22;
 const TA_COL_W = 44;
+const ROW_GRIP_W = 16;
+const PANE_CHROME_W = 8;
+const PANE_GAP = 6;
+const HEADER_TINT_PRESETS: ReadonlyArray<{ label: string; value: string | null }> = [
+  { label: "Default", value: null },
+  { label: "Blue", value: "#7cc7ff" },
+  { label: "Green", value: "#7ee787" },
+  { label: "Amber", value: "#f2cc60" },
+  { label: "Red", value: "#ff7b72" },
+  { label: "Pink", value: "#f778ba" },
+];
+type ColHeaderMenuState =
+  | { x: number; y: number; type: "custom"; colId: string }
+  | { x: number; y: number; type: "ta"; tf: string };
 
-const AVAILABLE_TF = ["5m", "15m", "1h", "4h", "1d", "1w"] as const;
-
-// ─── Custom scripted columns ────────────────────────────────────────
-export interface CustomColumnDef {
-  id: string;
-  label: string;
-  width: number;
-  decimals: number;
-  colorize: boolean; // color green > 50, red < 50
-  /** JavaScript expression. Available vars: last, bid, ask, open, high, low, prevClose, change, changePct, volume, spread, symbol */
-  expression: string;
-}
+type HeaderTintConfig = {
+  custom?: Record<string, string>;
+  ta?: Record<string, string>;
+};
 
 function evalCustomColumn(expr: string, quote: Quote | null, symbol: string): number | string | null {
   if (!quote) return null;
@@ -100,29 +115,33 @@ export default function WatchlistCard({
   const {
     symbols,
     setSymbols,
-    addSymbol: addGlobalSymbol,
-    removeSymbol: removeGlobalSymbol,
-    replaceSymbol: replaceGlobalSymbol,
     insertSymbolAt: insertGlobalSymbolAt,
   } = useWatchlist();
   const savedColWidths = config.columnWidths as number[] | undefined;
+  const savedTaColWidths = config.taColumnWidths as Record<string, number> | undefined;
   const taTimeframes: string[] = (config.taTimeframes as string[]) ?? [];
+  const savedHeaderTints = (config.headerTints as HeaderTintConfig | undefined) ?? {};
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
 
+  const nonEmptySymbols = useMemo(() => symbols.filter((sym) => sym.trim() !== ""), [symbols]);
+
   // Live market data
-  const watchlistData = useWatchlistData(symbols);
+  const { quotes: watchlistData, status: symbolStatus } = useWatchlistData(nonEmptySymbols);
 
   // Technical analysis scores (polled every 60s)
-  const techScores = useTechScores(symbols, taTimeframes);
+  const techScores = useTechScores(nonEmptySymbols, taTimeframes);
 
   // TA timeframe selector popover
   const [taPopoverOpen, setTaPopoverOpen] = useState(false);
   const taPopoverRef = useRef<HTMLDivElement>(null);
+  const taPopoverPanelRef = useRef<HTMLDivElement>(null);
 
   // ── Sorting ──
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  const [selectionAnchorIdx, setSelectionAnchorIdx] = useState<number | null>(null);
 
   const handleSort = useCallback((key: string) => {
     if (sortCol === key) {
@@ -133,9 +152,14 @@ export default function WatchlistCard({
     }
   }, [sortCol]);
 
+  const clearSort = useCallback(() => {
+    setSortCol(null);
+    setSortDir("asc");
+  }, []);
+
   const sortedSymbols = useMemo(() => {
     if (!sortCol) return symbols;
-    const sorted = [...symbols].sort((a, b) => {
+    const sorted = [...nonEmptySymbols].sort((a, b) => {
       if (sortCol === "symbol") return a.localeCompare(b);
       const qa = watchlistData.get(a);
       const qb = watchlistData.get(b);
@@ -144,7 +168,135 @@ export default function WatchlistCard({
       return va - vb;
     });
     return sortDir === "desc" ? sorted.reverse() : sorted;
-  }, [symbols, sortCol, sortDir, watchlistData]);
+  }, [nonEmptySymbols, sortCol, sortDir, watchlistData, symbols]);
+
+  // ── Drag-to-reorder (mouse-event based, no HTML5 DnD) ──
+  const rowsAreaRef = useRef<HTMLDivElement>(null);
+  const [dragState, setDragState] = useState<{
+    srcIdx: number;
+    symbol: string;
+    mouseX: number;
+    mouseY: number;
+  } | null>(null);
+  const [insertBeforeIdx, setInsertBeforeIdx] = useState<number | null>(null);
+  // Synchronous mutable refs — updated directly (not via React state) so onUp always reads fresh values
+  const dragSrcIdxRef = useRef<number | null>(null);
+  const dragInsertBeforeRef = useRef<number | null>(null);
+  const paneScrollRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const symbolsPerPaneRef = useRef(0);
+  const symbolsRef = useRef(symbols);
+  symbolsRef.current = symbols;
+
+  const moveSymbolToSlot = useCallback(
+    (current: string[], srcIdx: number, dstIdx: number) => {
+      if (srcIdx < 0 || srcIdx >= current.length) return current;
+      const item = current[srcIdx];
+      if (!item) return current;
+
+      const next = [...current];
+      const targetHasSymbol = dstIdx < next.length && next[dstIdx]?.trim() !== "";
+
+      if (!targetHasSymbol) {
+        if (dstIdx === srcIdx) return current;
+        next[srcIdx] = "";
+        if (dstIdx >= next.length) {
+          for (let i = next.length; i < dstIdx; i += 1) {
+            next[i] = "";
+          }
+        }
+        next[dstIdx] = item;
+        return next;
+      }
+
+      if (dstIdx === srcIdx) return current;
+
+      next[srcIdx] = "";
+
+      let carry = item;
+      let insertIdx = dstIdx;
+      while (true) {
+        if (insertIdx >= next.length) {
+          next.push(carry);
+          break;
+        }
+
+        const displaced = next[insertIdx];
+        next[insertIdx] = carry;
+
+        if (!displaced) break;
+
+        carry = displaced;
+        insertIdx += 1;
+      }
+
+      return next;
+    },
+    [],
+  );
+
+  const startRowDrag = useCallback(
+    (e: React.MouseEvent, srcIdx: number, symbol: string) => {
+      if (sortCol) return; // no drag when sorted
+      e.preventDefault();
+      e.stopPropagation();
+
+      dragSrcIdxRef.current = srcIdx;
+      dragInsertBeforeRef.current = srcIdx;
+
+      setDragState({ srcIdx, symbol, mouseX: e.clientX, mouseY: e.clientY });
+      setInsertBeforeIdx(srcIdx);
+
+      const onMove = (ev: MouseEvent) => {
+        setDragState((prev) =>
+          prev ? { ...prev, mouseX: ev.clientX, mouseY: ev.clientY } : null,
+        );
+
+        const activePane = paneScrollRefs.current.find((paneEl) => {
+          if (!paneEl) return false;
+          const rect = paneEl.getBoundingClientRect();
+          return ev.clientX >= rect.left && ev.clientX <= rect.right && ev.clientY >= rect.top && ev.clientY <= rect.bottom;
+        });
+
+        const fallbackPane = rowsAreaRef.current;
+        const area = activePane ?? fallbackPane;
+        if (!area) return;
+
+        const paneIdx = paneScrollRefs.current.findIndex((paneEl) => paneEl === area);
+        const resolvedPaneIdx = paneIdx >= 0 ? paneIdx : 0;
+        const rect = area.getBoundingClientRect();
+        const relY = ev.clientY - rect.top + area.scrollTop;
+        const symbolsPerPane = Math.max(1, symbolsPerPaneRef.current);
+        const localIdx = Math.max(0, Math.min(Math.round(relY / ROW_H), symbolsPerPane));
+        const idx = resolvedPaneIdx * symbolsPerPane + localIdx;
+        // Update synchronous ref first — guaranteed fresh in onUp
+        dragInsertBeforeRef.current = idx;
+        setInsertBeforeIdx(idx);
+      };
+
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        const src = dragSrcIdxRef.current;
+        const dst = dragInsertBeforeRef.current;
+        dragSrcIdxRef.current = null;
+        dragInsertBeforeRef.current = null;
+        setDragState(null);
+        setInsertBeforeIdx(null);
+        if (src === null || dst === null) return;
+        const syms = symbolsRef.current;
+        if (src < 0 || src >= syms.length) return;
+        // Clamp dst to valid range (empty rows beyond end → append at end)
+        const clampedDst = Math.min(dst, syms.length);
+        const next = moveSymbolToSlot(syms, src, clampedDst);
+        if (next === syms) return;
+        setSymbols(next);
+      };
+
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [sortCol, setSymbols, moveSymbolToSlot],
+  );
 
   // ── Context menu state ──
   const [contextMenu, setContextMenu] = useState<{
@@ -152,6 +304,7 @@ export default function WatchlistCard({
     y: number;
     globalIdx: number;
     isEmpty: boolean;
+    symbol: string;
   } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
@@ -167,10 +320,21 @@ export default function WatchlistCard({
   } | null>(null);
 
   // ── Custom scripted columns ──
-  const savedCustomCols = (config.customColumns as CustomColumnDef[] | undefined) ?? [];
+  const savedCustomCols = ((config.customColumns as Record<string, unknown>[] | undefined) ?? []).map(migrateColumn);
   const [customColumns, setCustomColumns] = useState<CustomColumnDef[]>(savedCustomCols);
   const [columnEditor, setColumnEditor] = useState<CustomColumnDef | null>(null);
   const [columnEditorIsNew, setColumnEditorIsNew] = useState(false);
+  const [builderKind, setBuilderKind] = useState<"score" | "crossover" | "indicator" | "expression">("score");
+
+  // ── TA column widths ──
+  const [taColWidths, setTaColWidths] = useState<Record<string, number>>(
+    savedTaColWidths ?? {},
+  );
+  const [headerTints, setHeaderTints] = useState<HeaderTintConfig>(savedHeaderTints);
+
+  // ── Column header context menu ──
+  const [colHeaderMenu, setColHeaderMenu] = useState<ColHeaderMenuState | null>(null);
+  const colHeaderMenuRef = useRef<HTMLDivElement>(null);
 
   // ── Dismiss context menu ──
   useEffect(() => {
@@ -190,11 +354,34 @@ export default function WatchlistCard({
     };
   }, [contextMenu]);
 
+  // ── Dismiss column header context menu ──
+  useEffect(() => {
+    if (!colHeaderMenu) return;
+    const handleClick = (e: MouseEvent) => {
+      if (colHeaderMenuRef.current && !colHeaderMenuRef.current.contains(e.target as Node))
+        setColHeaderMenu(null);
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setColHeaderMenu(null);
+    };
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [colHeaderMenu]);
+
   // ── Dismiss TA popover on outside click / Escape ──
   useEffect(() => {
     if (!taPopoverOpen) return;
     const handleClick = (e: MouseEvent) => {
-      if (taPopoverRef.current && !taPopoverRef.current.contains(e.target as Node))
+      const target = e.target as Node;
+      if (
+        taPopoverRef.current
+        && !taPopoverRef.current.contains(target)
+        && !taPopoverPanelRef.current?.contains(target)
+      )
         setTaPopoverOpen(false);
     };
     const handleKey = (e: KeyboardEvent) => {
@@ -234,10 +421,21 @@ export default function WatchlistCard({
   const persistCustomColumns = useCallback(
     (cols: CustomColumnDef[]) => {
       setCustomColumns(cols);
-      persistConfig({ columnWidths: colWidths, customColumns: cols });
+      persistConfig({ columnWidths: colWidths, customColumns: cols, taColumnWidths: taColWidths, headerTints });
     },
-    [colWidths, persistConfig],
+    [colWidths, taColWidths, headerTints, persistConfig],
   );
+
+  const persistHeaderTints = useCallback(
+    (next: HeaderTintConfig) => {
+      setHeaderTints(next);
+      persistConfig({ columnWidths: colWidths, customColumns, taColumnWidths: taColWidths, headerTints: next });
+    },
+    [colWidths, customColumns, taColWidths, persistConfig],
+  );
+
+  // Fetch indicator values for non-expression custom columns
+  const indicatorValues = useIndicatorValues(nonEmptySymbols, customColumns, watchlistData);
 
   // Compute custom column values for all symbols
   const customColValues = useMemo(() => {
@@ -245,13 +443,19 @@ export default function WatchlistCard({
     for (const sym of symbols) {
       const quote = watchlistData.get(sym) ?? null;
       const vals: Record<string, number | string | null> = {};
+      const indVals = indicatorValues.get(sym);
       for (const col of customColumns) {
-        vals[col.id] = evalCustomColumn(col.expression, quote, sym);
+        if (col.kind === "expression") {
+          vals[col.id] = evalCustomColumn((col as ExpressionColumn).expression, quote, sym);
+        } else {
+          // indicator, crossover, score — values come from useIndicatorValues
+          vals[col.id] = indVals?.get(col.id) ?? null;
+        }
       }
       result[sym] = vals;
     }
     return result;
-  }, [symbols, watchlistData, customColumns]);
+  }, [symbols, watchlistData, customColumns, indicatorValues]);
 
   // Persist column widths on change
   const persistColWidths = useCallback(
@@ -261,7 +465,7 @@ export default function WatchlistCard({
     [persistConfig],
   );
 
-  // ── Column resize drag ──
+  // ── Column resize drag (built-in columns) ──
   const handleColResize = useCallback(
     (colIdx: number, e: React.MouseEvent) => {
       e.preventDefault();
@@ -294,16 +498,109 @@ export default function WatchlistCard({
     [colWidths, persistColWidths],
   );
 
+  // ── Custom column resize drag ──
+  const handleCustomColResize = useCallback(
+    (colId: string, startWidth: number, e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+
+      const onMove = (ev: MouseEvent) => {
+        const dx = ev.clientX - startX;
+        const newW = Math.max(40, startWidth + dx);
+        setCustomColumns((prev) =>
+          prev.map((c) => (c.id === colId ? { ...c, width: newW } : c)),
+        );
+      };
+
+      const onUp = () => {
+        setCustomColumns((prev) => {
+          persistConfig({ columnWidths: colWidths, customColumns: prev, taColumnWidths: taColWidths, headerTints });
+          return prev;
+        });
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [colWidths, taColWidths, headerTints, persistConfig],
+  );
+
+  // ── TA column resize drag ──
+  const handleTaColResize = useCallback(
+    (tf: string, e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = taColWidths[tf] ?? TA_COL_W;
+
+      const onMove = (ev: MouseEvent) => {
+        const dx = ev.clientX - startX;
+        const newW = Math.max(36, startW + dx);
+        setTaColWidths((prev) => ({ ...prev, [tf]: newW }));
+      };
+
+      const onUp = () => {
+        setTaColWidths((prev) => {
+          persistConfig({ columnWidths: colWidths, customColumns, taColumnWidths: prev, headerTints });
+          return prev;
+        });
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [colWidths, customColumns, taColWidths, headerTints, persistConfig],
+  );
+
   // ── How many panes fit side-by-side? ──
-  const paneWidth = colWidths.reduce((a, b) => a + b, 0) + 8; // 8px padding
+  const paneWidth = useMemo(() => {
+    const builtInWidth = colWidths.reduce((sum, width) => sum + width, 0);
+    const customWidth = customColumns.reduce((sum, col) => sum + col.width, 0);
+    const taWidth = taTimeframes.reduce((sum, tf) => sum + (taColWidths[tf] ?? TA_COL_W), 0);
+    const gripWidth = sortCol ? 0 : ROW_GRIP_W;
+    return builtInWidth + customWidth + taWidth + gripWidth + PANE_CHROME_W + PANE_GAP;
+  }, [colWidths, customColumns, taColWidths, taTimeframes, sortCol]);
+  const paneGridTemplate = useMemo(() => {
+    const tracks: string[] = [];
+    if (!sortCol) tracks.push(`${ROW_GRIP_W}px`);
+    tracks.push(...colWidths.map((width) => `${width}px`));
+    tracks.push(...customColumns.map((col) => `${col.width}px`));
+    tracks.push(...taTimeframes.map((tf) => `${taColWidths[tf] ?? TA_COL_W}px`));
+    return tracks.join(" ");
+  }, [colWidths, customColumns, taColWidths, taTimeframes, sortCol]);
   const paneCount = Math.max(1, Math.floor(containerWidth / paneWidth));
 
   // ── TA timeframe mutations ──
   const updateTaTimeframes = useCallback(
     (next: string[]) => {
-      persistConfig({ columnWidths: colWidths, taTimeframes: next });
+      persistConfig({ columnWidths: colWidths, taTimeframes: next, customColumns, taColumnWidths: taColWidths, headerTints });
     },
-    [colWidths, persistConfig],
+    [colWidths, customColumns, taColWidths, headerTints, persistConfig],
+  );
+
+  const setCustomHeaderTint = useCallback(
+    (colId: string, value: string | null) => {
+      const nextCustom = { ...(headerTints.custom ?? {}) };
+      if (value) nextCustom[colId] = value;
+      else delete nextCustom[colId];
+      persistHeaderTints({ ...headerTints, custom: nextCustom });
+    },
+    [headerTints, persistHeaderTints],
+  );
+
+  const setTaHeaderTint = useCallback(
+    (tf: string, value: string | null) => {
+      const nextTa = { ...(headerTints.ta ?? {}) };
+      if (value) nextTa[tf] = value;
+      else delete nextTa[tf];
+      persistHeaderTints({ ...headerTints, ta: nextTa });
+    },
+    [headerTints, persistHeaderTints],
   );
 
   // ── Symbol mutations ──
@@ -314,42 +611,124 @@ export default function WatchlistCard({
     [setSymbols],
   );
 
+  const clearSelection = useCallback(() => {
+    setSelectedRows(new Set());
+    setSelectionAnchorIdx(null);
+  }, []);
+
   const removeSymbol = useCallback(
-    (idx: number) => {
-      removeGlobalSymbol(idx);
+    (idx: number, sym: string) => {
+      const current = symbolsRef.current;
+      let targetIdx = idx;
+      if (
+        targetIdx < 0
+        || targetIdx >= current.length
+        || current[targetIdx] !== sym
+      ) {
+        const found = current.indexOf(sym);
+        if (found === -1) return;
+        targetIdx = found;
+      }
+      if (targetIdx < 0 || targetIdx >= current.length) return;
+      const next = [...current];
+      next[targetIdx] = "";
+      setSelectedRows((prev) => {
+        if (!prev.has(targetIdx)) return prev;
+        const updated = new Set(prev);
+        updated.delete(targetIdx);
+        return updated;
+      });
+      setSymbols(next);
     },
-    [removeGlobalSymbol],
+    [setSymbols],
   );
+
+  const removeSelectedRows = useCallback(() => {
+    if (selectedRows.size === 0) return;
+    const current = symbolsRef.current;
+    let changed = false;
+    const next = current.map((sym, idx) => {
+      if (selectedRows.has(idx)) {
+        changed = true;
+        return "";
+      }
+      return sym;
+    });
+    if (!changed) return;
+    setSymbols(next);
+    clearSelection();
+  }, [clearSelection, selectedRows, setSymbols]);
+
+  const deleteRowAt = useCallback(
+    (idx: number) => {
+      const current = symbolsRef.current;
+      if (idx < 0 || idx >= current.length) return;
+      const next = [...current];
+      next.splice(idx, 1);
+      setSymbols(next);
+      setSelectedRows((prev) => {
+        if (prev.size === 0) return prev;
+        const updated = new Set<number>();
+        for (const selectedIdx of prev) {
+          if (selectedIdx === idx) continue;
+          updated.add(selectedIdx > idx ? selectedIdx - 1 : selectedIdx);
+        }
+        return updated;
+      });
+      setSelectionAnchorIdx((prev) => {
+        if (prev === null) return prev;
+        if (prev === idx) return null;
+        return prev > idx ? prev - 1 : prev;
+      });
+    },
+    [setSymbols],
+  );
+
+  const maybePromptEtf = useCallback((sym: string, nextSymbols: string[]) => {
+    const etf = getEtfInfo(sym);
+    if (!etf || etf.top_holdings.length === 0) return;
+    const currentSet = new Set(nextSymbols.filter(Boolean));
+    const available = etf.top_holdings.filter((h) => !currentSet.has(h.symbol));
+    if (available.length === 0) return;
+    setEtfPrompt({
+      etfSymbol: etf.symbol,
+      etfName: etf.name,
+      holdings: available,
+      selected: new Set(available.map((h) => h.symbol)),
+    });
+  }, []);
 
   const replaceSymbol = useCallback(
-    (idx: number, newSym: string) => {
-      replaceGlobalSymbol(idx, newSym);
-    },
-    [replaceGlobalSymbol],
-  );
-
-  const addSymbol = useCallback(
-    (sym: string) => {
-      if (!sym || symbols.includes(sym)) return;
-      addGlobalSymbol(sym);
-
-      // Check if it's an ETF — prompt to add top holdings
-      const etf = getEtfInfo(sym);
-      if (etf && etf.top_holdings.length > 0) {
-        // Filter out holdings already in the watchlist
-        const currentSet = new Set([...symbols, sym]);
-        const available = etf.top_holdings.filter((h) => !currentSet.has(h.symbol));
-        if (available.length > 0) {
-          setEtfPrompt({
-            etfSymbol: etf.symbol,
-            etfName: etf.name,
-            holdings: available,
-            selected: new Set(available.map((h) => h.symbol)),
-          });
+    (idx: number, oldSym: string, newSym: string) => {
+      const upper = newSym.trim().toUpperCase();
+      if (!upper) return;
+      const current = symbolsRef.current;
+      if (current.includes(upper) && current[idx] !== upper) return;
+      let targetIdx = idx;
+      if (
+        targetIdx < 0
+        || targetIdx >= current.length
+        || current[targetIdx] !== oldSym
+      ) {
+        const found = current.indexOf(oldSym);
+        if (found !== -1) {
+          targetIdx = found;
         }
       }
+      if (targetIdx < 0) return;
+      const next = [...current];
+      if (next.includes(upper) && next[targetIdx] !== upper) return;
+      if (targetIdx >= next.length) {
+        for (let i = next.length; i < targetIdx; i += 1) {
+          next[i] = "";
+        }
+      }
+      if (next[targetIdx] === upper) return;
+      next[targetIdx] = upper;
+      setSymbols(next);
+      maybePromptEtf(upper, next);
     },
-    [addGlobalSymbol, symbols],
+    [setSymbols, maybePromptEtf],
   );
 
   const insertSymbolAt = useCallback(
@@ -359,9 +738,77 @@ export default function WatchlistCard({
     [insertGlobalSymbolAt],
   );
 
+  const handleSelectSymbol = useCallback(
+    (symbol: string, globalIdx: number, e: React.MouseEvent) => {
+      if (e.shiftKey && selectionAnchorIdx !== null) {
+        const start = Math.min(selectionAnchorIdx, globalIdx);
+        const end = Math.max(selectionAnchorIdx, globalIdx);
+        const next = new Set<number>();
+        for (let i = start; i <= end; i += 1) {
+          next.add(i);
+        }
+        setSelectedRows(next);
+      } else if (e.metaKey || e.ctrlKey) {
+        setSelectedRows((prev) => {
+          const next = new Set(prev);
+          if (next.has(globalIdx)) next.delete(globalIdx);
+          else next.add(globalIdx);
+          return next;
+        });
+        setSelectionAnchorIdx(globalIdx);
+      } else {
+        setSelectedRows(new Set([globalIdx]));
+        setSelectionAnchorIdx(globalIdx);
+      }
+      onSymbolSelect?.(symbol);
+      if (linkChannel) linkBus.publish(linkChannel, symbol);
+    },
+    [linkChannel, onSymbolSelect, selectionAnchorIdx],
+  );
+
+  useEffect(() => {
+    setSelectedRows((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set<number>();
+      for (const idx of prev) {
+        if (idx >= 0 && idx < symbols.length) next.add(idx);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [symbols]);
+
+  useEffect(() => {
+    if (selectedRows.size === 0) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable
+      ) {
+        return;
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        for (const idx of [...selectedRows].sort((a, b) => b - a)) {
+          if (!symbolsRef.current[idx]?.trim()) {
+            deleteRowAt(idx);
+          }
+        }
+        removeSelectedRows();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [deleteRowAt, removeSelectedRows, selectedRows]);
+
   // ── How many visible rows per pane? ──
   const bodyRef = useRef<HTMLDivElement>(null);
   const [bodyHeight, setBodyHeight] = useState(300);
+  const [rowsScrollbarWidth, setRowsScrollbarWidth] = useState(0);
   useEffect(() => {
     const el = bodyRef.current;
     if (!el) return;
@@ -371,6 +818,17 @@ export default function WatchlistCard({
     obs.observe(el);
     return () => obs.disconnect();
   }, []);
+  useEffect(() => {
+    const el = rowsAreaRef.current;
+    if (!el) return;
+    const updateScrollbarWidth = () => {
+      setRowsScrollbarWidth(el.offsetWidth - el.clientWidth);
+    };
+    updateScrollbarWidth();
+    const obs = new ResizeObserver(() => updateScrollbarWidth());
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [paneCount]);
 
   const rowsPerPane = Math.max(4, Math.floor((bodyHeight - HEADER_H) / ROW_H));
 
@@ -389,6 +847,7 @@ export default function WatchlistCard({
   for (let i = 0; i < paneCount; i++) {
     panes.push(paddedSymbols.slice(i * symbolsPerPane, (i + 1) * symbolsPerPane));
   }
+  symbolsPerPaneRef.current = symbolsPerPane;
 
   const channelInfo = getChannelById(linkChannel);
 
@@ -396,24 +855,37 @@ export default function WatchlistCard({
   const handleContextMenuAction = (action: "delete" | "insertAbove" | "insertBelow" | "insert") => {
     if (!contextMenu) return;
     const idx = contextMenu.globalIdx;
+    const currentSymbols = symbolsRef.current;
+    const resolvedRowIdx = contextMenu.symbol
+      ? currentSymbols.indexOf(contextMenu.symbol)
+      : -1;
+
     switch (action) {
       case "delete":
-        if (idx < symbols.length) removeSymbol(idx);
+        if (contextMenu.isEmpty) deleteRowAt(idx);
+        else if (idx < symbols.length) removeSymbol(idx, contextMenu.symbol);
         break;
       case "insertAbove": {
-        const insertIdx = Math.min(idx, symbols.length);
+        const baseIdx = resolvedRowIdx !== -1 ? resolvedRowIdx : idx;
+        const insertIdx = Math.min(baseIdx, currentSymbols.length);
+        if (sortCol) setSortCol(null);
         insertSymbolAt(insertIdx, "");
         setEditingIdx(insertIdx);
         break;
       }
       case "insertBelow": {
-        const insertIdx = Math.min(idx + 1, symbols.length + 1);
+        const baseIdx = resolvedRowIdx !== -1 ? resolvedRowIdx + 1 : idx + 1;
+        const insertIdx = Math.min(baseIdx, currentSymbols.length);
+        if (sortCol) setSortCol(null);
         insertSymbolAt(insertIdx, "");
         setEditingIdx(insertIdx);
         break;
       }
       case "insert": {
-        const insertIdx = Math.min(idx, symbols.length);
+        const insertIdx = sortCol
+          ? currentSymbols.length
+          : Math.min(idx, currentSymbols.length);
+        if (sortCol) setSortCol(null);
         insertSymbolAt(insertIdx, "");
         setEditingIdx(insertIdx);
         break;
@@ -431,8 +903,18 @@ export default function WatchlistCard({
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] font-medium text-white/60">Watchlist</span>
           <span className="font-mono text-[9px] text-white/25">
-            {symbols.length} symbol{symbols.length !== 1 ? "s" : ""}
+            {nonEmptySymbols.length} symbol{nonEmptySymbols.length !== 1 ? "s" : ""}
           </span>
+          {sortCol && (
+            <button
+              onClick={clearSort}
+              className="flex h-3.5 items-center gap-1 rounded-sm border border-white/[0.08] px-1 text-[9px] text-white/45 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/70"
+              title="Clear sort"
+            >
+              <span>{sortCol}</span>
+              <X className="h-2.5 w-2.5" strokeWidth={1.75} />
+            </button>
+          )}
           {channelInfo && (
             <span
               className="inline-block h-1.5 w-1.5 rounded-full"
@@ -445,7 +927,7 @@ export default function WatchlistCard({
           <div ref={taPopoverRef} className="relative">
             <button
               onClick={() => setTaPopoverOpen((v) => !v)}
-              className={`rounded-sm px-1.5 py-0.5 text-[9px] font-medium transition-colors duration-75 ${
+              className={`flex h-3.5 w-3.5 items-center justify-center rounded-sm text-[10px] font-medium leading-none transition-colors duration-75 ${
                 taTimeframes.length > 0 || customColumns.length > 0
                   ? "bg-blue/20 text-blue hover:bg-blue/30"
                   : "text-white/30 hover:bg-white/[0.06] hover:text-white/50"
@@ -455,48 +937,20 @@ export default function WatchlistCard({
               +
             </button>
             {taPopoverOpen && (
-              <div className="absolute right-0 top-full z-[120] mt-1 w-[150px] rounded-md border border-white/[0.08] bg-[#1C2128] py-1.5 shadow-xl shadow-black/40">
-                <p className="px-2.5 pb-1 pt-0.5 text-[8px] uppercase tracking-wider text-white/25">TA Scores</p>
-                {AVAILABLE_TF.map((tf) => (
-                  <label
-                    key={tf}
-                    className="flex cursor-pointer items-center gap-2 px-2.5 py-1 hover:bg-white/[0.04]"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={taTimeframes.includes(tf)}
-                      onChange={(e) => {
-                        const next = e.target.checked
-                          ? [...taTimeframes, tf]
-                          : taTimeframes.filter((t) => t !== tf);
-                        updateTaTimeframes(next);
-                      }}
-                      className="h-2.5 w-2.5 accent-blue"
-                    />
-                    <span className="font-mono text-[10px] text-white/60">{tf}</span>
-                  </label>
-                ))}
-                <div className="mx-2 my-1.5 border-t border-white/[0.06]" />
-                <p className="px-2.5 pb-1 text-[8px] uppercase tracking-wider text-white/25">Custom</p>
-                <button
-                  onClick={() => {
-                    setColumnEditor({
-                      id: `col_${Date.now()}`,
-                      label: "Score",
-                      width: 54,
-                      decimals: 0,
-                      colorize: true,
-                      expression: "changePct > 0 ? 75 : 25",
-                    });
-                    setColumnEditorIsNew(true);
-                    setTaPopoverOpen(false);
-                  }}
-                  className="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[10px] text-white/40 hover:bg-white/[0.04] hover:text-white/70"
-                >
-                  <span className="text-[11px] leading-none text-white/30">+</span>
-                  Add column
-                </button>
-              </div>
+              <ColumnPopover
+                anchorRef={taPopoverRef}
+                panelRef={taPopoverPanelRef}
+                taTimeframes={taTimeframes}
+                customColumns={customColumns}
+                onUpdateTaTimeframes={updateTaTimeframes}
+                onAddPresetColumn={(col) => persistCustomColumns([...customColumns, col])}
+                onOpenBuilder={(kind) => {
+                  setBuilderKind(kind);
+                  setColumnEditor(null);
+                  setColumnEditorIsNew(true);
+                }}
+                onClose={() => setTaPopoverOpen(false)}
+              />
             )}
           </div>
           <ComponentLinkMenu
@@ -512,31 +966,32 @@ export default function WatchlistCard({
         </div>
       </div>
 
-      {/* Body */}
-      <div ref={containerRef} className="flex flex-1 overflow-hidden">
-        <div ref={bodyRef} className="flex h-full w-full">
+      {/* Body — data-no-drag prevents GridLayout from starting a component move on row mousedown */}
+      <div ref={containerRef} className="flex flex-1 overflow-hidden" data-no-drag>
+        <div ref={bodyRef} className="flex h-full w-full gap-[6px]">
           {panes.map((pane, paneIdx) => (
             <div
               key={paneIdx}
-              className={`flex flex-1 flex-col overflow-hidden ${
-                paneIdx > 0 ? "border-l border-white/[0.06]" : ""
-              }`}
+              className="flex min-h-0 flex-1 flex-col overflow-hidden border border-white/[0.06]"
               style={{ minWidth: 0 }}
             >
               {/* Column headers — click to sort */}
               <div
-                className="flex shrink-0 items-center border-b border-white/[0.06] bg-[#0D1117]"
-                style={{ height: HEADER_H }}
+                className="grid shrink-0 items-center border-b border-white/[0.06] bg-[#0D1117]"
+                style={{
+                  height: HEADER_H,
+                  gridTemplateColumns: paneGridTemplate,
+                  paddingRight: rowsScrollbarWidth,
+                }}
               >
+                {!sortCol && <div />}
                 {COLUMNS.map((col, ci) => (
                   <div
                     key={col.key}
-                    className={`relative select-none truncate px-1.5 text-[9px] font-medium uppercase tracking-wider cursor-pointer transition-colors duration-75 ${
+                    className={`relative min-w-0 select-none truncate px-1.5 text-[9px] font-medium uppercase tracking-wider cursor-pointer transition-colors duration-75 ${
                       sortCol === col.key ? "text-white/70" : "text-white/40 hover:text-white/55"
                     } ${ci < COLUMNS.length - 1 || customColumns.length > 0 || taTimeframes.length > 0 ? "border-r border-white/[0.06]" : ""}`}
                     style={{
-                      width: colWidths[ci],
-                      minWidth: col.minWidth,
                       textAlign: col.align,
                     }}
                     onClick={() => handleSort(col.key)}
@@ -551,8 +1006,13 @@ export default function WatchlistCard({
                     <div
                       className="absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize hover:bg-blue/[0.15]"
                       onMouseDown={(e) => {
+                        e.preventDefault();
                         e.stopPropagation();
                         handleColResize(ci, e);
+                      }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
                       }}
                     />
                   </div>
@@ -561,70 +1021,111 @@ export default function WatchlistCard({
                 {customColumns.map((col, ci) => (
                   <div
                     key={col.id}
-                    className={`relative select-none truncate px-1.5 text-[9px] font-medium uppercase tracking-wider text-purple/70 cursor-pointer transition-colors duration-75 hover:text-purple ${
+                    className={`relative min-w-0 select-none truncate px-1.5 text-[9px] font-medium uppercase tracking-wider text-purple/70 cursor-pointer transition-colors duration-75 hover:text-purple ${
                       ci < customColumns.length - 1 || taTimeframes.length > 0 ? "border-r border-white/[0.06]" : ""
                     }`}
-                    style={{ width: col.width, minWidth: 40, textAlign: "right" }}
+                    style={{
+                      textAlign: "right",
+                      color: headerTints.custom?.[col.id],
+                      backgroundColor: headerTints.custom?.[col.id] ? `${headerTints.custom[col.id]}14` : undefined,
+                    }}
                     onDoubleClick={() => {
                       setColumnEditor({ ...col });
                       setColumnEditorIsNew(false);
                     }}
-                    title="Double-click to edit column"
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setColHeaderMenu({ x: e.clientX, y: e.clientY, type: "custom", colId: col.id });
+                    }}
+                    title="Double-click to edit · Right-click for options"
                   >
                     {col.label}
+                    <div
+                      className="absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize hover:bg-purple/[0.15]"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleCustomColResize(col.id, col.width, e);
+                      }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                    />
                   </div>
                 ))}
                 {/* TA Score column headers */}
                 {taTimeframes.map((tf, ti) => (
                   <div
                     key={`tah-${tf}`}
-                    className={`select-none truncate px-1 text-center text-[9px] font-medium uppercase tracking-wider text-blue/50 ${
+                    className={`relative min-w-0 select-none truncate px-1 text-center text-[9px] font-medium uppercase tracking-wider text-blue/50 cursor-default ${
                       ti < taTimeframes.length - 1 ? "border-r border-white/[0.06]" : ""
                     }`}
-                    style={{ width: TA_COL_W, minWidth: 36 }}
-                    title={`Technical score ${tf}`}
+                    style={{
+                      color: headerTints.ta?.[tf],
+                      backgroundColor: headerTints.ta?.[tf] ? `${headerTints.ta[tf]}14` : undefined,
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setColHeaderMenu({ x: e.clientX, y: e.clientY, type: "ta", tf });
+                    }}
+                    title={`Technical score ${tf} · Right-click to remove`}
                   >
                     {tf}
+                    <div
+                      className="absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize hover:bg-blue/[0.15]"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleTaColResize(tf, e);
+                      }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                    />
                   </div>
                 ))}
 
               </div>
 
-              {/* Rows */}
-              <div className="flex-1 overflow-y-auto scrollbar-none">
-                {pane.map((sym, rowIdx) => {
-                  const globalIdx = paneIdx * symbolsPerPane + rowIdx;
-                  return (
-                    <WatchlistRow
-                      key={`${paneIdx}-${rowIdx}`}
-                      symbol={sym}
-                      quote={sym ? watchlistData.get(sym) ?? null : null}
-                      colWidths={colWidths}
-                      globalIdx={globalIdx}
-                      rowIdx={rowIdx}
-                      onAdd={addSymbol}
-                      onReplace={(newSym) => replaceSymbol(globalIdx, newSym)}
-                      onRemove={() => removeSymbol(globalIdx)}
-                      onSymbolSelect={onSymbolSelect}
-                      linkChannel={linkChannel}
-                      forceEdit={editingIdx === globalIdx}
-                      onForceEditConsumed={() => setEditingIdx(null)}
-                      onContextMenu={(x, y) =>
-                        setContextMenu({
-                          x,
-                          y,
-                          globalIdx,
-                          isEmpty: !sym,
-                        })
-                      }
-                      customColumns={customColumns}
-                      customValues={sym ? (customColValues[sym] ?? {}) : {}}
-                      taTimeframes={taTimeframes}
-                      taScores={sym ? Object.fromEntries(techScores.get(sym) ?? new Map()) as Record<string, number | null> : {}}
-                    />
-                  );
-                })}
-              </div>
+              <WatchlistPaneRows
+                pane={pane}
+                paneIdx={paneIdx}
+                symbolsPerPane={symbolsPerPane}
+                onRowsAreaRef={(el) => {
+                  paneScrollRefs.current[paneIdx] = el;
+                }}
+                watchlistData={watchlistData}
+                symbolStatus={symbolStatus}
+                rowsAreaRef={paneIdx === 0 ? rowsAreaRef : undefined}
+                onRowsScrollbarWidthChange={paneIdx === 0 ? setRowsScrollbarWidth : undefined}
+                onContextMenu={(x, y, globalIdx, sym) =>
+                  setContextMenu({
+                    x,
+                    y,
+                    globalIdx,
+                    isEmpty: !sym,
+                    symbol: sym,
+                  })
+                }
+                onReplace={replaceSymbol}
+                onRemove={removeSymbol}
+                onDeleteBlankRow={deleteRowAt}
+                selectedRows={selectedRows}
+                onSelectSymbol={handleSelectSymbol}
+                onSymbolSelect={onSymbolSelect}
+                editingIdx={editingIdx}
+                onForceEditConsumed={() => setEditingIdx(null)}
+                customColumns={customColumns}
+                customColValues={customColValues}
+                taTimeframes={taTimeframes}
+                techScores={techScores}
+                gridTemplateColumns={paneGridTemplate}
+                showGrip={!sortCol}
+                insertBeforeIdx={insertBeforeIdx}
+                startRowDrag={startRowDrag}
+              />
             </div>
           ))}
         </div>
@@ -638,9 +1139,14 @@ export default function WatchlistCard({
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           {contextMenu.isEmpty ? (
-            <button className={ctxItemClass} onClick={() => handleContextMenuAction("insert")}>
-              Insert Row
-            </button>
+            <>
+              <button className={ctxItemClass} onClick={() => handleContextMenuAction("insert")}>
+                Insert Row
+              </button>
+              <button className={`${ctxItemClass} text-red/60 hover:text-red`} onClick={() => handleContextMenuAction("delete")}>
+                Delete Row
+              </button>
+            </>
           ) : (
             <>
               <button className={ctxItemClass} onClick={() => handleContextMenuAction("delete")}>
@@ -657,127 +1163,140 @@ export default function WatchlistCard({
         </div>
       )}
 
-      {/* Custom Column Editor */}
-      {columnEditor && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50">
-          <div className="w-[380px] rounded-lg border border-white/[0.10] bg-[#161B22] shadow-2xl shadow-black/60">
-            <div className="border-b border-white/[0.08] px-4 pt-4 pb-3">
-              <p className="text-[12px] font-semibold text-white/90">
-                {columnEditorIsNew ? "Add Custom Column" : "Edit Column"}
-              </p>
-              <p className="mt-1 text-[10px] text-white/30">
-                Write a JS expression using quote fields as variables.
-              </p>
-            </div>
-
-            <div className="space-y-3 px-4 py-3">
-              {/* Label */}
-              <div>
-                <label className="mb-1 block text-[9px] font-medium uppercase tracking-wider text-white/40">Label</label>
-                <input
-                  value={columnEditor.label}
-                  onChange={(e) => setColumnEditor({ ...columnEditor, label: e.target.value })}
-                  className="w-full rounded border border-white/[0.08] bg-[#0D1117] px-2 py-1.5 font-mono text-[10px] text-white/80 focus:border-blue/50 focus:outline-none"
-                />
-              </div>
-
-              {/* Expression */}
-              <div>
-                <label className="mb-1 block text-[9px] font-medium uppercase tracking-wider text-white/40">Expression</label>
-                <textarea
-                  value={columnEditor.expression}
-                  onChange={(e) => setColumnEditor({ ...columnEditor, expression: e.target.value })}
-                  rows={3}
-                  className="w-full rounded border border-white/[0.08] bg-[#0D1117] px-2 py-1.5 font-mono text-[10px] text-white/80 focus:border-blue/50 focus:outline-none resize-none"
-                  placeholder="e.g. changePct > 0 ? 75 : 25"
-                />
-                <p className="mt-1 text-[8px] text-white/20">
-                  Available: last, bid, ask, mid, open, high, low, prevClose, change, changePct, volume, spread, symbol
-                </p>
-              </div>
-
-              {/* Settings row */}
-              <div className="flex items-center gap-4">
-                <div className="flex-1">
-                  <label className="mb-1 block text-[9px] font-medium uppercase tracking-wider text-white/40">Decimals</label>
-                  <input
-                    type="number"
-                    value={columnEditor.decimals}
-                    onChange={(e) => setColumnEditor({ ...columnEditor, decimals: parseInt(e.target.value) || 0 })}
-                    min={0}
-                    max={6}
-                    className="w-full rounded border border-white/[0.08] bg-[#0D1117] px-2 py-1.5 font-mono text-[10px] text-white/80 focus:border-blue/50 focus:outline-none"
-                  />
-                </div>
-                <div className="flex-1">
-                  <label className="mb-1 block text-[9px] font-medium uppercase tracking-wider text-white/40">Width</label>
-                  <input
-                    type="number"
-                    value={columnEditor.width}
-                    onChange={(e) => setColumnEditor({ ...columnEditor, width: parseInt(e.target.value) || 54 })}
-                    min={30}
-                    max={200}
-                    className="w-full rounded border border-white/[0.08] bg-[#0D1117] px-2 py-1.5 font-mono text-[10px] text-white/80 focus:border-blue/50 focus:outline-none"
-                  />
-                </div>
-                <label className="flex cursor-pointer items-center gap-1.5 pt-4">
-                  <input
-                    type="checkbox"
-                    checked={columnEditor.colorize}
-                    onChange={(e) => setColumnEditor({ ...columnEditor, colorize: e.target.checked })}
-                    className="h-3 w-3 rounded accent-blue"
-                  />
-                  <span className="text-[9px] text-white/40">Color</span>
-                </label>
-              </div>
-            </div>
-
-            {/* Actions */}
-            <div className="flex items-center justify-between border-t border-white/[0.08] px-4 py-3">
-              {!columnEditorIsNew ? (
-                <button
-                  onClick={() => {
-                    persistCustomColumns(customColumns.filter((c) => c.id !== columnEditor.id));
-                    setColumnEditor(null);
-                  }}
-                  className="text-[10px] text-red/60 hover:text-red"
-                >
-                  Delete
-                </button>
-              ) : (
-                <div />
-              )}
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setColumnEditor(null)}
-                  className="rounded px-3 py-1.5 text-[10px] font-medium text-white/40 hover:bg-white/[0.06] hover:text-white/60"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => {
-                    if (columnEditorIsNew) {
-                      persistCustomColumns([...customColumns, columnEditor]);
-                    } else {
-                      persistCustomColumns(
-                        customColumns.map((c) => (c.id === columnEditor.id ? columnEditor : c)),
-                      );
-                    }
-                    setColumnEditor(null);
-                  }}
-                  className="rounded bg-blue/80 px-3 py-1.5 text-[10px] font-medium text-white hover:bg-blue"
-                >
-                  {columnEditorIsNew ? "Add" : "Save"}
-                </button>
-              </div>
-            </div>
-          </div>
+      {/* Drag ghost — floats at cursor */}
+      {dragState && (
+        <div
+          className="pointer-events-none fixed z-[300] flex items-center gap-1.5 rounded border border-blue/40 bg-base/90 px-2 py-0.5 font-mono text-[10px] text-white/70 shadow-lg backdrop-blur-sm"
+          style={{ left: dragState.mouseX + 12, top: dragState.mouseY - 10 }}
+        >
+          <GripVertical className="h-2.5 w-2.5 text-white/30" strokeWidth={1.5} />
+          {dragState.symbol}
         </div>
       )}
 
+      {/* Column Header Context Menu */}
+      {colHeaderMenu && (
+        <div
+          ref={colHeaderMenuRef}
+          className="fixed z-[100] min-w-[140px] rounded-md border border-white/[0.08] bg-[#1C2128] py-1 shadow-xl shadow-black/40"
+          style={{ left: colHeaderMenu.x, top: colHeaderMenu.y }}
+        >
+          {colHeaderMenu.type === "custom" && (() => {
+            const col = customColumns.find((c) => c.id === colHeaderMenu.colId);
+            if (!col) return null;
+            return (
+              <>
+                <button
+                  className={ctxItemClass}
+                  onClick={() => {
+                    setColumnEditor({ ...col });
+                    setColumnEditorIsNew(false);
+                    setColHeaderMenu(null);
+                  }}
+                >
+                  Edit Column
+                </button>
+                <div className="px-2 py-1">
+                  <div className="mb-1 text-[9px] uppercase tracking-wider text-white/25">Header Color</div>
+                  <div className="grid grid-cols-2 gap-1">
+                    {HEADER_TINT_PRESETS.map((preset) => (
+                      <button
+                        key={preset.label}
+                        className="flex items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[10px] text-white/60 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/85"
+                        onClick={() => {
+                          setCustomHeaderTint(col.id, preset.value);
+                          setColHeaderMenu(null);
+                        }}
+                      >
+                        <span
+                          className="h-2 w-2 rounded-full border border-white/10"
+                          style={{ backgroundColor: preset.value ?? "transparent" }}
+                        />
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  className={`${ctxItemClass} text-red/60 hover:text-red`}
+                  onClick={() => {
+                    persistCustomColumns(customColumns.filter((c) => c.id !== col.id));
+                    setColHeaderMenu(null);
+                  }}
+                >
+                  Delete Column
+                </button>
+              </>
+            );
+          })()}
+          {colHeaderMenu.type === "ta" && (
+            <>
+              <div className="px-2 py-1">
+                <div className="mb-1 text-[9px] uppercase tracking-wider text-white/25">Header Color</div>
+                <div className="grid grid-cols-2 gap-1">
+                  {HEADER_TINT_PRESETS.map((preset) => (
+                    <button
+                      key={preset.label}
+                      className="flex items-center gap-1 rounded-sm px-1.5 py-1 text-left text-[10px] text-white/60 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/85"
+                      onClick={() => {
+                        setTaHeaderTint(colHeaderMenu.tf, preset.value);
+                        setColHeaderMenu(null);
+                      }}
+                    >
+                      <span
+                        className="h-2 w-2 rounded-full border border-white/10"
+                        style={{ backgroundColor: preset.value ?? "transparent" }}
+                      />
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button
+                className={`${ctxItemClass} text-red/60 hover:text-red`}
+                onClick={() => {
+                  updateTaTimeframes(taTimeframes.filter((tf) => tf !== colHeaderMenu.tf));
+                  setColHeaderMenu(null);
+                }}
+              >
+                Remove Timeframe
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Custom Column Builder Modal */}
+      {(columnEditor !== null || columnEditorIsNew) && (
+        <ColumnBuilderModal
+          editColumn={columnEditor}
+          initialKind={builderKind}
+          onSave={(col) => {
+            if (columnEditorIsNew) {
+              persistCustomColumns([...customColumns, col]);
+            } else {
+              persistCustomColumns(
+                customColumns.map((c) => (c.id === col.id ? col : c)),
+              );
+            }
+            setColumnEditor(null);
+            setColumnEditorIsNew(false);
+          }}
+          onDelete={columnEditorIsNew ? undefined : (colId) => {
+            persistCustomColumns(customColumns.filter((c) => c.id !== colId));
+            setColumnEditor(null);
+            setColumnEditorIsNew(false);
+          }}
+          onCancel={() => {
+            setColumnEditor(null);
+            setColumnEditorIsNew(false);
+          }}
+        />
+      )}
+
       {/* ETF Holdings Prompt */}
-      {etfPrompt && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50">
+      {etfPrompt && createPortal(
+        <div className="fixed inset-0 z-[340] flex items-center justify-center bg-black/50">
           <div className="w-[340px] rounded-lg border border-white/[0.10] bg-[#161B22] shadow-2xl shadow-black/60">
             {/* Header */}
             <div className="border-b border-white/[0.08] px-4 pt-4 pb-3">
@@ -871,7 +1390,8 @@ export default function WatchlistCard({
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -881,14 +1401,14 @@ export default function WatchlistCard({
 interface WatchlistRowProps {
   symbol: string;
   quote: Quote | null;
-  colWidths: number[];
+  status: SymbolStatus | null;
   globalIdx: number;
   rowIdx: number;
-  onAdd: (sym: string) => void;
+  selected: boolean;
   onReplace: (newSym: string) => void;
   onRemove: () => void;
-  onSymbolSelect?: (symbol: string) => void;
-  linkChannel: number | null;
+  onDeleteBlankRow: () => void;
+  onSymbolSelect?: (symbol: string, globalIdx: number, e: React.MouseEvent) => void;
   forceEdit: boolean;
   onForceEditConsumed: () => void;
   onContextMenu: (x: number, y: number) => void;
@@ -896,18 +1416,183 @@ interface WatchlistRowProps {
   customValues: Record<string, number | string | null>;
   taTimeframes: string[];
   taScores: Record<string, number | null>;
+  gridTemplateColumns: string;
+  showGrip: boolean;
+  reserveGripSpace: boolean;
+  insertLineBefore: boolean;
+  onGripMouseDown: (e: React.MouseEvent) => void;
+}
+
+interface WatchlistPaneRowsProps {
+  pane: string[];
+  paneIdx: number;
+  symbolsPerPane: number;
+  onRowsAreaRef?: (el: HTMLDivElement | null) => void;
+  watchlistData: Map<string, Quote>;
+  symbolStatus: Map<string, SymbolStatus>;
+  rowsAreaRef?: MutableRefObject<HTMLDivElement | null>;
+  onRowsScrollbarWidthChange?: (width: number) => void;
+  onContextMenu: (x: number, y: number, globalIdx: number, symbol: string) => void;
+  onReplace: (globalIdx: number, symbol: string, newSym: string) => void;
+  onRemove: (globalIdx: number, symbol: string) => void;
+  onDeleteBlankRow: (globalIdx: number) => void;
+  selectedRows: Set<number>;
+  onSelectSymbol: (symbol: string, globalIdx: number, e: React.MouseEvent) => void;
+  onSymbolSelect?: (symbol: string) => void;
+  editingIdx: number | null;
+  onForceEditConsumed: () => void;
+  customColumns: CustomColumnDef[];
+  customColValues: Record<string, Record<string, number | string | null>>;
+  taTimeframes: string[];
+  techScores: Map<string, Map<string, number | null>>;
+  gridTemplateColumns: string;
+  showGrip: boolean;
+  insertBeforeIdx: number | null;
+  startRowDrag: (e: React.MouseEvent, globalIdx: number, symbol: string) => void;
+}
+
+function WatchlistPaneRows({
+  pane,
+  paneIdx,
+  symbolsPerPane,
+  onRowsAreaRef,
+  watchlistData,
+  symbolStatus,
+  rowsAreaRef,
+  onRowsScrollbarWidthChange,
+  onContextMenu,
+  onReplace,
+  onRemove,
+  onDeleteBlankRow,
+  selectedRows,
+  onSelectSymbol,
+  onSymbolSelect,
+  editingIdx,
+  onForceEditConsumed,
+  customColumns,
+  customColValues,
+  taTimeframes,
+  techScores,
+  gridTemplateColumns,
+  showGrip,
+  insertBeforeIdx,
+  startRowDrag,
+}: WatchlistPaneRowsProps) {
+  const localRowsRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = rowsAreaRef ?? localRowsRef;
+  const [scrollMetrics, setScrollMetrics] = useState({
+    hasOverflow: false,
+    thumbHeight: 0,
+    thumbOffset: 0,
+  });
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const updateMetrics = () => {
+      const maxScroll = el.scrollHeight - el.clientHeight;
+      const hasOverflow = maxScroll > 1;
+      const thumbHeight = hasOverflow
+        ? Math.max(28, (el.clientHeight / el.scrollHeight) * el.clientHeight)
+        : el.clientHeight;
+      const thumbOffset = hasOverflow
+        ? (el.scrollTop / maxScroll) * (el.clientHeight - thumbHeight)
+        : 0;
+      setScrollMetrics({ hasOverflow, thumbHeight, thumbOffset });
+      onRowsScrollbarWidthChange?.(el.offsetWidth - el.clientWidth);
+    };
+
+    updateMetrics();
+
+    el.addEventListener("scroll", updateMetrics);
+    const resizeObserver = new ResizeObserver(updateMetrics);
+    resizeObserver.observe(el);
+
+    return () => {
+      el.removeEventListener("scroll", updateMetrics);
+      resizeObserver.disconnect();
+    };
+  }, [onRowsScrollbarWidthChange, pane.length, scrollRef]);
+
+  return (
+    <div className="relative min-h-0 flex-1">
+      <div
+        ref={(el) => {
+          if (rowsAreaRef) {
+            rowsAreaRef.current = el;
+          } else {
+            localRowsRef.current = el;
+          }
+          onRowsAreaRef?.(el);
+        }}
+        className="scrollbar-watchlist relative h-full overflow-y-auto"
+        style={{ scrollbarGutter: "stable" }}
+      >
+        {pane.map((sym, rowIdx) => {
+          const globalIdx = paneIdx * symbolsPerPane + rowIdx;
+          return (
+            <WatchlistRow
+              key={`${paneIdx}-${rowIdx}`}
+              symbol={sym}
+              quote={sym ? watchlistData.get(sym) ?? null : null}
+              status={sym ? symbolStatus.get(sym) ?? null : null}
+              globalIdx={globalIdx}
+              rowIdx={rowIdx}
+              selected={selectedRows.has(globalIdx)}
+              onReplace={(newSym) => onReplace(globalIdx, sym, newSym)}
+              onRemove={() => onRemove(globalIdx, sym)}
+              onDeleteBlankRow={() => onDeleteBlankRow(globalIdx)}
+              onSymbolSelect={(selectedSym, selectedIdx, e) => {
+                onSelectSymbol(selectedSym, selectedIdx, e);
+                onSymbolSelect?.(selectedSym);
+              }}
+              forceEdit={editingIdx === globalIdx}
+              onForceEditConsumed={onForceEditConsumed}
+              onContextMenu={(x, y) => onContextMenu(x, y, globalIdx, sym)}
+              customColumns={customColumns}
+              customValues={sym ? customColValues[sym] ?? {} : {}}
+              taTimeframes={taTimeframes}
+              taScores={
+                sym ? (Object.fromEntries(techScores.get(sym) ?? new Map()) as Record<string, number | null>) : {}
+              }
+              gridTemplateColumns={gridTemplateColumns}
+              showGrip={showGrip && !!sym}
+              reserveGripSpace={showGrip}
+              insertLineBefore={insertBeforeIdx === globalIdx}
+              onGripMouseDown={(e) => startRowDrag(e, globalIdx, sym)}
+            />
+          );
+        })}
+      </div>
+
+      <div className="pointer-events-none absolute inset-y-0 right-0 flex w-[10px] justify-center bg-[#0D1117]">
+        <div className="my-1 w-[6px] rounded-full bg-white/[0.05]">
+          <div
+            className="rounded-full bg-white/[0.18] transition-[height,transform] duration-100"
+            style={{
+              height: `${Math.max(scrollMetrics.thumbHeight - 8, 18)}px`,
+              transform: `translateY(${scrollMetrics.thumbOffset + 4}px)`,
+              opacity: scrollMetrics.hasOverflow ? 1 : 0.35,
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function WatchlistRow({
   symbol,
   quote,
-  colWidths,
+  status,
+  globalIdx,
   rowIdx,
-  onAdd,
+  selected,
   onReplace,
   onRemove,
+  onDeleteBlankRow,
   onSymbolSelect,
-  linkChannel,
   forceEdit,
   onForceEditConsumed,
   onContextMenu,
@@ -915,6 +1600,11 @@ function WatchlistRow({
   customValues,
   taTimeframes,
   taScores,
+  gridTemplateColumns,
+  showGrip,
+  reserveGripSpace,
+  insertLineBefore,
+  onGripMouseDown,
 }: WatchlistRowProps) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
@@ -923,6 +1613,8 @@ function WatchlistRow({
   const [highlightIdx, setHighlightIdx] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
+  const symbolCellRef = useRef<HTMLDivElement>(null);
+  const suggestionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const name = symbol ? getSymbolName(symbol) : "";
 
@@ -942,7 +1634,7 @@ function WatchlistRow({
   // Filter suggestions — search symbol, name, sector, and industry
   const q = editValue.toLowerCase();
   const suggestions = editValue
-    ? ALL_SYMBOLS.filter(
+    ? SEARCHABLE_SYMBOLS.filter(
         (s) =>
           s.symbol.toLowerCase().includes(q) ||
           s.name.toLowerCase().includes(q) ||
@@ -956,14 +1648,73 @@ function WatchlistRow({
     setHighlightIdx(-1);
   }, [editValue]);
 
+  useEffect(() => {
+    if (highlightIdx < 0) return;
+    suggestionRefs.current[highlightIdx]?.scrollIntoView({ block: "nearest" });
+  }, [highlightIdx]);
+
   const commitSymbol = (sym: string) => {
     const upper = sym.trim().toUpperCase();
-    if (upper) onAdd(upper);
+    if (upper) onReplace(upper);
     setEditing(false);
     setEditValue("");
     setShowSuggestions(false);
     setHighlightIdx(-1);
   };
+
+  const moveSuggestionHighlight = useCallback(
+    (direction: "next" | "prev") => {
+      if (suggestions.length === 0) return;
+      setShowSuggestions(true);
+      setHighlightIdx((prev) => {
+        if (direction === "next") {
+          if (prev < 0) return 0;
+          return Math.min(prev + 1, suggestions.length - 1);
+        }
+        if (prev < 0) return suggestions.length - 1;
+        return Math.max(prev - 1, 0);
+      });
+    },
+    [suggestions.length],
+  );
+
+  const getHighlightedSuggestion = useCallback(() => {
+    if (highlightIdx >= 0 && highlightIdx < suggestions.length) {
+      return suggestions[highlightIdx].symbol;
+    }
+    if (suggestions.length > 0) {
+      return suggestions[0].symbol;
+    }
+    return editValue;
+  }, [editValue, highlightIdx, suggestions]);
+
+  const handleSuggestionKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>, commit: (sym: string) => void) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        moveSuggestionHighlight("next");
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        moveSuggestionHighlight("prev");
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commit(getHighlightedSuggestion());
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setEditing(false);
+        setEditValue("");
+        setShowSuggestions(false);
+        setHighlightIdx(-1);
+      }
+    },
+    [getHighlightedSuggestion, moveSuggestionHighlight],
+  );
 
   const handleRowContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -977,40 +1728,28 @@ function WatchlistRow({
   if (!symbol) {
     return (
       <div
-        className={`flex items-center border-b border-white/[0.03] ${zebraClass} hover:bg-white/[0.05]`}
+        className={`relative flex items-center border-b border-white/[0.03] ${zebraClass} hover:bg-white/[0.05]`}
         style={{ height: ROW_H }}
         onContextMenu={handleRowContextMenu}
       >
+        {insertLineBefore && (
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 bg-blue" />
+        )}
+        {reserveGripSpace && <div className="shrink-0" style={{ width: ROW_GRIP_W }} />}
         {editing ? (
           <div className="relative flex-1 px-1">
             <input
               ref={inputRef}
               value={editValue}
+              autoCorrect="off"
+              autoCapitalize="off"
+              autoComplete="off"
+              spellCheck={false}
               onChange={(e) => {
                 setEditValue(e.target.value);
                 setShowSuggestions(true);
               }}
-              onKeyDown={(e) => {
-                if (e.key === "ArrowDown" && showSuggestions && suggestions.length > 0) {
-                  e.preventDefault();
-                  setHighlightIdx((prev) => Math.min(prev + 1, suggestions.length - 1));
-                } else if (e.key === "ArrowUp" && showSuggestions && suggestions.length > 0) {
-                  e.preventDefault();
-                  setHighlightIdx((prev) => Math.max(prev - 1, -1));
-                } else if (e.key === "Enter") {
-                  const sym = highlightIdx >= 0 && highlightIdx < suggestions.length
-                    ? suggestions[highlightIdx].symbol
-                    : suggestions.length > 0
-                      ? suggestions[0].symbol
-                      : editValue;
-                  commitSymbol(sym);
-                } else if (e.key === "Escape") {
-                  setEditing(false);
-                  setEditValue("");
-                  setShowSuggestions(false);
-                  setHighlightIdx(-1);
-                }
-              }}
+              onKeyDown={(e) => handleSuggestionKeyDown(e, commitSymbol)}
               onBlur={() => {
                 // Delay to allow click on suggestion
                 setTimeout(() => {
@@ -1032,6 +1771,9 @@ function WatchlistRow({
                 {suggestions.map((s, i) => (
                   <button
                     key={s.symbol}
+                    ref={(el) => {
+                      suggestionRefs.current[i] = el;
+                    }}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       commitSymbol(s.symbol);
@@ -1071,6 +1813,12 @@ function WatchlistRow({
         ) : (
           <button
             onClick={() => setEditing(true)}
+            onKeyDown={(e) => {
+              if (e.key === "Delete" || e.key === "Backspace") {
+                e.preventDefault();
+                onDeleteBlankRow();
+              }
+            }}
             className="flex h-full flex-1 items-center px-1.5"
           >
             <span className="text-[10px] text-white/10">+</span>
@@ -1100,35 +1848,20 @@ function WatchlistRow({
         style={{ height: ROW_H }}
         onContextMenu={handleRowContextMenu}
       >
+        {reserveGripSpace && <div className="shrink-0" style={{ width: ROW_GRIP_W }} />}
         <div className="relative flex-1 px-1">
           <input
             ref={inputRef}
             value={editValue}
+            autoCorrect="off"
+            autoCapitalize="off"
+            autoComplete="off"
+            spellCheck={false}
             onChange={(e) => {
               setEditValue(e.target.value);
               setShowSuggestions(true);
             }}
-            onKeyDown={(e) => {
-              if (e.key === "ArrowDown" && showSuggestions && suggestions.length > 0) {
-                e.preventDefault();
-                setHighlightIdx((prev) => Math.min(prev + 1, suggestions.length - 1));
-              } else if (e.key === "ArrowUp" && showSuggestions && suggestions.length > 0) {
-                e.preventDefault();
-                setHighlightIdx((prev) => Math.max(prev - 1, -1));
-              } else if (e.key === "Enter") {
-                const sym = highlightIdx >= 0 && highlightIdx < suggestions.length
-                  ? suggestions[highlightIdx].symbol
-                  : suggestions.length > 0
-                    ? suggestions[0].symbol
-                    : editValue;
-                commitReplace(sym);
-              } else if (e.key === "Escape") {
-                setEditing(false);
-                setEditValue("");
-                setShowSuggestions(false);
-                setHighlightIdx(-1);
-              }
-            }}
+            onKeyDown={(e) => handleSuggestionKeyDown(e, commitReplace)}
             onBlur={() => {
               setTimeout(() => {
                 setEditing(false);
@@ -1149,6 +1882,9 @@ function WatchlistRow({
                 {suggestions.map((s, i) => (
                   <button
                     key={s.symbol}
+                    ref={(el) => {
+                      suggestionRefs.current[i] = el;
+                    }}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       commitReplace(s.symbol);
@@ -1190,18 +1926,21 @@ function WatchlistRow({
   }
 
   // Populated row
+  const isError = status === "error";
+
   return (
     <div
       ref={rowRef}
-      className={`group relative flex items-center border-b border-white/[0.03] transition-colors duration-75 hover:bg-white/[0.05] focus:bg-white/[0.04] focus:outline-none ${
-        quote && quote.change !== 0 ? changeBg(quote.change) : zebraClass
+      className={`group relative grid items-center border-b transition-colors duration-75 focus:outline-none ${
+        isError
+          ? "border-red/20 bg-red/[0.08] hover:bg-red/[0.12] focus:bg-red/[0.10]"
+          : `border-white/[0.03] hover:bg-white/[0.05] focus:bg-white/[0.04] ${
+              quote && quote.change !== 0 ? changeBg(quote.change) : zebraClass
+            }`
       }`}
-      style={{ height: ROW_H }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onClick={() => {
-        onSymbolSelect?.(symbol);
-        if (linkChannel) linkBus.publish(linkChannel, symbol);
+      style={{ height: ROW_H, gridTemplateColumns }}
+      onClick={(e) => {
+        onSymbolSelect?.(symbol, globalIdx, e);
       }}
       onDoubleClick={(e) => {
         e.preventDefault();
@@ -1217,40 +1956,61 @@ function WatchlistRow({
       }}
       tabIndex={0}
     >
+      {/* Insertion line above this row */}
+      {insertLineBefore && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 bg-blue" />
+      )}
+      {selected && (
+        <div className="pointer-events-none absolute inset-[1px] rounded-[3px] border border-blue/55 shadow-[inset_0_0_0_1px_rgba(125,194,255,0.15)]" />
+      )}
+      {/* Grip handle */}
+      {reserveGripSpace && (
+        <div
+          className={`flex shrink-0 items-center justify-center ${showGrip ? "cursor-grab opacity-0 group-hover:opacity-100" : ""}`}
+          style={{ width: ROW_GRIP_W }}
+          onMouseDown={showGrip ? onGripMouseDown : undefined}
+          data-no-drag
+        >
+          {showGrip && <GripVertical className="h-3 w-3 text-white/25" strokeWidth={1.5} />}
+        </div>
+      )}
       {/* Symbol */}
       <div
-        className="truncate border-r border-white/[0.06] px-1.5 font-mono text-[10px] font-medium text-white/80"
-        style={{ width: colWidths[0], minWidth: COLUMNS[0].minWidth }}
+        ref={symbolCellRef}
+        className={`min-w-0 truncate border-r border-white/[0.06] px-1.5 font-mono text-[10px] font-medium ${
+          isError ? "text-red/80" : "text-white/80"
+        }`}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
       >
         {symbol}
       </div>
 
       {/* Last */}
       <div
-        className="truncate border-r border-white/[0.06] px-1.5 text-right font-mono text-[10px] text-white/70"
-        style={{ width: colWidths[1], minWidth: COLUMNS[1].minWidth }}
+        className={`min-w-0 truncate border-r border-white/[0.06] px-1.5 text-right font-mono text-[10px] ${
+          isError ? "text-red/40" : "text-white/70"
+        }`}
       >
-        {quote ? quote.last.toFixed(2) : "—"}
+        {quote ? quote.last.toFixed(2) : isError ? "ERR" : "—"}
       </div>
 
       {/* Change */}
       <div
-        className={`truncate border-r border-white/[0.06] px-1.5 text-right font-mono text-[10px] font-medium ${
-          quote ? changeColor(quote.change) : "text-white/30"
+        className={`min-w-0 truncate border-r border-white/[0.06] px-1.5 text-right font-mono text-[10px] font-medium ${
+          isError ? "text-red/40" : quote ? changeColor(quote.change) : "text-white/30"
         }`}
-        style={{ width: colWidths[2], minWidth: COLUMNS[2].minWidth }}
       >
         {quote
           ? `${quote.change >= 0 ? "+" : ""}${quote.change.toFixed(2)}`
-          : "—"}
+          : isError ? "—" : "—"}
       </div>
 
       {/* Change % */}
       <div
-        className={`truncate ${customColumns.length > 0 || taTimeframes.length > 0 ? "border-r border-white/[0.06]" : ""} px-1.5 text-right font-mono text-[10px] font-medium ${
-          quote ? changeColor(quote.changePct) : "text-white/30"
+        className={`min-w-0 truncate ${customColumns.length > 0 || taTimeframes.length > 0 ? "border-r border-white/[0.06]" : ""} px-1.5 text-right font-mono text-[10px] font-medium ${
+          isError ? "text-red/40" : quote ? changeColor(quote.changePct) : "text-white/30"
         }`}
-        style={{ width: colWidths[3], minWidth: COLUMNS[3].minWidth }}
       >
         {quote
           ? `${quote.changePct >= 0 ? "+" : ""}${quote.changePct.toFixed(2)}%`
@@ -1261,17 +2021,33 @@ function WatchlistRow({
       {customColumns.map((col, ci) => {
         const val = customValues[col.id];
         const isNum = typeof val === "number";
+        const isStr = typeof val === "string";
+        const isCrossover = col.kind === "crossover";
+        const shouldColorize = "colorize" in col && col.colorize;
+        let colorClass = "text-white/50";
+        let displayValue = val != null ? (isNum ? (val as number).toFixed(col.decimals ?? 0) : String(val)) : "—";
+        if (isCrossover && isStr) {
+          colorClass =
+            val === "BUY"
+              ? "bg-green/[0.16] text-green font-medium"
+              : val === "SELL"
+                ? "bg-red/[0.16] text-red font-medium"
+                : "bg-yellow/20 text-yellow font-medium";
+          displayValue =
+            val === "BUY"
+              ? "\u2197"
+              : val === "SELL"
+                ? "\u2198"
+                : "-";
+        } else if (isNum && shouldColorize) {
+          colorClass = (val as number) > 50 ? "text-green font-medium" : (val as number) < 50 ? "text-red font-medium" : "text-white/50";
+        }
         return (
           <div
             key={col.id}
-            className={`truncate px-1.5 text-right font-mono text-[10px] ${
-              isNum && col.colorize
-                ? val > 50 ? "text-green font-medium" : val < 50 ? "text-red font-medium" : "text-white/50"
-                : "text-white/50"
-            } ${ci < customColumns.length - 1 || taTimeframes.length > 0 ? "border-r border-white/[0.06]" : ""}`}
-            style={{ width: col.width, minWidth: 40 }}
+            className={`min-w-0 truncate px-1.5 font-mono text-[10px] ${isCrossover ? "text-center" : "text-right"} ${colorClass} ${ci < customColumns.length - 1 || taTimeframes.length > 0 ? "border-r border-white/[0.06]" : ""}`}
           >
-            {val != null ? (isNum ? (val as number).toFixed(col.decimals ?? 0) : String(val)) : "—"}
+            {displayValue}
           </div>
         );
       })}
@@ -1282,7 +2058,7 @@ function WatchlistRow({
         return (
           <div
             key={`ta-${tf}`}
-            className={`truncate px-1 text-center font-mono text-[10px] font-medium ${
+            className={`min-w-0 truncate px-1 text-center font-mono text-[10px] font-medium ${
               ti < taTimeframes.length - 1 ? "border-r border-white/[0.06]" : ""
             } ${
               score === null
@@ -1293,7 +2069,6 @@ function WatchlistRow({
                     ? "text-red"
                     : "text-white/40"
             }`}
-            style={{ width: TA_COL_W, minWidth: 36 }}
             title={`${tf} technical score: ${score ?? "no data"}`}
           >
             {score === null ? "—" : score}
@@ -1302,8 +2077,8 @@ function WatchlistRow({
       })}
 
       {/* Hover tooltip — fixed position to escape overflow clipping */}
-      {hovered && rowRef.current && (() => {
-        const rect = rowRef.current!.getBoundingClientRect();
+      {hovered && symbolCellRef.current && (() => {
+        const rect = symbolCellRef.current!.getBoundingClientRect();
         return (
           <div
             className="pointer-events-none fixed z-[140] rounded-md border border-white/[0.08] bg-[#1C2128] px-2.5 py-1.5 shadow-xl shadow-black/40"
@@ -1313,11 +2088,16 @@ function WatchlistRow({
               transform: "translateY(-100%)",
             }}
           >
-            <p className="font-mono text-[11px] font-semibold text-white/90">
+            <p className={`font-mono text-[11px] font-semibold ${isError ? "text-red" : "text-white/90"}`}>
               {symbol}
             </p>
             <p className="text-[9px] text-white/40">{name}</p>
-            {!quote && (
+            {isError && (
+              <p className="mt-0.5 text-[8px] text-red/60">
+                Symbol not recognized — remove or replace
+              </p>
+            )}
+            {!quote && !isError && (
               <p className="mt-0.5 text-[8px] text-white/20">
                 Waiting for TWS data
               </p>

@@ -223,6 +223,7 @@ fn spawn_tab_window(app_handle: tauri::AppHandle, label: String, title: String) 
 
 struct SidecarState {
     child: Mutex<Option<Child>>,
+    worker_child: Mutex<Option<Child>>,
     port: Mutex<Option<u16>>,
 }
 
@@ -254,6 +255,28 @@ fn find_backend_script() -> Option<std::path::PathBuf> {
     None
 }
 
+fn find_worker_script() -> Option<std::path::PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|p| p.to_path_buf());
+        for _ in 0..5 {
+            if let Some(ref d) = dir {
+                let candidate = d.join("backend").join("worker_watchlist.py");
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+                dir = d.parent().map(|p| p.to_path_buf());
+            } else {
+                break;
+            }
+        }
+    }
+    let cwd_candidate = std::path::PathBuf::from("backend/worker_watchlist.py");
+    if cwd_candidate.exists() {
+        return Some(cwd_candidate);
+    }
+    None
+}
+
 /// Shared logic: spawn the Python sidecar, poll /health, store state.
 /// Returns the port on success.
 fn do_spawn_sidecar(state: &SidecarState) -> Result<u16, String> {
@@ -270,10 +293,19 @@ fn do_spawn_sidecar(state: &SidecarState) -> Result<u16, String> {
         .find(|p| TcpListener::bind(format!("127.0.0.1:{}", p)).is_ok())
         .ok_or_else(|| "No free port in 18100-18200 range".to_string())?;
 
-    let child = Command::new("python")
-        .args([script_path.to_string_lossy().as_ref(), "--port", &sidecar_port.to_string()])
-        .current_dir(script_path.parent().unwrap().parent().unwrap()) // set CWD to project root
+    // Try python3 first (macOS/Linux), then python (Windows / venvs)
+    let args = [script_path.to_string_lossy().to_string(), "--port".to_string(), sidecar_port.to_string()];
+    let cwd = script_path.parent().unwrap().parent().unwrap();
+    let child = Command::new("python3")
+        .args(&args)
+        .current_dir(cwd)
         .spawn()
+        .or_else(|_| {
+            Command::new("python")
+                .args(&args)
+                .current_dir(cwd)
+                .spawn()
+        })
         .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
 
     *state.child.lock().unwrap() = Some(child);
@@ -302,6 +334,38 @@ fn do_spawn_sidecar(state: &SidecarState) -> Result<u16, String> {
     Err("Sidecar failed to become ready within 10s".to_string())
 }
 
+fn do_spawn_worker(state: &SidecarState) -> Result<(), String> {
+    if state.worker_child.lock().unwrap().is_some() {
+        return Ok(());
+    }
+
+    let script_path = find_worker_script()
+        .ok_or_else(|| "backend/worker_watchlist.py not found — searched up from executable".to_string())?;
+
+    let cwd = script_path.parent().unwrap().parent().unwrap();
+
+    let mut args = vec![script_path.to_string_lossy().to_string()];
+    if let Some(probe) = probe_tws_ports() {
+        args.push("--tws-port".to_string());
+        args.push(probe.port.to_string());
+    }
+
+    let child = Command::new("python3")
+        .args(&args)
+        .current_dir(cwd)
+        .spawn()
+        .or_else(|_| {
+            Command::new("python")
+                .args(&args)
+                .current_dir(cwd)
+                .spawn()
+        })
+        .map_err(|e| format!("Failed to spawn worker: {}", e))?;
+
+    *state.worker_child.lock().unwrap() = Some(child);
+    Ok(())
+}
+
 #[tauri::command]
 fn spawn_sidecar(state: tauri::State<'_, SidecarState>) -> Result<u16, String> {
     do_spawn_sidecar(&state)
@@ -320,6 +384,10 @@ fn kill_sidecar(state: tauri::State<'_, SidecarState>) {
         let _ = child.kill();
         let _ = child.wait();
     }
+    if let Some(mut child) = state.worker_child.lock().unwrap().take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     *state.port.lock().unwrap() = None;
 }
 
@@ -327,6 +395,7 @@ fn main() {
     tauri::Builder::default()
         .manage(SidecarState {
             child: Mutex::new(None),
+            worker_child: Mutex::new(None),
             port: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
@@ -351,6 +420,9 @@ fn main() {
                 Ok(port) => println!("Sidecar auto-started on port {}", port),
                 Err(e) => eprintln!("Sidecar auto-start failed (will retry on demand): {}", e),
             }
+            if let Err(e) = do_spawn_worker(&state) {
+                eprintln!("Worker auto-start failed (will retry on demand): {}", e);
+            }
 
             Ok(())
         })
@@ -363,6 +435,11 @@ fn main() {
                 if let Some(mut child) = child {
                     let _ = child.kill();
                     let _ = child.wait();
+                }
+                let worker = state.worker_child.lock().unwrap().take();
+                if let Some(mut worker) = worker {
+                    let _ = worker.kill();
+                    let _ = worker.wait();
                 }
             }
         })

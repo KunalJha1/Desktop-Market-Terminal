@@ -9,8 +9,11 @@ import {
   Activity,
   Code,
   Search,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
 } from 'lucide-react';
-import { ALL_SYMBOLS } from '../../lib/market-data';
+import { SEARCHABLE_SYMBOLS } from '../../lib/market-data';
 import ComponentLinkMenu from '../../components/ComponentLinkMenu';
 
 interface ChartToolbarProps {
@@ -26,6 +29,11 @@ interface ChartToolbarProps {
   loading?: boolean;
   linkChannel?: number | null;
   onLinkChannelChange?: (ch: number | null) => void;
+  stopperPx?: number;
+  onStopperPxChange?: (px: number) => void;
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
+  onZoomReset?: () => void;
 }
 
 export default function ChartToolbar({
@@ -41,6 +49,11 @@ export default function ChartToolbar({
   loading = false,
   linkChannel = null,
   onLinkChannelChange,
+  stopperPx = 0,
+  onStopperPxChange,
+  onZoomIn,
+  onZoomOut,
+  onZoomReset,
 }: ChartToolbarProps) {
   const [symbolInput, setSymbolInput] = useState(symbol);
   const [chartTypeOpen, setChartTypeOpen] = useState(false);
@@ -65,7 +78,7 @@ export default function ChartToolbar({
   // Filter suggestions
   const sq = symbolInput.toLowerCase();
   const symbolSuggestions = symbolInput && symbolInput !== symbol
-    ? ALL_SYMBOLS.filter(
+    ? SEARCHABLE_SYMBOLS.filter(
         (s) =>
           s.symbol.toLowerCase().includes(sq) ||
           s.name.toLowerCase().includes(sq) ||
@@ -262,6 +275,33 @@ export default function ChartToolbar({
         <span>Indicators</span>
       </button>
 
+      <div className="w-px h-4 bg-border-default" />
+
+      {/* Zoom controls */}
+      <div className="flex items-center gap-1 mx-1">
+        <button
+          onClick={onZoomOut}
+          className="p-1 text-text-secondary hover:text-text-primary hover:bg-hover rounded-btn transition-colors duration-120"
+          title="Zoom out"
+        >
+          <ZoomOut size={12} />
+        </button>
+        <button
+          onClick={onZoomIn}
+          className="p-1 text-text-secondary hover:text-text-primary hover:bg-hover rounded-btn transition-colors duration-120"
+          title="Zoom in"
+        >
+          <ZoomIn size={12} />
+        </button>
+        <button
+          onClick={onZoomReset}
+          className="p-1 text-text-secondary hover:text-text-primary hover:bg-hover rounded-btn transition-colors duration-120"
+          title="Reset zoom"
+        >
+          <RotateCcw size={12} />
+        </button>
+      </div>
+
       {/* Script button */}
       <button
         onClick={onScriptEditorToggle}
@@ -300,6 +340,25 @@ export default function ChartToolbar({
             : 'MOCK'}
         </span>
       </div>
+
+      {dataSource === 'tws' && (
+        <div className="flex items-center gap-1 mr-1">
+          <span className="text-[9px] font-mono text-text-muted">Stop</span>
+          <input
+            type="number"
+            min={0}
+            max={200}
+            value={stopperPx}
+            onChange={(e) => {
+              const next = Math.max(0, Math.min(200, Number(e.target.value) || 0));
+              onStopperPxChange?.(next);
+            }}
+            className="w-[40px] bg-transparent text-[9px] font-mono text-text-secondary outline-none
+                       border-b border-transparent focus:border-blue transition-colors duration-120"
+          />
+          <span className="text-[9px] font-mono text-text-muted">px</span>
+        </div>
+      )}
     </div>
   );
 }

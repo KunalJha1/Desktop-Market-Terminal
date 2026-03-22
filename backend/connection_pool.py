@@ -21,7 +21,12 @@ class ClientState(str, Enum):
 
 
 class ConnectionPool:
-    def __init__(self, on_status_change: Callable[[int, str], None] | None = None):
+    def __init__(
+        self,
+        on_status_change: Callable[[int, str], None] | None = None,
+        *,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ):
         self._clients: dict[int, IB] = {}
         self._states: dict[int, ClientState] = {}
         self._reconnect_tasks: dict[str, asyncio.Task] = {}
@@ -31,9 +36,10 @@ class ConnectionPool:
         self._released_ids: set[int] = set()
         self._next_client_id = CLIENT_ID_START
         self._connect_lock = asyncio.Lock()
-        self._host: str = "127.0.0.1"
-        self._port: int = 7497
+        self._host: str | None = None
+        self._port: int | None = None
         self._on_status_change = on_status_change
+        self._loop = loop
 
     def set_tws_address(self, host: str, port: int):
         self._host = host
@@ -100,6 +106,10 @@ class ConnectionPool:
                     pass
 
     async def get_or_create(self, role: str) -> IB:
+        if self._host is None or self._port is None:
+            raise RuntimeError(
+                "TWS address not configured — call set_tws_address() before connecting"
+            )
         async with self._connect_lock:
             existing_id = self._role_to_client_id.get(role)
             if existing_id is not None:
@@ -168,7 +178,8 @@ class ConnectionPool:
         task = self._reconnect_tasks.pop(role, None)
         if task:
             task.cancel()
-        self._reconnect_tasks[role] = asyncio.ensure_future(self._reconnect_loop(role))
+        loop = self._loop or asyncio.get_event_loop()
+        self._reconnect_tasks[role] = loop.create_task(self._reconnect_loop(role))
 
     async def _reconnect_loop(self, role: str):
         delay = 1.0

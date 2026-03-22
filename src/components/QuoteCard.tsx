@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useId } from "react";
 import { X, Search, TrendingUp, TrendingDown } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
 import { getChannelById } from "../lib/link-channels";
-import { ALL_SYMBOLS, formatPrice, formatVolume } from "../lib/market-data";
+import { SEARCHABLE_SYMBOLS, formatPrice, formatVolume } from "../lib/market-data";
 import { useQuoteData } from "../lib/use-market-data";
 
 interface QuoteCardProps {
@@ -36,7 +36,7 @@ export default function QuoteCard({
   const isPositive = quote ? quote.change >= 0 : true;
 
   const q = searchQuery.toLowerCase();
-  const filtered = ALL_SYMBOLS.filter(
+  const filtered = SEARCHABLE_SYMBOLS.filter(
     (s) =>
       s.symbol !== symbol &&
       (!searchQuery ||
@@ -124,7 +124,7 @@ export default function QuoteCard({
             ))}
             {/* Custom symbol option when no exact match */}
             {searchQuery.trim().length >= 1 &&
-              !ALL_SYMBOLS.some((s) => s.symbol === searchQuery.trim().toUpperCase()) && (
+              !SEARCHABLE_SYMBOLS.some((s) => s.symbol === searchQuery.trim().toUpperCase()) && (
                 <button
                   onClick={() => {
                     onConfigChange({

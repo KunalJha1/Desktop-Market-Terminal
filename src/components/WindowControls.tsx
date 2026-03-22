@@ -1,14 +1,20 @@
 import { useEffect, useState, useCallback } from "react";
 import { appWindow } from "@tauri-apps/api/window";
+import { isTauriRuntime, usePlatform } from "../lib/platform";
 
 export default function WindowControls() {
+  const { isMac, ready } = usePlatform();
   const [maximized, setMaximized] = useState(false);
+  const canUseWindowControls = isTauriRuntime();
+  const shouldRenderControls = canUseWindowControls && !(ready && isMac);
 
   useEffect(() => {
-    appWindow.isMaximized().then(setMaximized);
+    if (!shouldRenderControls) return;
+
+    appWindow.isMaximized().then(setMaximized).catch(() => {});
 
     const unlisten = appWindow.onResized(() => {
-      appWindow.isMaximized().then(setMaximized);
+      appWindow.isMaximized().then(setMaximized).catch(() => {});
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -16,19 +22,28 @@ export default function WindowControls() {
   }, []);
 
   const handleMaxToggle = useCallback(async () => {
-    const isMax = await appWindow.isMaximized();
-    if (isMax) {
-      await appWindow.unmaximize();
-    } else {
-      await appWindow.maximize();
+    try {
+      const isMax = await appWindow.isMaximized();
+      if (isMax) {
+        await appWindow.unmaximize();
+      } else {
+        await appWindow.maximize();
+      }
+    } catch {
+      // Ignore window control failures outside the desktop runtime.
     }
   }, []);
+
+  // macOS uses native traffic lights — don't render custom controls
+  if (!shouldRenderControls) return null;
 
   return (
     <div data-no-drag className="flex items-center">
       {/* Minimize */}
       <button
-        onClick={() => appWindow.minimize()}
+        onClick={() => {
+          appWindow.minimize().catch(() => {});
+        }}
         className="flex h-8 w-11 items-center justify-center text-white/40 transition-colors duration-75 hover:bg-white/[0.08] hover:text-white/70"
       >
         <svg width="10" height="1" viewBox="0 0 10 1">
@@ -66,7 +81,9 @@ export default function WindowControls() {
 
       {/* Close */}
       <button
-        onClick={() => appWindow.close()}
+        onClick={() => {
+          appWindow.close().catch(() => {});
+        }}
         className="flex h-8 w-11 items-center justify-center text-white/40 transition-colors duration-75 hover:bg-[#c42b1c] hover:text-white"
       >
         <svg width="10" height="10" viewBox="0 0 10 10">

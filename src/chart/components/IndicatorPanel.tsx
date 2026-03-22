@@ -88,7 +88,7 @@ export default function IndicatorPanel({ open, onClose, onAddIndicator }: Indica
               {items.map((ind) => (
                 <button
                   key={ind.key}
-                  onClick={() => { onAddIndicator(ind.key); onClose(); }}
+                  onClick={() => { onAddIndicator(ind.key); }}
                   className="w-full text-left px-3 py-1.5 text-[11px] text-text-secondary
                              hover:text-text-primary hover:bg-hover transition-colors duration-120
                              flex items-center justify-between"

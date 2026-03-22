@@ -2,7 +2,7 @@
 
 Runs every INTERVAL_S seconds, computes 0-100 scores for every symbol in the
 watchlist across four fixed timeframes (1m, 5m, 1h, 4h), and upserts results
-into the `technical_scores` DuckDB table.
+into the `technical_scores` SQLite table.
 
 The heavy lifting (indicator math) runs in a thread-pool executor so it never
 blocks the asyncio event loop.
@@ -14,36 +14,40 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from db_utils import sync_db_session
+from db_utils import execute_many_with_retry, sync_db_session
 from technicals import score_symbols
 
 logger = logging.getLogger(__name__)
 
-TIMEFRAMES = ["1m", "5m", "1h", "4h"]
+TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"]
 INTERVAL_S = 60
 
 
 def _upsert_scores(
-    rows: list[tuple[str, int | None, int | None, int | None, int | None]],
+    rows: list[tuple[str, int | None, int | None, int | None, int | None, int | None, int | None, int | None]],
     now_utc: datetime,
 ) -> None:
-    """Write scored rows into technical_scores via INSERT OR REPLACE."""
+    """Write scored rows into technical_scores via upsert with retry."""
     if not rows:
         return
     with sync_db_session() as conn:
-        conn.executemany(
+        execute_many_with_retry(
+            conn,
             """
             INSERT INTO technical_scores
-                (symbol, score_1m, score_5m, score_1h, score_4h, last_updated_utc)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (symbol, score_1m, score_5m, score_15m, score_1h, score_4h, score_1d, score_1w, last_updated_utc)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (symbol) DO UPDATE SET
                 score_1m         = excluded.score_1m,
                 score_5m         = excluded.score_5m,
+                score_15m        = excluded.score_15m,
                 score_1h         = excluded.score_1h,
                 score_4h         = excluded.score_4h,
+                score_1d         = excluded.score_1d,
+                score_1w         = excluded.score_1w,
                 last_updated_utc = excluded.last_updated_utc
             """,
-            [(sym, s1m, s5m, s1h, s4h, now_utc) for sym, s1m, s5m, s1h, s4h in rows],
+            [(sym, s1m, s5m, s15m, s1h, s4h, s1d, s1w, now_utc) for sym, s1m, s5m, s15m, s1h, s4h, s1d, s1w in rows],
         )
 
 
@@ -58,8 +62,11 @@ def _compute_and_upsert(symbols: list[str]) -> None:
             sym,
             scores.get("1m"),
             scores.get("5m"),
+            scores.get("15m"),
             scores.get("1h"),
             scores.get("4h"),
+            scores.get("1d"),
+            scores.get("1w"),
         )
         for sym, scores in scored.items()
     ]
@@ -75,7 +82,8 @@ def read_scores(symbols: list[str]) -> list[dict]:
     with sync_db_session() as conn:
         rows = conn.execute(
             f"""
-            SELECT symbol, score_1m, score_5m, score_1h, score_4h, last_updated_utc
+            SELECT symbol, score_1m, score_5m, score_15m, score_1h, score_4h,
+                   score_1d, score_1w, last_updated_utc
             FROM technical_scores
             WHERE symbol IN ({placeholders})
             """,
@@ -86,9 +94,12 @@ def read_scores(symbols: list[str]) -> list[dict]:
             "symbol": r[0],
             "1m": r[1],
             "5m": r[2],
-            "1h": r[3],
-            "4h": r[4],
-            "last_updated_utc": r[5].isoformat() if r[5] else None,
+            "15m": r[3],
+            "1h": r[4],
+            "4h": r[5],
+            "1d": r[6],
+            "1w": r[7],
+            "last_updated_utc": r[8].isoformat() if hasattr(r[8], "isoformat") else r[8],
         }
         for r in rows
     ]
@@ -106,7 +117,7 @@ class TechnicalsScorer:
 
     def start(self) -> None:
         if self._task is None or self._task.done():
-            self._task = asyncio.ensure_future(self._loop())
+            self._task = asyncio.get_running_loop().create_task(self._loop())
 
     def stop(self) -> None:
         if self._task and not self._task.done():

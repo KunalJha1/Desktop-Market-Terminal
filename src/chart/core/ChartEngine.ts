@@ -1,5 +1,6 @@
-import type { OHLCVBar, ChartType, ActiveIndicator, ChartLayout, SubPaneLayout } from '../types';
+import type { OHLCVBar, ChartType, ActiveIndicator, ChartLayout, SubPaneLayout, YScaleMode } from '../types';
 import { COLORS, PRICE_AXIS_WIDTH, TIME_AXIS_HEIGHT, SUB_PANE_HEIGHT, SUB_PANE_SEPARATOR } from '../constants';
+import { DEFAULT_BARS_VISIBLE } from '../constants';
 import { Viewport } from './Viewport';
 import { Renderer } from './Renderer';
 import { ScaleY } from './ScaleY';
@@ -52,6 +53,8 @@ export class ChartEngine {
   private width = 0;
   private height = 0;
   private destroyed = false;
+  private liveMode = false;
+  private stopperPx = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -78,9 +81,13 @@ export class ChartEngine {
   // --- Public API ---
 
   setData(bars: OHLCVBar[]) {
+    const wasNearEnd = this.liveMode && this.viewport.isNearEnd(2);
     this.bars = bars;
     this.viewport.setTotalBars(bars.length);
     this.recomputeIndicators();
+    if (wasNearEnd) {
+      this.viewport.scrollToEnd();
+    }
     this.markDirty();
   }
 
@@ -91,6 +98,50 @@ export class ChartEngine {
 
   setTimeframe(tf: Timeframe) {
     this.scaleX.timeframe = tf;
+    this.markDirty();
+  }
+
+  setYScaleMode(mode: YScaleMode) {
+    this.viewport.setYScaleMode(mode);
+    this.markDirty();
+  }
+
+  setLiveMode(isLive: boolean) {
+    this.liveMode = isLive;
+    const rightOffsetBars = this.computeRightOffsetBars();
+    this.viewport.setRightOffsetBars(rightOffsetBars);
+    if (isLive && this.bars.length > 0) {
+      this.viewport.scrollToEnd();
+    }
+    this.markDirty();
+  }
+
+  setStopperPx(px: number) {
+    const wasNearEnd = this.liveMode && this.viewport.isNearEnd(2);
+    this.stopperPx = Math.max(0, px);
+    const rightOffsetBars = this.computeRightOffsetBars();
+    this.viewport.setRightOffsetBars(rightOffsetBars);
+    if (wasNearEnd) {
+      this.viewport.scrollToEnd();
+    }
+    this.markDirty();
+  }
+
+  zoomIn() {
+    const anchor = this.viewport.chartLeft + this.viewport.chartWidth / 2;
+    this.viewport.zoom(1, anchor);
+    this.markDirty();
+  }
+
+  zoomOut() {
+    const anchor = this.viewport.chartLeft + this.viewport.chartWidth / 2;
+    this.viewport.zoom(-1, anchor);
+    this.markDirty();
+  }
+
+  resetZoom() {
+    this.viewport.setBarsVisible(DEFAULT_BARS_VISIBLE);
+    this.viewport.scrollToEnd();
     this.markDirty();
   }
 
@@ -275,6 +326,9 @@ export class ChartEngine {
   }
 
   private render() {
+    const rightOffsetBars = this.computeRightOffsetBars();
+    this.viewport.setRightOffsetBars(rightOffsetBars);
+
     const layout = this.computeLayout();
     const chartAreaWidth = this.width - PRICE_AXIS_WIDTH;
 
@@ -292,6 +346,10 @@ export class ChartEngine {
 
     // Clip to chart area for main rendering
     this.renderer.clip(0, 0, chartAreaWidth, layout.mainHeight, () => {
+      // Grid lines (behind chart)
+      this.scaleY.renderGrid(this.renderer, this.viewport, this.width);
+      this.scaleX.renderGrid(this.renderer, this.viewport, this.bars, this.height, this.width);
+
       // Volume bars (behind price action)
       this.volumeRenderer.render(this.renderer, this.viewport, this.bars);
 
@@ -321,6 +379,13 @@ export class ChartEngine {
       this.renderOverlays();
     });
 
+    if (this.liveMode && this.stopperPx > 0 && this.bars.length > 0) {
+      const lastIndex = this.bars.length - 1;
+      const stopperX = this.viewport.barToPixelX(lastIndex);
+      const bottom = this.height - TIME_AXIS_HEIGHT;
+      this.renderer.line(stopperX, 0, stopperX, bottom, COLORS.border);
+    }
+
     // Sub-panes (oscillators + scripts)
     for (const pane of layout.subPanes) {
       this.renderSubPane(pane, chartAreaWidth);
@@ -343,6 +408,13 @@ export class ChartEngine {
     // Crosshair & tooltip (with indicator labels)
     this.crosshair.render(this.renderer, this.viewport, this.scaleX, this.width, this.height);
     this.tooltip.render(this.renderer, this.viewport, this.crosshair.hit);
+  }
+
+  private computeRightOffsetBars(): number {
+    if (!this.liveMode || this.stopperPx <= 0) return 0;
+    const barWidth = this.viewport.barWidth;
+    if (barWidth <= 0) return 0;
+    return this.stopperPx / barWidth;
   }
 
   private renderOverlays() {

@@ -8,9 +8,21 @@ interface ChartCanvasProps {
   timeframe: Timeframe;
   engineRef: React.MutableRefObject<ChartEngine | null>;
   activeScripts?: Map<string, ScriptResult>;
+  liveMode?: boolean;
+  stopperPx?: number;
+  onStopperPxChange?: (px: number) => void;
 }
 
-export default function ChartCanvas({ bars, chartType, timeframe, engineRef, activeScripts }: ChartCanvasProps) {
+export default function ChartCanvas({
+  bars,
+  chartType,
+  timeframe,
+  engineRef,
+  activeScripts,
+  liveMode = false,
+  stopperPx = 0,
+  onStopperPxChange,
+}: ChartCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -64,6 +76,14 @@ export default function ChartCanvas({ bars, chartType, timeframe, engineRef, act
     engineRef.current?.setTimeframe(timeframe);
   }, [timeframe, engineRef]);
 
+  // Update live mode / stopper
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.setLiveMode(liveMode);
+    engine.setStopperPx(stopperPx);
+  }, [liveMode, stopperPx, engineRef]);
+
   // Update script results (multi-script)
   useEffect(() => {
     const engine = engineRef.current;
@@ -84,6 +104,31 @@ export default function ChartCanvas({ bars, chartType, timeframe, engineRef, act
         className="absolute inset-0"
         style={{ cursor: 'crosshair' }}
       />
+      {liveMode && (
+        <div
+          className="absolute right-2 bottom-1 flex items-center gap-2"
+          style={{
+            height: 20,
+            padding: '0 6px',
+            backgroundColor: 'rgba(13,17,23,0.7)',
+            border: '1px solid rgba(33,38,45,0.7)',
+            borderRadius: 4,
+            backdropFilter: 'blur(2px)',
+          }}
+        >
+          <span className="text-[9px] font-mono text-text-muted">Stop</span>
+          <input
+            type="range"
+            min={0}
+            max={200}
+            step={2}
+            value={stopperPx}
+            onChange={(e) => onStopperPxChange?.(Number(e.target.value))}
+            style={{ width: 90 }}
+          />
+          <span className="text-[9px] font-mono text-text-muted">{stopperPx}px</span>
+        </div>
+      )}
     </div>
   );
 }

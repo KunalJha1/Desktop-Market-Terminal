@@ -46,7 +46,7 @@ class SubscriptionManager:
 
     async def update_watchlist(self, symbols: list[str]):
         """Diff-based update: receives full symbol list, computes adds/removes."""
-        desired = set(symbols)
+        desired = {s for s in symbols if s}
         current = set()
         for slot in self._watchlist_slots:
             current |= slot.symbols

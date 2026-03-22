@@ -9,6 +9,7 @@ import {
   Mail,
 } from "lucide-react";
 import { appWindow } from "@tauri-apps/api/window";
+import { isTauriRuntime, usePlatform } from "../lib/platform";
 import Logo from "../components/Logo";
 import WindowControls from "../components/WindowControls";
 
@@ -57,24 +58,31 @@ export default function AuthLayout() {
   const location = useLocation();
   const copy = copyByRoute[location.pathname] ?? copyByRoute["/"];
   const lastClickTime = useRef(0);
+  const { isMac } = usePlatform();
+  const canDragWindow = isTauriRuntime();
 
   return (
     <div className="relative flex h-screen w-screen flex-col bg-gradient-to-br from-[#0f172a] via-[#131d35] to-[#0a0f1a]">
       {/* Title bar drag region + window controls */}
       <div
-        className="absolute inset-x-0 top-0 z-50 flex h-8 items-center justify-end bg-[#10151C]/80"
+        className={`absolute inset-x-0 top-0 z-50 flex h-8 items-center justify-end bg-[#10151C]/80 ${
+          isMac ? "pl-[70px]" : ""
+        }`}
         onMouseDown={async (e) => {
+          if (!canDragWindow) return;
           if ((e.target as HTMLElement).closest("[data-no-drag]")) return;
           e.preventDefault();
           const now = Date.now();
           if (now - lastClickTime.current < 300) {
             lastClickTime.current = 0;
-            const isMax = await appWindow.isMaximized();
-            if (isMax) await appWindow.unmaximize();
-            else await appWindow.maximize();
+            try {
+              const isMax = await appWindow.isMaximized();
+              if (isMax) await appWindow.unmaximize();
+              else await appWindow.maximize();
+            } catch {}
           } else {
             lastClickTime.current = now;
-            appWindow.startDragging();
+            appWindow.startDragging().catch(() => {});
           }
         }}
       >

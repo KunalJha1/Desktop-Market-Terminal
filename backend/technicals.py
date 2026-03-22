@@ -3,11 +3,12 @@ Pure pandas/numpy technical analysis scoring for the watchlist.
 
 Implements the same indicator set and classify_technicals logic as
 DailyIQ/backend/build_technical_analysis.py, but reads from this
-project's DuckDB (ohlcv_1m / ohlcv_1d) instead of SQLite price_bars.
+project's SQLite market DB (ohlcv_1m / ohlcv_1d).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 
 import numpy as np
@@ -36,22 +37,31 @@ _TF_RESAMPLE_MINUTES: dict[str, int] = {
 
 # ─── DB helpers ──────────────────────────────────────────────────────
 
+_OHLCV_COLS = ["ts", "open", "high", "low", "close", "volume"]
+
+
 def _get_1m(conn, symbol: str, limit: int) -> pd.DataFrame:
-    df = conn.execute(
+    rows = conn.execute(
         "SELECT ts, open, high, low, close, volume "
         "FROM ohlcv_1m WHERE symbol = ? ORDER BY ts DESC LIMIT ?",
         [symbol.upper(), limit],
-    ).fetchdf()
-    return df.sort_values("ts").reset_index(drop=True) if not df.empty else df
+    ).fetchall()
+    if not rows:
+        return pd.DataFrame(columns=_OHLCV_COLS)
+    df = pd.DataFrame(rows, columns=_OHLCV_COLS)
+    return df.sort_values("ts").reset_index(drop=True)
 
 
 def _get_1d(conn, symbol: str, limit: int = 500) -> pd.DataFrame:
-    df = conn.execute(
+    rows = conn.execute(
         "SELECT ts, open, high, low, close, volume "
         "FROM ohlcv_1d WHERE symbol = ? ORDER BY ts DESC LIMIT ?",
         [symbol.upper(), limit],
-    ).fetchdf()
-    return df.sort_values("ts").reset_index(drop=True) if not df.empty else df
+    ).fetchall()
+    if not rows:
+        return pd.DataFrame(columns=_OHLCV_COLS)
+    df = pd.DataFrame(rows, columns=_OHLCV_COLS)
+    return df.sort_values("ts").reset_index(drop=True)
 
 
 def _resample(df: pd.DataFrame, minutes: int) -> pd.DataFrame:
@@ -167,11 +177,28 @@ def compute_ma(df: pd.DataFrame, length: int = 20) -> dict:
     return {"value": _v(df["close"].rolling(length).mean())}
 
 
+def compute_ema(df: pd.DataFrame, length: int = 20) -> dict:
+    return {"value": _v(df["close"].ewm(span=length, adjust=False).mean())}
+
+
 def compute_vwap(df: pd.DataFrame) -> dict:
     tp     = (df["high"] + df["low"] + df["close"]) / 3
     cum_pv = (tp * df["volume"]).cumsum()
     cum_v  = df["volume"].cumsum().replace(0, np.nan)
     return {"value": _v(cum_pv / cum_v)}
+
+
+def compute_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> dict:
+    ema_fast = df["close"].ewm(span=fast, adjust=False).mean()
+    ema_slow = df["close"].ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return {
+        "macd": _v(macd_line),
+        "signal": _v(signal_line),
+        "histogram": _v(histogram),
+    }
 
 
 def compute_supertrend(df: pd.DataFrame, atr_len: int = 10, mult: float = 3.0) -> dict:
@@ -314,8 +341,7 @@ def score_symbols(
     """
     Compute 0-100 technical scores for every (symbol, timeframe) pair.
     Returns { symbol: { timeframe: score_or_null } }.
-    Uses the process-wide DuckDB manager so scoring cannot race other sidecar DB
-    work on Windows.
+    Uses sync_db_session so scoring is safe from any thread.
     """
     result: dict[str, dict[str, int | None]] = {}
     try:
@@ -336,7 +362,118 @@ def score_symbols(
                         logger.warning(f"score({sym}, {tf}): {e}")
                         result[sym][tf] = None
     except Exception as e:
-        logger.error(f"technicals: cannot access DuckDB: {e}")
+        logger.error(f"technicals: cannot access DB: {e}")
         return {s: {tf: None for tf in timeframes} for s in symbols}
+
+    return result
+
+
+# ─── Individual indicator dispatcher ─────────────────────────────────
+
+def indicator_key(spec: dict) -> str:
+    return json.dumps(
+        {
+            "type": spec.get("type", ""),
+            "timeframe": spec.get("timeframe", "1h"),
+            "params": dict(sorted((spec.get("params", {}) or {}).items())),
+            "output": spec.get("output"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def compute_indicator(
+    df: pd.DataFrame,
+    indicator_type: str,
+    params: dict,
+    output: str | None,
+) -> float | None:
+    """Compute a single indicator's scalar value from params/output."""
+    try:
+        if indicator_type == "RSI":
+            return compute_rsi(df, int(params.get("period", 14))).get("value")
+        if indicator_type == "EMA":
+            return compute_ema(df, int(params.get("period", 20))).get("value")
+        if indicator_type == "SMA":
+            return compute_ma(df, int(params.get("period", 20))).get("value")
+        if indicator_type == "CCI":
+            return compute_cci(df, int(params.get("period", 20))).get("value")
+        if indicator_type == "StochK":
+            return compute_stoch_k(
+                df,
+                int(params.get("period", 14)),
+                int(params.get("smooth", 3)),
+            ).get("k")
+        if indicator_type == "StochRSI":
+            return compute_stochrsi(
+                df,
+                int(params.get("period", 14)),
+                int(params.get("smooth", 3)),
+            ).get("k")
+        if indicator_type == "BBP":
+            return compute_bbp(
+                df,
+                int(params.get("period", 20)),
+                float(params.get("stdDev", 2)),
+            ).get("value")
+        if indicator_type == "VWAP":
+            return compute_vwap(df).get("value")
+        if indicator_type == "ATR":
+            return _v(_atr(df["high"], df["low"], df["close"], int(params.get("period", 14))))
+        if indicator_type == "MACD":
+            macd = compute_macd(
+                df,
+                int(params.get("fast", 12)),
+                int(params.get("slow", 26)),
+                int(params.get("signal", 9)),
+            )
+            return macd.get(output or "macd")
+        return None
+    except Exception as e:
+        logger.warning(f"compute_indicator({indicator_type}, {params}, {output}): {e}")
+        return None
+
+
+def compute_indicators_for_symbols(
+    symbols: list[str],
+    indicators: list[dict],
+) -> dict[str, dict[str, float | None]]:
+    """
+    Compute individual indicator values for multiple symbols.
+
+    indicators: list of {"type": "RSI", "params": {"period": 14}, "timeframe": "1h", "output": "value"}
+    Returns: { symbol: { "<serialized spec>": 62.3, ... } }
+    """
+    result: dict[str, dict[str, float | None]] = {}
+    try:
+        with sync_db_session() as conn:
+            # Group indicators by timeframe to reuse loaded DataFrames
+            tf_groups: dict[str, list[dict]] = {}
+            for spec in indicators:
+                tf = spec.get("timeframe", "1h")
+                tf_groups.setdefault(tf, []).append(spec)
+
+            for sym in symbols:
+                result[sym] = {}
+                # Cache loaded DataFrames per timeframe
+                df_cache: dict[str, pd.DataFrame | None] = {}
+                for tf, specs in tf_groups.items():
+                    if tf not in df_cache:
+                        df = _load_df(conn, sym, tf)
+                        df_cache[tf] = df if (df is not None and len(df) >= MIN_BARS) else None
+                    df = df_cache[tf]
+                    for spec in specs:
+                        itype = spec.get("type", "")
+                        params = spec.get("params", {}) or {}
+                        output = spec.get("output")
+                        key = indicator_key(spec)
+                        if df is None:
+                            result[sym][key] = None
+                        else:
+                            result[sym][key] = compute_indicator(df, itype, params, output)
+    except Exception as e:
+        logger.error(f"compute_indicators_for_symbols: {e}")
+        return {s: {} for s in symbols}
 
     return result

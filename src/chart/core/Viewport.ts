@@ -3,6 +3,7 @@ import {
   MAX_BARS_VISIBLE,
   DEFAULT_BARS_VISIBLE,
 } from '../constants';
+import type { YScaleMode } from '../types';
 
 // How many bars of empty space to allow scrolling past the right edge
 const FRONT_MARGIN_BARS = 50;
@@ -11,6 +12,7 @@ export class Viewport {
   startIndex: number = 0;
   barsVisible: number = DEFAULT_BARS_VISIBLE;
   totalBars: number = 0;
+  rightOffsetBars: number = 0;
 
   // Computed layout region for the main chart area
   chartLeft: number = 0;
@@ -21,6 +23,7 @@ export class Viewport {
   // Price range
   priceMin: number = 0;
   priceMax: number = 0;
+  yScaleMode: YScaleMode = 'auto';
 
   // Manual Y-axis scale mode
   // When true, auto-fit is disabled and user drags to scale
@@ -34,7 +37,8 @@ export class Viewport {
   }
 
   get endIndex(): number {
-    return Math.min(this.startIndex + this.barsVisible, this.totalBars + FRONT_MARGIN_BARS);
+    const extra = Math.max(FRONT_MARGIN_BARS, Math.ceil(this.rightOffsetBars));
+    return Math.min(this.startIndex + this.barsVisible, this.totalBars + extra);
   }
 
   setRegion(left: number, top: number, width: number, height: number) {
@@ -52,8 +56,29 @@ export class Viewport {
     }
   }
 
+  setRightOffsetBars(bars: number) {
+    this.rightOffsetBars = Math.max(0, bars);
+  }
+
+  setBarsVisible(bars: number) {
+    const next = Math.max(MIN_BARS_VISIBLE, Math.min(MAX_BARS_VISIBLE, Math.round(bars)));
+    if (next === this.barsVisible) return;
+    const anchorBar = this.startIndex + this.barsVisible / 2;
+    this.barsVisible = next;
+    this.startIndex = this.clampStart(anchorBar - this.barsVisible / 2);
+  }
+
+  getMaxStart(): number {
+    const extra = Math.max(FRONT_MARGIN_BARS, Math.ceil(this.rightOffsetBars));
+    return Math.max(0, this.totalBars + extra - this.barsVisible);
+  }
+
+  isNearEnd(thresholdBars: number): boolean {
+    return this.startIndex >= this.getMaxStart() - thresholdBars;
+  }
+
   scrollToEnd() {
-    this.startIndex = Math.max(0, this.totalBars - this.barsVisible);
+    this.startIndex = this.getMaxStart();
   }
 
   pan(pixelDelta: number) {
@@ -99,6 +124,23 @@ export class Viewport {
       max = 100;
     }
 
+    if (this.yScaleMode === 'log') {
+      let minPos = min;
+      if (minPos <= 0) {
+        minPos = Infinity;
+        for (let i = start; i < end; i++) {
+          const low = lows[i];
+          if (low > 0 && low < minPos) minPos = low;
+        }
+        if (!isFinite(minPos)) minPos = 1;
+      }
+      const maxPos = Math.max(max, minPos * 1.01);
+      const padFactor = 0.05;
+      this.priceMin = minPos / (1 + padFactor);
+      this.priceMax = maxPos * (1 + padFactor);
+      return;
+    }
+
     const padding = (max - min) * 0.05 || 1;
     this.priceMin = min - padding;
     this.priceMax = max + padding;
@@ -117,11 +159,25 @@ export class Viewport {
     const dy = mouseY - this.yScaleAnchorY;
     // Scale factor: dragging down zooms in (shrinks range), up zooms out
     const scaleFactor = Math.pow(1.005, dy);
-    const range = this.priceMax - this.priceMin;
-    const newRange = range * scaleFactor;
-    const center = (this.priceMax + this.priceMin) / 2;
-    this.priceMin = center - newRange / 2;
-    this.priceMax = center + newRange / 2;
+    if (this.yScaleMode === 'log') {
+      const safeMin = Math.max(this.priceMin, 1e-8);
+      const safeMax = Math.max(this.priceMax, safeMin * 1.01);
+      const logMin = Math.log10(safeMin);
+      const logMax = Math.log10(safeMax);
+      const range = logMax - logMin;
+      const newRange = range * scaleFactor;
+      const center = (logMax + logMin) / 2;
+      const nextLogMin = center - newRange / 2;
+      const nextLogMax = center + newRange / 2;
+      this.priceMin = Math.pow(10, nextLogMin);
+      this.priceMax = Math.pow(10, nextLogMax);
+    } else {
+      const range = this.priceMax - this.priceMin;
+      const newRange = range * scaleFactor;
+      const center = (this.priceMax + this.priceMin) / 2;
+      this.priceMin = center - newRange / 2;
+      this.priceMax = center + newRange / 2;
+    }
     this.yScaleAnchorY = mouseY;
   }
 
@@ -130,6 +186,12 @@ export class Viewport {
   }
 
   resetYScale() {
+    this.manualYScale = false;
+  }
+
+  setYScaleMode(mode: YScaleMode) {
+    if (this.yScaleMode === mode) return;
+    this.yScaleMode = mode;
     this.manualYScale = false;
   }
 
@@ -144,6 +206,18 @@ export class Viewport {
 
   /** Convert price to pixel Y. */
   priceToPixelY(price: number): number {
+    if (this.yScaleMode === 'log') {
+      const safeMin = Math.max(this.priceMin, 1e-8);
+      const safeMax = Math.max(this.priceMax, safeMin * 1.01);
+      const logMin = Math.log10(safeMin);
+      const logMax = Math.log10(safeMax);
+      const range = logMax - logMin;
+      if (range === 0) return this.chartTop + this.chartHeight / 2;
+      const logPrice = Math.log10(Math.max(price, safeMin));
+      const ratio = (logMax - logPrice) / range;
+      return this.chartTop + ratio * this.chartHeight;
+    }
+
     const range = this.priceMax - this.priceMin;
     if (range === 0) return this.chartTop + this.chartHeight / 2;
     const ratio = (this.priceMax - price) / range;
@@ -157,6 +231,16 @@ export class Viewport {
 
   /** Convert pixel Y to price. */
   pixelYToPrice(py: number): number {
+    if (this.yScaleMode === 'log') {
+      const safeMin = Math.max(this.priceMin, 1e-8);
+      const safeMax = Math.max(this.priceMax, safeMin * 1.01);
+      const logMin = Math.log10(safeMin);
+      const logMax = Math.log10(safeMax);
+      const ratio = (py - this.chartTop) / this.chartHeight;
+      const logPrice = logMax - ratio * (logMax - logMin);
+      return Math.pow(10, logPrice);
+    }
+
     const ratio = (py - this.chartTop) / this.chartHeight;
     return this.priceMax - ratio * (this.priceMax - this.priceMin);
   }
@@ -168,7 +252,7 @@ export class Viewport {
 
   private clampStart(v: number): number {
     // Allow scrolling past the right edge by FRONT_MARGIN_BARS
-    const maxStart = Math.max(0, this.totalBars + FRONT_MARGIN_BARS - this.barsVisible);
+    const maxStart = this.getMaxStart();
     return Math.max(0, Math.min(maxStart, v));
   }
 }

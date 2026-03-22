@@ -10,6 +10,25 @@ export class ScaleY {
    * Compute nice price ticks for the visible range.
    */
   computeTicks(viewport: Viewport, maxTicks: number = 10): number[] {
+    if (viewport.yScaleMode === 'log') {
+      const min = viewport.priceMin;
+      const max = viewport.priceMax;
+      if (min <= 0 || max <= 0) return [];
+      const logMin = Math.log10(min);
+      const logMax = Math.log10(max);
+      const range = logMax - logMin;
+      if (range <= 0) return [];
+
+      const rawStep = range / maxTicks;
+      const step = niceNumber(rawStep, false);
+      const start = Math.ceil(logMin / step) * step;
+      const ticks: number[] = [];
+      for (let v = start; v <= logMax; v += step) {
+        ticks.push(Math.pow(10, v));
+      }
+      return ticks;
+    }
+
     const range = viewport.priceMax - viewport.priceMin;
     if (range <= 0) return [];
 
@@ -38,12 +57,20 @@ export class ScaleY {
       const y = viewport.priceToPixelY(tick);
       if (y < viewport.chartTop || y > viewport.chartTop + viewport.chartHeight) continue;
 
-      // Grid line
-      renderer.line(viewport.chartLeft, y, axisX, y, COLORS.gridLine);
-
       // Label
       const label = formatPrice(tick);
       renderer.text(label, axisX + 6, y, COLORS.textSecondary, 'left');
+    }
+  }
+
+  renderGrid(renderer: Renderer, viewport: Viewport, canvasWidth: number) {
+    const ticks = this.computeTicks(viewport);
+    const axisX = canvasWidth - PRICE_AXIS_WIDTH;
+
+    for (const tick of ticks) {
+      const y = viewport.priceToPixelY(tick);
+      if (y < viewport.chartTop || y > viewport.chartTop + viewport.chartHeight) continue;
+      renderer.line(viewport.chartLeft, y, axisX, y, COLORS.gridLine);
     }
   }
 

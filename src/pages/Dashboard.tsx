@@ -3,6 +3,7 @@ import { appWindow } from "@tauri-apps/api/window";
 import { useAuth } from "../lib/auth";
 import { useTabs, type TabType } from "../lib/tabs";
 import { useTws } from "../lib/tws";
+import { isTauriRuntime, usePlatform } from "../lib/platform";
 import WindowControls from "../components/WindowControls";
 import TabBar from "../components/TabBar";
 import SettingsPanel from "../components/SettingsPanel";
@@ -35,11 +36,12 @@ export default function Dashboard() {
   const { session } = useAuth();
   const { tabs, activeTabId } = useTabs();
   const { status, port, clientId, connectionType, sidecarStatus } = useTws();
+  const { isMac } = usePlatform();
 
   // Derive active data provider for status bar
   const dataProvider = status === "connected"
     ? "live" as const
-    : sidecarStatus === "ready"
+    : sidecarStatus === "connected"
       ? "yahoo" as const
       : "offline" as const;
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -50,6 +52,7 @@ export default function Dashboard() {
     "User";
 
   const lastClickTime = useRef(0);
+  const canDragWindow = isTauriRuntime();
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const ActivePage = activeTab ? pageByType[activeTab.type] : null;
@@ -58,35 +61,57 @@ export default function Dashboard() {
     <div className="flex h-screen flex-col bg-base">
       {/* Top bar — draggable titlebar */}
       <header
-        className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.06] bg-[#10151C] px-3"
+        className={`flex h-8 shrink-0 items-center border-b border-white/[0.06] bg-[#10151C] px-3 ${
+          isMac ? "justify-end pl-[70px]" : "justify-between"
+        }`}
         onMouseDown={async (e) => {
+          if (!canDragWindow) return;
           if ((e.target as HTMLElement).closest("[data-no-drag]")) return;
           e.preventDefault();
           const now = Date.now();
           if (now - lastClickTime.current < 300) {
             lastClickTime.current = 0;
-            const isMax = await appWindow.isMaximized();
-            if (isMax) await appWindow.unmaximize();
-            else await appWindow.maximize();
+            try {
+              const isMax = await appWindow.isMaximized();
+              if (isMax) await appWindow.unmaximize();
+              else await appWindow.maximize();
+            } catch {}
           } else {
             lastClickTime.current = now;
-            appWindow.startDragging();
+            appWindow.startDragging().catch(() => {});
           }
         }}
       >
-        <div className="flex items-center gap-3" data-no-drag>
-          <p className="text-[11px] font-light tracking-wide text-white/40">
-            Hi, <span className="text-white/70">{firstName}</span>
-          </p>
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="text-[11px] font-light text-white/30 transition-all duration-100 hover:text-white/80"
-          >
-            Settings
-          </button>
-        </div>
+        {!isMac && (
+          <div className="flex items-center gap-3" data-no-drag>
+            <p className="text-[11px] font-light tracking-wide text-white/40">
+              Hi, <span className="text-white/70">{firstName}</span>
+            </p>
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="text-[11px] font-light text-white/30 transition-all duration-100 hover:text-white/80"
+            >
+              Settings
+            </button>
+          </div>
+        )}
 
-        <WindowControls />
+        <div className="flex items-center gap-3" data-no-drag>
+          {isMac && (
+            <>
+              <p className="text-[11px] font-light tracking-wide text-white/40">
+                Hi, <span className="text-white/70">{firstName}</span>
+              </p>
+              <button
+                onClick={() => setSettingsOpen(true)}
+                className="text-[11px] font-light text-white/30 transition-all duration-100 hover:text-white/80"
+              >
+                Settings
+              </button>
+            </>
+          )}
+          <WindowControls />
+        </div>
       </header>
 
       {/* Tab bar */}
