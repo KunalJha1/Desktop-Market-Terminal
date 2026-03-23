@@ -503,9 +503,9 @@ def upsert_quote_valuation(symbol: str, trailing_pe: float | None, forward_pe: f
                 symbol, trailing_pe, forward_pe, market_cap, valuation_updated_at, source, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(symbol) DO UPDATE SET
-                trailing_pe = excluded.trailing_pe,
-                forward_pe = excluded.forward_pe,
-                market_cap = excluded.market_cap,
+                trailing_pe = COALESCE(excluded.trailing_pe, watchlist_quotes.trailing_pe),
+                forward_pe = COALESCE(excluded.forward_pe, watchlist_quotes.forward_pe),
+                market_cap = COALESCE(excluded.market_cap, watchlist_quotes.market_cap),
                 valuation_updated_at = excluded.valuation_updated_at
             """,
             (symbol, trailing_pe, forward_pe, market_cap, now_ms, "yahoo", now_ms),
@@ -526,6 +526,7 @@ def get_stale_valuation_symbols(symbols: List[str], max_age_s: float) -> List[st
               AND (
                   valuation_updated_at IS NULL
                   OR valuation_updated_at < ?
+                  OR market_cap IS NULL
               )
             """,
             (*symbols, cutoff_ms),
