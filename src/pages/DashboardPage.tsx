@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import DashboardToolbar from "../components/DashboardToolbar";
 import GridLayout from "../components/GridLayout";
 import QuoteCard from "../components/QuoteCard";
+import IBKRPortfolioCard from "../components/IBKRPortfolioCard";
 import WatchlistCard from "../components/WatchlistCard";
 import MiniChart from "../chart/components/MiniChart";
 import { useTabs } from "../lib/tabs";
@@ -13,6 +14,7 @@ const COMPONENT_TYPES = [
   { type: "quote", label: "Quote Card", defaultW: 4, defaultH: 8 },
   { type: "watchlist", label: "Watchlist", defaultW: 4, defaultH: 10 },
   { type: "minichart", label: "Mini Chart", defaultW: 4, defaultH: 8 },
+  { type: "ibkr-portfolio", label: "IBKR Portfolio", defaultW: 8, defaultH: 12 },
 ] as const;
 
 export default function DashboardPage() {
@@ -27,6 +29,7 @@ export default function DashboardPage() {
     removeComponent,
     updateComponent,
     setComponentLinkChannel,
+    setTabZoom,
     loadFromFile,
     flushSave,
   } = useLayout();
@@ -35,6 +38,44 @@ export default function DashboardPage() {
   const locked = tabState?.locked ?? true;
   const linkChannel = tabState?.linkChannel ?? null;
   const layout = tabState?.layout ?? { columns: 12, rowHeight: 40, components: [] };
+  const zoom = layout.zoom ?? 0.9;
+
+  const ZOOM_MIN = 0.5;
+  const ZOOM_MAX = 1.5;
+  const ZOOM_STEP = 0.1;
+
+  const handleZoomIn = useCallback(() => {
+    const next = Math.min(ZOOM_MAX, Math.round((zoom + ZOOM_STEP) * 10) / 10);
+    setTabZoom(activeTabId, next);
+  }, [zoom, activeTabId, setTabZoom]);
+
+  const handleZoomOut = useCallback(() => {
+    const next = Math.max(ZOOM_MIN, Math.round((zoom - ZOOM_STEP) * 10) / 10);
+    setTabZoom(activeTabId, next);
+  }, [zoom, activeTabId, setTabZoom]);
+
+  const handleZoomReset = useCallback(() => {
+    setTabZoom(activeTabId, 0.9);
+  }, [activeTabId, setTabZoom]);
+
+  // Keyboard shortcuts for zoom
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        handleZoomIn();
+      } else if (e.key === "-") {
+        e.preventDefault();
+        handleZoomOut();
+      } else if (e.key === "0") {
+        e.preventDefault();
+        handleZoomReset();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [handleZoomIn, handleZoomOut, handleZoomReset]);
 
   // Add Component dropdown
   const [showAddMenu, setShowAddMenu] = useState(false);
@@ -88,6 +129,7 @@ export default function DashboardPage() {
       quote: { symbol: "AAPL" },
       watchlist: {},
       minichart: { symbol: "AAPL", timeframe: "1D", chartType: "candlestick" },
+      "ibkr-portfolio": {},
     };
 
     // Drop at (0,0) — user can drag it wherever they want
@@ -114,14 +156,11 @@ export default function DashboardPage() {
     updateComponent(activeTabId, id, update);
   };
 
-  // When a watchlist row is clicked, update all QuoteCards on the same link channel
+  // When a watchlist row is clicked, update all linked components on the same channel
   const handleSymbolSelect = (sourceComp: LayoutComponent, symbol: string) => {
     if (!sourceComp.linkChannel) return;
     for (const c of layout.components) {
-      if (
-        c.type === "quote" &&
-        c.linkChannel === sourceComp.linkChannel
-      ) {
+      if (c.id !== sourceComp.id && c.linkChannel === sourceComp.linkChannel) {
         updateComponent(activeTabId, c.id, {
           config: { ...c.config, symbol },
         });
@@ -158,6 +197,20 @@ export default function DashboardPage() {
               updateComponent(activeTabId, comp.id, { config: cfg })
             }
             onSymbolSelect={(sym) => handleSymbolSelect(comp, sym)}
+          />
+        );
+      case "ibkr-portfolio":
+        return (
+          <IBKRPortfolioCard
+            linkChannel={comp.linkChannel}
+            onSetLinkChannel={(ch) =>
+              setComponentLinkChannel(activeTabId, comp.id, ch)
+            }
+            onClose={() => removeComponent(activeTabId, comp.id)}
+            config={comp.config}
+            onConfigChange={(cfg) =>
+              updateComponent(activeTabId, comp.id, { config: cfg })
+            }
           />
         );
       case "minichart":
@@ -198,6 +251,10 @@ export default function DashboardPage() {
         <DashboardToolbar
           locked={locked}
           onToggleLock={() => setTabLocked(activeTabId, !locked)}
+          zoom={zoom}
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+          onZoomReset={handleZoomReset}
           linkChannel={linkChannel}
           onSetLinkChannel={(ch) => setTabLinkChannel(activeTabId, ch)}
           onAddComponent={() => setShowAddMenu((v) => !v)}
@@ -229,15 +286,24 @@ export default function DashboardPage() {
       </div>
 
       <div className="flex-1 overflow-hidden">
-        <GridLayout
-          columns={layout.columns}
-          rowHeight={layout.rowHeight}
-          components={layout.components}
-          locked={locked}
-          onMoveComponent={handleMoveComponent}
-          onResizeComponent={handleResizeComponent}
-          renderComponent={renderComponent}
-        />
+        <div
+          style={{
+            width: `${100 / zoom}%`,
+            height: `${100 / zoom}%`,
+            transform: `scale(${zoom})`,
+            transformOrigin: "top left",
+          }}
+        >
+          <GridLayout
+            columns={layout.columns}
+            rowHeight={layout.rowHeight}
+            components={layout.components}
+            locked={locked}
+            onMoveComponent={handleMoveComponent}
+            onResizeComponent={handleResizeComponent}
+            renderComponent={renderComponent}
+          />
+        </div>
       </div>
     </div>
   );

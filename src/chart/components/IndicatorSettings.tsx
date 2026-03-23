@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import type { ActiveIndicator } from '../types';
 import { indicatorRegistry } from '../indicators/registry';
 import { X, Eye, EyeOff } from 'lucide-react';
@@ -7,6 +8,47 @@ interface IndicatorSettingsProps {
   onUpdateParams: (id: string, params: Record<string, number>) => void;
   onRemove: (id: string) => void;
   onToggleVisibility: (id: string) => void;
+}
+
+/** Inline numeric input without browser spinners. */
+function InlineNumericInput({
+  value,
+  onChange,
+  title,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  title?: string;
+}) {
+  const [text, setText] = useState(String(value));
+
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+
+  const commit = () => {
+    const v = parseInt(text, 10);
+    if (!isNaN(v) && v > 0) {
+      onChange(v);
+    } else {
+      setText(String(value));
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      value={text}
+      onChange={e => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') commit(); }}
+      title={title}
+      className="w-[36px] bg-hover text-[10px] text-text-primary font-mono text-center
+                 rounded-input outline-none border border-transparent
+                 focus:border-blue transition-colors duration-120"
+    />
+  );
 }
 
 export default function IndicatorSettings({
@@ -32,20 +74,11 @@ export default function IndicatorSettings({
               {meta.shortName}
             </span>
             {Object.entries(ind.params).map(([key, value]) => (
-              <input
+              <InlineNumericInput
                 key={key}
-                type="number"
                 value={value}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value);
-                  if (!isNaN(v) && v > 0) {
-                    onUpdateParams(ind.id, { [key]: v });
-                  }
-                }}
+                onChange={v => onUpdateParams(ind.id, { [key]: v })}
                 title={meta.paramLabels[key] || key}
-                className="w-[36px] bg-hover text-[10px] text-text-primary font-mono text-center
-                           rounded-input outline-none border border-transparent
-                           focus:border-blue transition-colors duration-120"
               />
             ))}
             <button

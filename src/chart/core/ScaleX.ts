@@ -56,12 +56,20 @@ export class ScaleX {
   formatTime(ms: number): string {
     const d = new Date(ms);
     const tf = this.timeframe;
+    const currentYear = new Date().getFullYear();
 
     if (tf === '1D' || tf === '1W' || tf === '1M') {
       const month = d.toLocaleString('en', { month: 'short' });
+      if (d.getFullYear() !== currentYear) {
+        return `${month} ${d.getDate()} '${String(d.getFullYear()).slice(2)}`;
+      }
       return `${month} ${d.getDate()}`;
     }
     if (tf === '4H' || tf === '1H') {
+      if (d.getFullYear() !== currentYear) {
+        const month = d.toLocaleString('en', { month: 'short' });
+        return `${month} ${d.getDate()} '${String(d.getFullYear()).slice(2)}`;
+      }
       return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
     }
     // Intraday
@@ -71,7 +79,9 @@ export class ScaleX {
   formatTimeFull(ms: number): string {
     const d = new Date(ms);
     const month = d.toLocaleString('en', { month: 'short' });
-    return `${month} ${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const currentYear = new Date().getFullYear();
+    const yearSuffix = d.getFullYear() !== currentYear ? ` '${String(d.getFullYear()).slice(2)}` : '';
+    return `${month} ${d.getDate()}${yearSuffix} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 }
 

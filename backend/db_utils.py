@@ -218,10 +218,24 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
             change_pct  REAL,
             volume      REAL,
             spread      REAL,
+            trailing_pe REAL,
+            forward_pe  REAL,
+            market_cap  REAL,
+            valuation_updated_at INTEGER,
             source      TEXT,
             updated_at  INTEGER
         )
     """)
+    for col_def in (
+        "trailing_pe REAL",
+        "forward_pe REAL",
+        "market_cap REAL",
+        "valuation_updated_at INTEGER",
+    ):
+        try:
+            conn.execute(f"ALTER TABLE watchlist_quotes ADD COLUMN {col_def}")
+        except Exception:
+            pass  # column already exists
     conn.execute("""
         CREATE TABLE IF NOT EXISTS watchlist_status (
             symbol      TEXT PRIMARY KEY,
@@ -231,9 +245,41 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         )
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS market_snapshots (
+            symbol              TEXT PRIMARY KEY,
+            last                REAL,
+            open                REAL,
+            high                REAL,
+            low                 REAL,
+            prev_close          REAL,
+            change              REAL,
+            change_pct          REAL,
+            volume              REAL,
+            bid                 REAL,
+            ask                 REAL,
+            mid                 REAL,
+            spread              REAL,
+            source              TEXT,
+            status              TEXT,
+            quote_updated_at    INTEGER,
+            intraday_updated_at INTEGER,
+            daily_updated_at    INTEGER,
+            updated_at          INTEGER
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS active_symbols (
             symbol        TEXT PRIMARY KEY,
             last_requested INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ibkr_client_leases (
+            client_id  INTEGER PRIMARY KEY,
+            owner      TEXT NOT NULL,
+            role       TEXT NOT NULL,
+            leased_at  INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
         )
     """)
     conn.commit()

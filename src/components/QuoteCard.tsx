@@ -2,8 +2,12 @@ import { useState, useRef, useEffect, useId } from "react";
 import { X, Search, TrendingUp, TrendingDown } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
 import { getChannelById } from "../lib/link-channels";
-import { SEARCHABLE_SYMBOLS, formatPrice, formatVolume } from "../lib/market-data";
+import { linkBus } from "../lib/link-bus";
+import { SEARCHABLE_SYMBOLS, formatPrice, formatVolume, formatMarketCap } from "../lib/market-data";
 import { useQuoteData } from "../lib/use-market-data";
+
+const COMPACT_QUOTE_MIN_BODY_HEIGHT = 180;
+const COMPACT_QUOTE_MIN_WIDTH = 300;
 
 interface QuoteCardProps {
   linkChannel: number | null;
@@ -24,13 +28,36 @@ export default function QuoteCard({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const quoteId = useId();
+  const [bodySize, setBodySize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
     if (searchOpen && searchRef.current) {
       searchRef.current.focus();
     }
   }, [searchOpen]);
+
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setBodySize({
+        width: entry.contentRect.width,
+        height: entry.contentRect.height,
+      });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Subscribe to link channel so watchlist symbol changes update this card
+  useEffect(() => {
+    if (!linkChannel) return;
+    return linkBus.subscribe(linkChannel, (sym) => {
+      onConfigChange({ ...config, symbol: sym });
+    });
+  }, [linkChannel, config, onConfigChange]);
 
   const quote = useQuoteData(quoteId, symbol);
   const isPositive = quote ? quote.change >= 0 : true;
@@ -45,6 +72,20 @@ export default function QuoteCard({
   ).slice(0, 12);
 
   const channelInfo = getChannelById(linkChannel);
+  const isHorizontalBias = bodySize.width >= COMPACT_QUOTE_MIN_WIDTH && bodySize.width > bodySize.height * 1.15;
+  const compactQuoteStrip = isHorizontalBias && bodySize.height <= COMPACT_QUOTE_MIN_BODY_HEIGHT;
+  const metricCellClassName = compactQuoteStrip
+    ? "flex min-w-0 flex-1 flex-col justify-center px-1.5 py-0.5"
+    : "flex min-w-0 flex-1 flex-col justify-center rounded-sm border px-2 py-1.5";
+  const metricLabelClassName = compactQuoteStrip
+    ? "text-[7px] font-medium uppercase tracking-[0.18em]"
+    : "text-[8px] font-medium uppercase tracking-wider";
+  const metricValueClassName = compactQuoteStrip
+    ? "truncate font-mono text-[11px] font-semibold"
+    : "truncate font-mono text-[13px] font-semibold";
+  const metricEmptyClassName = compactQuoteStrip
+    ? "font-mono text-[10px] text-white/20"
+    : "font-mono text-[11px] text-white/20";
 
   return (
     <div
@@ -150,27 +191,25 @@ export default function QuoteCard({
       )}
 
       {/* Body */}
-      <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-3">
+      <div
+        ref={bodyRef}
+        className={`flex flex-1 overflow-hidden ${
+          compactQuoteStrip ? "flex-row items-stretch gap-4 px-4 py-2" : "flex-col gap-4 p-4"
+        }`}
+      >
         {quote ? (
           <>
-            {/* Symbol + Price */}
-            <div>
-              <p className="text-[9px] uppercase tracking-wider text-white/35">
-                Symbol
+            {/* Last price + change */}
+            <div className={compactQuoteStrip ? "flex shrink-0 flex-col justify-center" : "shrink-0"}>
+              <p className="mb-1 text-[8px] uppercase tracking-wider text-white/30">
+                Last Price
               </p>
-              <p className="font-mono text-[15px] font-semibold text-white/90">
-                {quote.symbol}
-              </p>
-            </div>
-
-            {/* Last price + change — recessed band */}
-            <div className="-mx-3 rounded-sm bg-base/40 px-3 py-2">
-              <div className="flex items-baseline gap-2">
-                <span className="font-mono text-[22px] font-bold tracking-tight text-white/90">
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <span className={`font-mono font-bold tracking-tight text-white/90 ${compactQuoteStrip ? "text-[18px]" : "text-[22px]"}`}>
                   {formatPrice(quote.last)}
                 </span>
                 <span
-                  className={`flex items-center gap-1 rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-medium ${
+                  className={`flex items-center gap-0.5 rounded-sm px-1.5 py-0.5 font-mono text-[11px] font-medium ${
                     isPositive
                       ? "bg-green/10 text-green"
                       : "bg-red/10 text-red"
@@ -189,59 +228,98 @@ export default function QuoteCard({
             </div>
 
             {/* BID / MID / ASK */}
-            <div className="grid grid-cols-3 gap-1.5">
-              <div className="rounded-sm border border-green/30 bg-green/[0.04] px-2 py-1.5">
-                <p className="text-[8px] font-medium uppercase tracking-wider text-green/60">
-                  Bid
-                </p>
-                <p className="font-mono text-[13px] font-semibold text-green">
-                  {formatPrice(quote.bid)}
-                </p>
+            <div className={`flex min-w-0 ${
+              compactQuoteStrip
+                ? "shrink-0 items-center gap-3 border-l border-r border-white/[0.06] px-4"
+                : "shrink-0 gap-2"
+            }`}>
+              <div
+                className={`${metricCellClassName} ${
+                  compactQuoteStrip ? "" : "border-green/20 bg-green/[0.04]"
+                }`}
+              >
+                <p className={`${metricLabelClassName} text-green/50`}>Bid</p>
+                {quote.bid != null ? (
+                  <p className={`${metricValueClassName} text-green`}>{formatPrice(quote.bid)}</p>
+                ) : (
+                  <p className={metricEmptyClassName}>—</p>
+                )}
               </div>
-              <div className="rounded-sm border border-blue/30 bg-blue/[0.04] px-2 py-1.5">
-                <p className="text-[8px] font-medium uppercase tracking-wider text-blue/60">
-                  Mid
-                </p>
-                <p className="font-mono text-[13px] font-semibold text-blue">
-                  {formatPrice(quote.mid)}
-                </p>
+              <div
+                className={`${metricCellClassName} ${
+                  compactQuoteStrip ? "" : "border-blue/20 bg-blue/[0.04]"
+                }`}
+              >
+                <p className={`${metricLabelClassName} text-blue/50`}>Mid</p>
+                {quote.mid != null ? (
+                  <p className={`${metricValueClassName} text-blue`}>{formatPrice(quote.mid)}</p>
+                ) : (
+                  <p className={metricEmptyClassName}>—</p>
+                )}
               </div>
-              <div className="rounded-sm border border-red/30 bg-red/[0.04] px-2 py-1.5">
-                <p className="text-[8px] font-medium uppercase tracking-wider text-red/60">
-                  Ask
-                </p>
-                <p className="font-mono text-[13px] font-semibold text-red">
-                  {formatPrice(quote.ask)}
-                </p>
+              <div
+                className={`${metricCellClassName} ${
+                  compactQuoteStrip ? "" : "border-red/20 bg-red/[0.04]"
+                }`}
+              >
+                <p className={`${metricLabelClassName} text-red/50`}>Ask</p>
+                {quote.ask != null ? (
+                  <p className={`${metricValueClassName} text-red`}>{formatPrice(quote.ask)}</p>
+                ) : (
+                  <p className={metricEmptyClassName}>—</p>
+                )}
               </div>
             </div>
 
             {/* Stats grid */}
-            <div className="border-t border-white/[0.06] pt-2">
-              <div className="grid grid-cols-3 gap-x-3 gap-y-2">
-                {[
-                  { label: "Open", value: formatPrice(quote.open) },
-                  { label: "High", value: formatPrice(quote.high), color: "text-green" },
-                  { label: "Low", value: formatPrice(quote.low), color: "text-red" },
-                  { label: "Prev Close", value: formatPrice(quote.prevClose) },
-                  { label: "Volume", value: formatVolume(quote.volume) },
-                  {
-                    label: "Spread",
-                    value: formatPrice(quote.spread),
-                    color: "text-amber",
-                  },
-                ].map((stat) => (
-                  <div key={stat.label}>
-                    <p className="text-[8px] uppercase tracking-wider text-white/35">
-                      {stat.label}
-                    </p>
-                    <p
-                      className={`font-mono text-[11px] font-medium ${stat.color ?? "text-white/70"}`}
-                    >
-                      {stat.value}
-                    </p>
-                  </div>
-                ))}
+            <div className={`min-w-0 flex-1 ${
+              compactQuoteStrip
+                ? "grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(90px,1fr))] gap-x-4 gap-y-1 content-center"
+                : "grid grid-cols-3 gap-x-4 gap-y-3 border-t border-white/[0.06] pt-3"
+            }`}>
+              <div>
+                <p className="text-[8px] uppercase tracking-wider text-white/30">Open</p>
+                <p className="font-mono text-[11px] font-medium text-white/70">{formatPrice(quote.open)}</p>
+              </div>
+              <div>
+                <p className="text-[8px] uppercase tracking-wider text-white/30">Hi / Lo</p>
+                <p className="font-mono text-[11px] font-medium">
+                  <span className="text-green">{formatPrice(quote.high)}</span>
+                  <span className="text-white/25"> / </span>
+                  <span className="text-red">{formatPrice(quote.low)}</span>
+                </p>
+              </div>
+              <div>
+                <p className="text-[8px] uppercase tracking-wider text-white/30">52W H/L</p>
+                <p className="font-mono text-[11px] font-medium">
+                  <span className="text-green">{quote.week52High != null ? formatPrice(quote.week52High) : "—"}</span>
+                  <span className="text-white/25"> / </span>
+                  <span className="text-red">{quote.week52Low != null ? formatPrice(quote.week52Low) : "—"}</span>
+                </p>
+              </div>
+              <div>
+                <p className="text-[8px] uppercase tracking-wider text-white/30">Prev Close</p>
+                <p className="font-mono text-[11px] font-medium text-white/70">{formatPrice(quote.prevClose)}</p>
+              </div>
+              <div>
+                <p className="text-[8px] uppercase tracking-wider text-white/30">Volume</p>
+                <p className="font-mono text-[11px] font-medium text-white/70">{formatVolume(quote.volume)}</p>
+              </div>
+              <div>
+                <p className="text-[8px] uppercase tracking-wider text-white/30">Spread</p>
+                <p className="font-mono text-[11px] font-medium text-amber">{quote.spread != null ? formatPrice(quote.spread) : "—"}</p>
+              </div>
+              <div>
+                <p className="text-[8px] uppercase tracking-wider text-white/30">P/E (TTM)</p>
+                <p className="font-mono text-[11px] font-medium text-white/70">{quote.trailingPE != null ? quote.trailingPE.toFixed(1) : "—"}</p>
+              </div>
+              <div>
+                <p className="text-[8px] uppercase tracking-wider text-white/30">Fwd P/E</p>
+                <p className="font-mono text-[11px] font-medium text-white/70">{quote.forwardPE != null ? quote.forwardPE.toFixed(1) : "—"}</p>
+              </div>
+              <div>
+                <p className="text-[8px] uppercase tracking-wider text-white/30">Mkt Cap</p>
+                <p className="font-mono text-[11px] font-medium text-blue">{formatMarketCap(quote.marketCap)}</p>
               </div>
             </div>
           </>

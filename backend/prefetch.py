@@ -4,9 +4,9 @@ Runs in a background asyncio task. Priority order:
 1. Watchlist symbols (re-checked each loop iteration)
 2. All symbols from tickers.json
 
-Two passes per cycle:
-- Daily bars (2Y history, 6hr cache TTL) — fills 1D/1W/1M chart timeframes
-- Intraday 1m bars (5D history, 5min cache TTL) — fills 1m–4H timeframes
+Two passes per cycle, but only when TWS is connected:
+- Daily bars (30Y history, 6hr cache TTL) — fills long-horizon charts/backtests
+- Intraday 1m bars (1Y history, 5min cache TTL) — builds a deeper backtest archive
 
 Sleeps 10s between each symbol fetch to avoid rate-limiting.
 Skips symbols whose cache is still fresh.
@@ -18,7 +18,13 @@ import logging
 from pathlib import Path
 
 from db_utils import sync_db_session
-from historical import _cache_fresh, CACHE_TTL, CACHE_TTL_DAILY
+from historical import (
+    _cache_fresh,
+    BACKGROUND_INTRADAY_DURATION,
+    CACHE_TTL,
+    CACHE_TTL_DAILY,
+    DEFAULT_DAILY_DURATION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +85,11 @@ class Prefetcher:
 
         try:
             while True:
+                if not self._tws_connected or not self._pool:
+                    logger.info("Prefetch waiting for TWS connection before deep universe backfill")
+                    await asyncio.sleep(30)
+                    continue
+
                 # Build ordered fetch queue: watchlist first, then remaining symbols
                 watchlist_set = set(self._watchlist)
                 queue = list(self._watchlist)  # watchlist symbols first
@@ -86,7 +97,7 @@ class Prefetcher:
                     if sym not in watchlist_set:
                         queue.append(sym)
 
-                # ── Pass 1: Daily bars (2Y history) ──
+                # ── Pass 1: Daily bars (deep history) ──
                 for symbol in queue:
                     try:
                         with sync_db_session() as conn:
@@ -108,7 +119,7 @@ class Prefetcher:
                             symbol=symbol,
                             ib=ib_client,
                             tws_connected=self._tws_connected,
-                            duration="2 Y",
+                            duration=DEFAULT_DAILY_DURATION,
                             bar_size="1 day",
                         )
                         if bars:
@@ -120,7 +131,7 @@ class Prefetcher:
 
                     await asyncio.sleep(SLEEP_BETWEEN)
 
-                # ── Pass 2: Intraday 1m bars (5D history) ──
+                # ── Pass 2: Intraday 1m bars (deep recent history) ──
                 for symbol in queue:
                     try:
                         with sync_db_session() as conn:
@@ -142,7 +153,7 @@ class Prefetcher:
                             symbol=symbol,
                             ib=ib_client,
                             tws_connected=self._tws_connected,
-                            duration="5 D",
+                            duration=BACKGROUND_INTRADAY_DURATION,
                             bar_size="1 min",
                         )
                         if bars:

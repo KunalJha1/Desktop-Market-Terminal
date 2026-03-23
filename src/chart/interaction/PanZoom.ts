@@ -8,6 +8,7 @@ export class PanZoom {
   private onDirty: () => void;
   private viewport: Viewport;
   private canvasWidth = 0;
+  private canvasEl: HTMLCanvasElement | null = null;
 
   constructor(viewport: Viewport, onDirty: () => void) {
     this.viewport = viewport;
@@ -18,15 +19,30 @@ export class PanZoom {
     this.canvasWidth = w;
   }
 
+  setCanvasEl(el: HTMLCanvasElement) {
+    this.canvasEl = el;
+  }
+
+  /** Returns the CSS→viewport scale from any ancestor CSS transform. */
+  private getScale(): { sx: number; sy: number } {
+    if (!this.canvasEl || this.canvasWidth === 0) return { sx: 1, sy: 1 };
+    const rect = this.canvasEl.getBoundingClientRect();
+    return {
+      sx: rect.width / this.canvasWidth,
+      sy: rect.height / (this.canvasEl.offsetHeight || this.canvasWidth),
+    };
+  }
+
   onMouseDown(e: MouseEvent) {
     if (e.button !== 0) return;
     const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
-    const mx = e.clientX - rect.left;
+    const { sx, sy } = this.getScale();
+    const mx = (e.clientX - rect.left) / sx;
 
     // If clicking on price axis, start Y-scale drag
     if (this.viewport.isInPriceAxis(mx, this.canvasWidth, PRICE_AXIS_WIDTH)) {
       this.yScaling = true;
-      this.viewport.startYScaleDrag(e.clientY - rect.top);
+      this.viewport.startYScaleDrag((e.clientY - rect.top) / sy);
       return;
     }
 
@@ -36,14 +52,17 @@ export class PanZoom {
 
   onMouseMove(e: MouseEvent, canvasRect?: DOMRect) {
     if (this.yScaling && canvasRect) {
-      const my = e.clientY - canvasRect.top;
+      const { sy } = this.getScale();
+      const my = (e.clientY - canvasRect.top) / sy;
       this.viewport.updateYScaleDrag(my);
       this.onDirty();
       return;
     }
 
     if (!this.dragging) return;
-    const dx = e.clientX - this.lastX;
+    const { sx } = this.getScale();
+    // dx is in viewport pixels — divide by scale to get CSS pixel delta
+    const dx = (e.clientX - this.lastX) / sx;
     this.lastX = e.clientX;
     this.viewport.pan(dx);
     this.onDirty();
@@ -60,7 +79,8 @@ export class PanZoom {
   onWheel(e: WheelEvent) {
     e.preventDefault();
     const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
+    const { sx } = this.getScale();
+    const mouseX = (e.clientX - rect.left) / sx;
 
     // Wheel on price axis: scale Y
     if (this.viewport.isInPriceAxis(mouseX, this.canvasWidth, PRICE_AXIS_WIDTH)) {
@@ -82,7 +102,8 @@ export class PanZoom {
   // Double-click on price axis resets to auto-fit
   onDoubleClick(e: MouseEvent) {
     const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
-    const mx = e.clientX - rect.left;
+    const { sx } = this.getScale();
+    const mx = (e.clientX - rect.left) / sx;
     if (this.viewport.isInPriceAxis(mx, this.canvasWidth, PRICE_AXIS_WIDTH)) {
       this.viewport.resetYScale();
       this.onDirty();

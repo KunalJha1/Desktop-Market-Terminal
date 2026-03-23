@@ -1,10 +1,12 @@
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react';
+import { interpretScript } from '../scripting/interpreter';
 import { ChartEngine } from '../core/ChartEngine';
 import { useChartData } from '../hooks/useChartData';
 import { indicatorRegistry } from '../indicators/registry';
 import type { Timeframe, ChartType, ActiveIndicator, YScaleMode } from '../types';
 import { useTws } from '../../lib/tws';
-import { X, ChevronDown, Search, TrendingUp, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import { linkBus } from '../../lib/link-bus';
+import { X, ChevronDown, Search, TrendingUp, BrainCircuit, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 import IndicatorLegend from './IndicatorLegend';
 
 interface MiniChartProps {
@@ -40,11 +42,100 @@ const LINK_CHANNEL_COLORS: Record<number, string> = {
   5: '#8B5CF6',
 };
 
+const SCRIPT_ID = 'mini_custom_script';
+
 const INDICATOR_CATEGORIES = [
   { key: 'overlay' as const, label: 'Overlays' },
   { key: 'oscillator' as const, label: 'Oscillators' },
   { key: 'volume' as const, label: 'Volume' },
 ];
+
+const STRATEGY_KEYS = new Set(['Golden/Death Cross', 'EMA 9/14 Crossover', 'DailyIQ Tech Score Signal']);
+
+interface PersistedMiniIndicator {
+  name: string;
+  paneId: string;
+  params: Record<string, number>;
+  colors: Record<string, string>;
+  lineWidths?: Record<string, number>;
+  lineStyles?: Record<string, 'solid' | 'dashed' | 'dotted'>;
+  visible: boolean;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function sanitizeNumberRecord(value: unknown): Record<string, number> {
+  if (!isRecord(value)) return {};
+  const result: Record<string, number> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === 'number' && Number.isFinite(item)) {
+      result[key] = item;
+    }
+  }
+  return result;
+}
+
+function sanitizeStringRecord(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {};
+  const result: Record<string, string> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === 'string') {
+      result[key] = item;
+    }
+  }
+  return result;
+}
+
+function sanitizeLineStyleRecord(
+  value: unknown,
+): Record<string, 'solid' | 'dashed' | 'dotted'> {
+  if (!isRecord(value)) return {};
+  const result: Record<string, 'solid' | 'dashed' | 'dotted'> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (item === 'solid' || item === 'dashed' || item === 'dotted') {
+      result[key] = item;
+    }
+  }
+  return result;
+}
+
+function parsePersistedIndicators(value: unknown): PersistedMiniIndicator[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.name !== 'string') return [];
+    return [{
+      name: item.name,
+      paneId: typeof item.paneId === 'string'
+        ? item.paneId
+        : (indicatorRegistry[item.name]?.category === 'overlay' ? 'main' : `pane:${item.name}`),
+      params: sanitizeNumberRecord(item.params),
+      colors: sanitizeStringRecord(item.colors),
+      lineWidths: sanitizeNumberRecord(item.lineWidths),
+      lineStyles: sanitizeLineStyleRecord(item.lineStyles),
+      visible: typeof item.visible === 'boolean' ? item.visible : true,
+    }];
+  });
+}
+
+function serializeIndicators(indicators: ActiveIndicator[]): PersistedMiniIndicator[] {
+  return indicators.map((indicator) => ({
+    name: indicator.name,
+    paneId: indicator.paneId,
+    params: { ...indicator.params },
+    colors: { ...indicator.colors },
+    lineWidths: indicator.lineWidths ? { ...indicator.lineWidths } : undefined,
+    lineStyles: indicator.lineStyles ? { ...indicator.lineStyles } : undefined,
+    visible: indicator.visible,
+  }));
+}
+
+function recordsEqual(a: Record<string, unknown> | undefined, b: Record<string, unknown> | undefined): boolean {
+  const aEntries = Object.entries(a ?? {}).sort(([ka], [kb]) => ka.localeCompare(kb));
+  const bEntries = Object.entries(b ?? {}).sort(([ka], [kb]) => ka.localeCompare(kb));
+  return JSON.stringify(aEntries) === JSON.stringify(bEntries);
+}
 
 export default function MiniChart({
   config,
@@ -53,11 +144,24 @@ export default function MiniChart({
   onSetLinkChannel,
   onClose,
 }: MiniChartProps) {
+  const makeDetachedPaneId = useCallback(() => `pane:${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, []);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<ChartEngine | null>(null);
+  const lastRestoredFingerprintRef = useRef<string>('');
+  const configRef = useRef(config);
+  useEffect(() => { configRef.current = config; }, [config]);
 
   const symbol = (config.symbol as string) || 'AAPL';
+
+  // Subscribe to link channel so watchlist/other components can drive the symbol
+  useEffect(() => {
+    if (!linkChannel) return;
+    return linkBus.subscribe(linkChannel, (sym) => {
+      onConfigChange({ ...configRef.current, symbol: sym });
+    });
+  }, [linkChannel, onConfigChange]);
+
   const timeframe = (config.timeframe as Timeframe) || '5m';
   const chartType = (config.chartType as ChartType) || 'candlestick';
   const yScaleMode = (config.yScaleMode as YScaleMode) || 'auto';
@@ -65,11 +169,24 @@ export default function MiniChart({
   const [showLinkMenu, setShowLinkMenu] = useState(false);
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
+  const [showStrategyMenu, setShowStrategyMenu] = useState(false);
+  const [showScriptEditor, setShowScriptEditor] = useState(false);
   const [indicatorSearch, setIndicatorSearch] = useState('');
   const [activeIndicators, setActiveIndicators] = useState<ActiveIndicator[]>([]);
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
+  const [paneLayout, setPaneLayout] = useState<Array<{ paneId: string; top: number; height: number }>>([]);
+  const [scriptSource, setScriptSource] = useState('');
+  const [scriptErrors, setScriptErrors] = useState<string[]>([]);
+  const [draggingIndicatorId, setDraggingIndicatorId] = useState<string | null>(null);
+  const dragStateRef = useRef<{
+    paneId: string;
+    startY: number;
+    startHeight: number;
+  } | null>(null);
 
   const chartTypeMenuRef = useRef<HTMLDivElement>(null);
   const indicatorMenuRef = useRef<HTMLDivElement>(null);
+  const strategyMenuRef = useRef<HTMLDivElement>(null);
   const indicatorSearchRef = useRef<HTMLInputElement>(null);
 
   // Pull real data from the sidecar (same path as ChartPage)
@@ -106,8 +223,16 @@ export default function MiniChart({
     const container = containerRef.current;
     const engine = engineRef.current;
     if (!container || !engine) return;
-    const { width, height } = container.getBoundingClientRect();
-    engine.resize(Math.floor(width), Math.floor(height));
+    const width = container.offsetWidth;
+    const height = container.offsetHeight;
+    engine.resize(width, height);
+    // Layout may change after resize, sync divider positions
+    requestAnimationFrame(() => {
+      const layout = engineRef.current?.getLayout();
+      if (layout) {
+        setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height })));
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -118,6 +243,59 @@ export default function MiniChart({
     handleResize();
     return () => ro.disconnect();
   }, [handleResize]);
+
+  // Re-sync canvas DPR on browser zoom changes (window.resize fires; ResizeObserver may not)
+  useEffect(() => {
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [handleResize]);
+
+  // Sync pane layout for resize handles
+  const syncPaneLayout = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const layout = engine.getLayout();
+    setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height })));
+  }, []);
+
+  useEffect(() => {
+    syncPaneLayout();
+  }, [activeIndicators, syncPaneLayout]);
+
+  const handlePaneDividerMouseDown = useCallback((e: React.MouseEvent, paneId: string) => {
+    e.preventDefault();
+    const engine = engineRef.current;
+    if (!engine) return;
+    const layout = engine.getLayout();
+    const pane = layout.subPanes.find(p => p.paneId === paneId);
+    if (!pane) return;
+    dragStateRef.current = { paneId, startY: e.clientY, startHeight: pane.height };
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const drag = dragStateRef.current;
+      if (!drag) return;
+      // Dragging up = bigger pane (delta is negative, so negate)
+      const delta = drag.startY - ev.clientY;
+      const newHeight = drag.startHeight + delta;
+      engineRef.current?.setSubPaneHeight(drag.paneId, newHeight);
+      // Sync after engine re-layout
+      requestAnimationFrame(() => {
+        const layout = engineRef.current?.getLayout();
+        if (layout) {
+          setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height })));
+        }
+      });
+    };
+
+    const onMouseUp = () => {
+      dragStateRef.current = null;
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [syncPaneLayout]);
 
   // Push data to engine
   useEffect(() => {
@@ -139,6 +317,10 @@ export default function MiniChart({
     engineRef.current?.setYScaleMode(yScaleMode);
   }, [yScaleMode]);
 
+  useEffect(() => {
+    engineRef.current?.setBrandingMode('fullLogo');
+  }, []);
+
   // Live mode + stopper
   useEffect(() => {
     const engine = engineRef.current;
@@ -157,6 +339,10 @@ export default function MiniChart({
         setShowIndicatorMenu(false);
         setIndicatorSearch('');
       }
+      if (strategyMenuRef.current && !strategyMenuRef.current.contains(e.target as Node)) {
+        setShowStrategyMenu(false);
+        setIndicatorSearch('');
+      }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -168,12 +354,6 @@ export default function MiniChart({
       setTimeout(() => indicatorSearchRef.current?.focus(), 50);
     }
   }, [showIndicatorMenu]);
-
-  // Sync active indicators from engine
-  const syncIndicators = useCallback(() => {
-    const engine = engineRef.current;
-    if (engine) setActiveIndicators([...engine.getActiveIndicators()]);
-  }, []);
 
   const setTimeframeValue = (tf: Timeframe) => {
     onConfigChange({ ...config, timeframe: tf });
@@ -188,9 +368,260 @@ export default function MiniChart({
     onConfigChange({ ...config, yScaleMode: mode });
   };
 
+  const toggleLinkMenu = () => setShowLinkMenu((v) => !v);
+  const selectLinkChannel = (ch: number | null) => {
+    onSetLinkChannel(ch);
+    setShowLinkMenu(false);
+  };
+
+  // Filtered indicators for search
+  const allIndicators = useMemo(
+    () => Object.entries(indicatorRegistry).map(([key, meta]) => ({ key, ...meta })),
+    [],
+  );
+  const filteredIndicators = useMemo(() => {
+    if (!indicatorSearch.trim()) return allIndicators;
+    const q = indicatorSearch.toLowerCase();
+    return allIndicators.filter(
+      (ind) => ind.name.toLowerCase().includes(q) || ind.shortName.toLowerCase().includes(q),
+    );
+  }, [indicatorSearch, allIndicators]);
+  const standardIndicators = useMemo(
+    () => filteredIndicators.filter((ind) => !STRATEGY_KEYS.has(ind.key)),
+    [filteredIndicators],
+  );
+  const strategyIndicators = useMemo(
+    () => filteredIndicators.filter((ind) => STRATEGY_KEYS.has(ind.key)),
+    [filteredIndicators],
+  );
+  const activeStrategyCount = useMemo(
+    () => activeIndicators.filter((ind) => STRATEGY_KEYS.has(ind.name)).length,
+    [activeIndicators],
+  );
+  const activeStandardIndicatorCount = useMemo(
+    () => activeIndicators.filter((ind) => !STRATEGY_KEYS.has(ind.name)).length,
+    [activeIndicators],
+  );
+
+  const currentChartType = CHART_TYPES.find((ct) => ct.value === chartType);
+  const emptyScripts = useMemo(() => new Map(), []);
+  const indicatorColorDefaults =
+    (config.indicatorColorDefaults as Record<string, Record<string, string>> | undefined) ?? {};
+  const persistedIndicators = useMemo(
+    () => parsePersistedIndicators(config.indicators),
+    [config.indicators],
+  );
+
+  const persistedScript = useMemo(() => {
+    const scripts = config.scripts;
+    if (!Array.isArray(scripts) || scripts.length === 0) return null;
+    const s = scripts[0];
+    if (!isRecord(s) || typeof s.source !== 'string') return null;
+    return { id: typeof s.id === 'string' ? s.id : SCRIPT_ID, source: s.source };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.scripts]);
+
+  const syncIndicators = useCallback((persist = true) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const nextIndicators = [...engine.getActiveIndicators()];
+    setActiveIndicators(nextIndicators);
+    if (persist) {
+      onConfigChange({
+        ...configRef.current,
+        indicators: serializeIndicators(nextIndicators),
+      });
+    }
+  }, [onConfigChange]);
+
+  const applyPersistedIndicators = useCallback((
+    engine: ChartEngine,
+    indicatorsToApply: PersistedMiniIndicator[],
+  ) => {
+    for (const indicator of [...engine.getActiveIndicators()]) {
+      engine.removeIndicator(indicator.id);
+    }
+
+    for (const indicator of indicatorsToApply) {
+      const id = engine.addIndicator(indicator.name);
+      if (!id) continue;
+      engine.setIndicatorPane(id, indicator.paneId);
+      if (Object.keys(indicator.params).length > 0) {
+        engine.updateIndicatorParams(id, indicator.params);
+      }
+      const mergedColors = {
+        ...(indicatorColorDefaults[indicator.name] ?? {}),
+        ...indicator.colors,
+      };
+      for (const [outputKey, color] of Object.entries(mergedColors)) {
+        engine.updateIndicatorColor(id, outputKey, color);
+      }
+      for (const [outputKey, width] of Object.entries(indicator.lineWidths ?? {})) {
+        engine.updateIndicatorLineWidth(id, outputKey, width);
+      }
+      for (const [outputKey, style] of Object.entries(indicator.lineStyles ?? {})) {
+        engine.updateIndicatorLineStyle(id, outputKey, style);
+      }
+      engine.setIndicatorVisibility(id, indicator.visible);
+    }
+  }, [indicatorColorDefaults]);
+
+  const persistedIndicatorsMatch = useCallback((
+    expectedIndicators: PersistedMiniIndicator[],
+    engineIndicators: ActiveIndicator[],
+  ) => {
+    if (expectedIndicators.length !== engineIndicators.length) return false;
+    return expectedIndicators.every((expectedIndicator, index) => {
+      const engineIndicator = engineIndicators[index];
+      if (!engineIndicator) return false;
+      return expectedIndicator.name === engineIndicator.name
+        && expectedIndicator.paneId === engineIndicator.paneId
+        && expectedIndicator.visible === engineIndicator.visible
+        && recordsEqual(expectedIndicator.params, engineIndicator.params)
+        && recordsEqual(expectedIndicator.colors, engineIndicator.colors)
+        && recordsEqual(expectedIndicator.lineWidths, engineIndicator.lineWidths)
+        && recordsEqual(expectedIndicator.lineStyles, engineIndicator.lineStyles);
+    });
+  }, []);
+
+  const syncDailyIQScorePane = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+
+    const engineIndicators = engine.getActiveIndicators();
+    const diqSignals = engineIndicators.filter((indicator) => indicator.name === 'DailyIQ Tech Score Signal');
+    if (diqSignals.length === 0) return;
+
+    const shouldShowPane = diqSignals.some(
+      (indicator) => indicator.visible && (indicator.params.showScorePane ?? 1) > 0,
+    );
+    let changed = false;
+    let scoreIndicator = engineIndicators.find((indicator) => indicator.name === 'Technical Score');
+
+    if (shouldShowPane) {
+      if (!scoreIndicator) {
+        const id = engine.addIndicator('Technical Score');
+        if (id) {
+          const defaults =
+            (configRef.current.indicatorColorDefaults as Record<string, Record<string, string>> | undefined)?.['Technical Score'];
+          if (defaults) {
+            for (const [outputKey, color] of Object.entries(defaults)) {
+              engine.updateIndicatorColor(id, outputKey, color);
+            }
+          }
+          engine.setIndicatorPane(id, makeDetachedPaneId());
+          changed = true;
+          scoreIndicator = engine.getActiveIndicators().find((indicator) => indicator.id === id);
+        }
+      } else if (!scoreIndicator.visible) {
+        engine.setIndicatorVisibility(scoreIndicator.id, true);
+        changed = true;
+      }
+    } else if (scoreIndicator?.visible) {
+      engine.setIndicatorVisibility(scoreIndicator.id, false);
+      changed = true;
+    }
+
+    if (changed) {
+      syncIndicators();
+    }
+  }, [makeDetachedPaneId, syncIndicators]);
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || bars.length === 0) return;
+
+    const engineIndicators = engine.getActiveIndicators();
+
+    // Write-back guard: config was wiped (stale spread) but engine still has indicators — heal config
+    if (persistedIndicators.length === 0 && engineIndicators.length > 0) {
+      onConfigChange({ ...configRef.current, indicators: serializeIndicators(engineIndicators) });
+      return;
+    }
+
+    // Fingerprint guard: skip re-application if persisted content hasn't changed
+    const fingerprint = persistedIndicators
+      .map((i) => `${i.name}:${i.paneId}:${JSON.stringify(i.params)}:${i.visible}`)
+      .join('|');
+    if (fingerprint === lastRestoredFingerprintRef.current) {
+      // Also restore script if needed (doesn't depend on fingerprint)
+      if (persistedScript && engine.getActiveIndicators().length === engineIndicators.length) {
+        const result = interpretScript(persistedScript.source, bars);
+        engine.setScriptResult(persistedScript.id, result);
+        setScriptSource(persistedScript.source);
+      }
+      return;
+    }
+    lastRestoredFingerprintRef.current = fingerprint;
+
+    // Idempotent: only restore indicators into an empty engine
+    if (engineIndicators.length === 0) {
+      applyPersistedIndicators(engine, persistedIndicators);
+      syncIndicators(false);
+    }
+
+    // Restore persisted script
+    if (persistedScript) {
+      const result = interpretScript(persistedScript.source, bars);
+      engine.setScriptResult(persistedScript.id, result);
+      setScriptSource(persistedScript.source);
+    }
+  }, [bars, persistedIndicators, persistedScript, syncIndicators, onConfigChange, applyPersistedIndicators]);
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || bars.length === 0) return;
+    const desiredIndicators = activeIndicators.length > 0
+      ? serializeIndicators(activeIndicators)
+      : persistedIndicators;
+    if (desiredIndicators.length === 0) return;
+
+    const engineIndicators = engine.getActiveIndicators();
+    if (persistedIndicatorsMatch(desiredIndicators, engineIndicators)) return;
+
+    applyPersistedIndicators(engine, desiredIndicators);
+    syncIndicators(false);
+  }, [
+    bars,
+    activeIndicators,
+    persistedIndicators,
+    persistedIndicatorsMatch,
+    applyPersistedIndicators,
+    syncIndicators,
+  ]);
+
+  useEffect(() => {
+    syncDailyIQScorePane();
+  }, [activeIndicators, syncDailyIQScorePane]);
+
   const addIndicator = (name: string) => {
     const engine = engineRef.current;
     if (!engine) return;
+    const id = engine.addIndicator(name);
+    if (id) {
+      const defaults =
+        (config.indicatorColorDefaults as Record<string, Record<string, string>> | undefined)?.[name];
+      if (defaults) {
+        for (const [outputKey, color] of Object.entries(defaults)) {
+          engine.updateIndicatorColor(id, outputKey, color);
+        }
+      }
+    }
+    syncIndicators();
+  };
+
+  const toggleStrategy = (name: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const matches = engine.getActiveIndicators().filter((indicator) => indicator.name === name);
+    if (matches.length > 0) {
+      for (const match of matches) {
+        engine.removeIndicator(match.id);
+      }
+      syncIndicators();
+      return;
+    }
+
     const id = engine.addIndicator(name);
     if (id) {
       const defaults =
@@ -225,6 +656,24 @@ export default function MiniChart({
     syncIndicators();
   };
 
+  const updateIndicatorLineWidth = (id: string, outputKey: string, width: number) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.updateIndicatorLineWidth(id, outputKey, width);
+    syncIndicators();
+  };
+
+  const updateIndicatorLineStyle = (
+    id: string,
+    outputKey: string,
+    style: 'solid' | 'dashed' | 'dotted',
+  ) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.updateIndicatorLineStyle(id, outputKey, style);
+    syncIndicators();
+  };
+
   const toggleIndicatorVisibility = (id: string) => {
     const engine = engineRef.current;
     if (!engine) return;
@@ -232,29 +681,36 @@ export default function MiniChart({
     syncIndicators();
   };
 
-  const toggleLinkMenu = () => setShowLinkMenu((v) => !v);
-  const selectLinkChannel = (ch: number | null) => {
-    onSetLinkChannel(ch);
-    setShowLinkMenu(false);
+  const moveIndicator = (id: string, direction: 'up' | 'down') => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.moveIndicator(id, direction);
+    syncIndicators();
   };
 
-  // Filtered indicators for search
-  const allIndicators = useMemo(
-    () => Object.entries(indicatorRegistry).map(([key, meta]) => ({ key, ...meta })),
-    [],
-  );
-  const filteredIndicators = useMemo(() => {
-    if (!indicatorSearch.trim()) return allIndicators;
-    const q = indicatorSearch.toLowerCase();
-    return allIndicators.filter(
-      (ind) => ind.name.toLowerCase().includes(q) || ind.shortName.toLowerCase().includes(q),
-    );
-  }, [indicatorSearch, allIndicators]);
+  const moveIndicatorToPane = (id: string, paneId: string) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.setIndicatorPane(id, paneId);
+    syncIndicators();
+    syncPaneLayout();
+  };
 
-  const currentChartType = CHART_TYPES.find((ct) => ct.value === chartType);
-  const emptyScripts = useMemo(() => new Map(), []);
-  const indicatorColorDefaults =
-    (config.indicatorColorDefaults as Record<string, Record<string, string>> | undefined) ?? {};
+  const runScript = useCallback((source: string) => {
+    const engine = engineRef.current;
+    if (!engine || bars.length === 0) return;
+    const result = interpretScript(source, bars);
+    setScriptErrors(result.errors.map((e) => `Line ${e.line}: ${e.message}`));
+    engine.setScriptResult(SCRIPT_ID, result);
+    onConfigChange({ ...configRef.current, scripts: [{ id: SCRIPT_ID, source }] });
+  }, [bars, onConfigChange]);
+
+  const clearScript = useCallback(() => {
+    engineRef.current?.clearAllScripts();
+    setScriptSource('');
+    setScriptErrors([]);
+    onConfigChange({ ...configRef.current, scripts: [] });
+  }, [onConfigChange]);
 
   return (
     <div
@@ -267,17 +723,17 @@ export default function MiniChart({
         minHeight: 200,
       }}
     >
-      {/* Toolbar row 1: symbol, timeframes, chart type, indicators, close */}
+      {/* Toolbar: symbol, timeframes, chart type, indicators, close */}
       <div
         className="flex items-center justify-between shrink-0 select-none"
         style={{
-          height: 28,
+          height: 22,
           padding: '0 4px',
           borderBottom: '1px solid #21262D',
           backgroundColor: '#161B22',
         }}
       >
-        {/* Left: link + symbol + price */}
+        {/* Left: link + symbol + price + collapse toggle */}
         <div className="flex items-center gap-1 overflow-hidden" style={{ minWidth: 0 }}>
           {/* Link channel indicator */}
           <button
@@ -394,8 +850,9 @@ export default function MiniChart({
           </span>
         </div>
 
-        {/* Right: timeframes + chart type + indicators + close */}
+        {/* Right: timeframes + chart type + indicators + collapse + close */}
         <div className="flex items-center gap-0.5 shrink-0">
+          {!toolbarCollapsed && (<>
           {/* Timeframe buttons */}
           {MINI_TIMEFRAMES.map((tf) => (
             <button
@@ -417,7 +874,6 @@ export default function MiniChart({
             </button>
           ))}
 
-          {/* Separator */}
           <div style={{ width: 1, height: 12, backgroundColor: '#21262D', margin: '0 2px' }} />
 
           {/* Chart type dropdown */}
@@ -484,7 +940,12 @@ export default function MiniChart({
           {/* Indicator button */}
           <div className="relative" ref={indicatorMenuRef}>
             <button
-              onClick={() => { setShowIndicatorMenu((v) => !v); setShowChartTypeMenu(false); setIndicatorSearch(''); }}
+              onClick={() => {
+                setShowIndicatorMenu((v) => !v);
+                setShowStrategyMenu(false);
+                setShowChartTypeMenu(false);
+                setIndicatorSearch('');
+              }}
               className="flex items-center gap-0.5 hover:bg-[#1C2128]"
               style={{
                 fontFamily: '"JetBrains Mono", monospace',
@@ -494,14 +955,14 @@ export default function MiniChart({
                 border: 'none',
                 cursor: 'pointer',
                 backgroundColor: showIndicatorMenu ? '#1C2128' : 'transparent',
-                color: activeIndicators.length > 0 ? '#1A56DB' : '#8B949E',
+                color: activeStandardIndicatorCount > 0 ? '#1A56DB' : '#8B949E',
                 lineHeight: 1,
               }}
               title="Indicators"
             >
               <TrendingUp size={10} />
-              {activeIndicators.length > 0 && (
-                <span style={{ fontSize: 8, color: '#1A56DB' }}>{activeIndicators.length}</span>
+              {activeStandardIndicatorCount > 0 && (
+                <span style={{ fontSize: 8, color: '#1A56DB' }}>{activeStandardIndicatorCount}</span>
               )}
             </button>
 
@@ -547,7 +1008,7 @@ export default function MiniChart({
                 {/* Indicator list */}
                 <div style={{ maxHeight: 260, overflowY: 'auto' }}>
                   {INDICATOR_CATEGORIES.map((cat) => {
-                    const items = filteredIndicators.filter((ind) => ind.category === cat.key);
+                    const items = standardIndicators.filter((ind) => ind.category === cat.key);
                     if (items.length === 0) return null;
                     return (
                       <div key={cat.key}>
@@ -588,7 +1049,7 @@ export default function MiniChart({
                       </div>
                     );
                   })}
-                  {filteredIndicators.length === 0 && (
+                  {standardIndicators.length === 0 && (
                     <div style={{
                       padding: '12px 8px',
                       fontFamily: '"JetBrains Mono", monospace',
@@ -597,6 +1058,130 @@ export default function MiniChart({
                       textAlign: 'center',
                     }}>
                       No indicators found
+                    </div>
+                  )}
+                </div>
+                {/* Custom script button */}
+                <div style={{ borderTop: '1px solid #21262D', padding: '4px 6px 4px' }}>
+                  <button
+                    onClick={() => { setShowScriptEditor((v) => !v); setShowIndicatorMenu(false); }}
+                    className="flex items-center justify-between w-full px-1 py-1 hover:bg-[#1C2128] rounded"
+                    style={{
+                      fontFamily: '"JetBrains Mono", monospace',
+                      fontSize: 10,
+                      color: persistedScript ? '#8B5CF6' : '#8B949E',
+                      border: 'none',
+                      background: 'none',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      borderRadius: 2,
+                    }}
+                  >
+                    <span>Custom Script</span>
+                    {persistedScript && <span style={{ fontSize: 8, color: '#8B5CF6' }}>●</span>}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="relative" ref={strategyMenuRef}>
+            <button
+              onClick={() => {
+                setShowStrategyMenu((v) => !v);
+                setShowIndicatorMenu(false);
+                setShowChartTypeMenu(false);
+                setIndicatorSearch('');
+              }}
+              className="flex items-center gap-0.5 hover:bg-[#1C2128]"
+              style={{
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 9,
+                padding: '1px 3px',
+                borderRadius: 2,
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: showStrategyMenu ? '#1C2128' : 'transparent',
+                color: activeStrategyCount > 0 ? '#1A56DB' : '#8B949E',
+                lineHeight: 1,
+              }}
+              title="Strategies"
+            >
+              <BrainCircuit size={10} />
+              {activeStrategyCount > 0 && (
+                <span style={{ fontSize: 8, color: '#1A56DB' }}>{activeStrategyCount}</span>
+              )}
+            </button>
+
+            {showStrategyMenu && (
+              <div
+                className="absolute z-50"
+                style={{
+                  top: '100%',
+                  right: 0,
+                  marginTop: 2,
+                  backgroundColor: '#161B22',
+                  border: '1px solid #21262D',
+                  borderRadius: 4,
+                  width: 220,
+                }}
+              >
+                <div
+                  className="flex items-center gap-1.5 px-2 py-1.5"
+                  style={{ borderBottom: '1px solid #21262D' }}
+                >
+                  <Search size={10} style={{ color: '#484F58', flexShrink: 0 }} />
+                  <input
+                    type="text"
+                    value={indicatorSearch}
+                    onChange={(e) => setIndicatorSearch(e.target.value)}
+                    placeholder="Search strategies..."
+                    spellCheck={false}
+                    data-no-drag
+                    style={{
+                      flex: 1,
+                      background: 'none',
+                      border: 'none',
+                      outline: 'none',
+                      fontFamily: '"JetBrains Mono", monospace',
+                      fontSize: 10,
+                      color: '#E6EDF3',
+                    }}
+                  />
+                </div>
+
+                <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+                  {strategyIndicators.map((ind) => {
+                    const isActive = activeIndicators.some((ai) => ai.name === ind.key);
+                    return (
+                      <button
+                        key={ind.key}
+                        onClick={() => toggleStrategy(ind.key)}
+                        className="flex items-center justify-between w-full px-2 py-1 hover:bg-[#1C2128] text-left"
+                        style={{
+                          fontFamily: '"JetBrains Mono", monospace',
+                          fontSize: 10,
+                          color: isActive ? '#E6EDF3' : '#8B949E',
+                          border: 'none',
+                          background: 'none',
+                          cursor: 'pointer',
+                          borderRadius: 2,
+                        }}
+                      >
+                        <span>{ind.name}</span>
+                        <span style={{ fontSize: 8, color: '#484F58' }}>{ind.shortName}</span>
+                      </button>
+                    );
+                  })}
+                  {strategyIndicators.length === 0 && (
+                    <div style={{
+                      padding: '12px 8px',
+                      fontFamily: '"JetBrains Mono", monospace',
+                      fontSize: 10,
+                      color: '#484F58',
+                      textAlign: 'center',
+                    }}>
+                      No strategies found
                     </div>
                   )}
                 </div>
@@ -690,6 +1275,25 @@ export default function MiniChart({
             </div>
           )}
 
+          </>)}
+
+          {/* Compact mode toggle */}
+          <button
+            onClick={() => setToolbarCollapsed(v => !v)}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              width: 16, height: 16, padding: 0, border: 'none', cursor: 'pointer',
+              backgroundColor: toolbarCollapsed ? '#1C2128' : 'transparent',
+              color: toolbarCollapsed ? '#E6EDF3' : '#484F58', borderRadius: 2,
+            }}
+            className="hover:bg-[#1C2128] hover:text-[#E6EDF3]"
+            title={toolbarCollapsed ? 'Show controls' : 'Compact mode'}
+          >
+            <span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 8, lineHeight: 1 }}>
+              {toolbarCollapsed ? '▶' : '◀'}
+            </span>
+          </button>
+
           {/* Separator */}
           <div style={{ width: 1, height: 12, backgroundColor: '#21262D', margin: '0 1px' }} />
 
@@ -730,7 +1334,8 @@ export default function MiniChart({
         >
           {activeIndicators.map((ind) => {
             const meta = indicatorRegistry[ind.name];
-            const color = meta?.outputs[0]?.color ?? '#8B949E';
+            const firstOutputKey = meta?.outputs[0]?.key;
+            const color = (firstOutputKey && ind.colors[firstOutputKey]) || meta?.outputs[0]?.color || '#8B949E';
             return (
               <div
                 key={ind.id}
@@ -793,6 +1398,102 @@ export default function MiniChart({
         </div>
       )}
 
+      {/* Script editor panel */}
+      {showScriptEditor && (
+        <div
+          className="shrink-0"
+          style={{
+            backgroundColor: '#161B22',
+            borderBottom: '1px solid #21262D',
+            padding: 4,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+          }}
+        >
+          <textarea
+            value={scriptSource}
+            onChange={(e) => setScriptSource(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                runScript(scriptSource);
+              }
+            }}
+            spellCheck={false}
+            data-no-drag
+            placeholder={`// DailyIQ Script\n// Series: open, high, low, close, volume\nplot(sma(close, 20), title="SMA20", color=#1A56DB)`}
+            style={{
+              width: '100%',
+              height: 80,
+              resize: 'none',
+              backgroundColor: '#0D1117',
+              border: '1px solid #21262D',
+              borderRadius: 4,
+              outline: 'none',
+              fontFamily: '"JetBrains Mono", monospace',
+              fontSize: 10,
+              color: '#E6EDF3',
+              padding: '4px 6px',
+              lineHeight: 1.5,
+              boxSizing: 'border-box',
+            }}
+          />
+          {scriptErrors.length > 0 && (
+            <div style={{
+              fontFamily: '"JetBrains Mono", monospace',
+              fontSize: 9,
+              color: '#FF3D71',
+              maxHeight: 36,
+              overflowY: 'auto',
+              lineHeight: 1.4,
+            }}>
+              {scriptErrors.map((err, i) => <div key={i}>{err}</div>)}
+            </div>
+          )}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => runScript(scriptSource)}
+              style={{
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 9,
+                padding: '2px 8px',
+                backgroundColor: '#1A56DB',
+                color: '#E6EDF3',
+                border: 'none',
+                borderRadius: 4,
+                cursor: 'pointer',
+              }}
+            >
+              Run
+            </button>
+            <button
+              onClick={clearScript}
+              style={{
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 9,
+                padding: '2px 8px',
+                backgroundColor: 'transparent',
+                color: '#8B949E',
+                border: '1px solid #21262D',
+                borderRadius: 4,
+                cursor: 'pointer',
+              }}
+            >
+              Clear
+            </button>
+            <span style={{
+              fontFamily: '"JetBrains Mono", monospace',
+              fontSize: 8,
+              color: '#484F58',
+              marginLeft: 'auto',
+            }}>
+              Ctrl+Enter to run
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Chart canvas area */}
       <div ref={containerRef} className="flex-1 relative overflow-hidden" style={{ minHeight: 0 }}>
         <canvas
@@ -800,6 +1501,126 @@ export default function MiniChart({
           className="absolute inset-0"
           style={{ cursor: 'crosshair' }}
         />
+        {draggingIndicatorId && (
+          <>
+            <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                moveIndicatorToPane(draggingIndicatorId, 'main');
+                setDraggingIndicatorId(null);
+              }}
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: 70,
+                top: 0,
+                height: Math.max(0, (paneLayout[0]?.top ?? containerRef.current?.offsetHeight ?? 0) - 1),
+                border: '1px dashed rgba(26,86,219,0.5)',
+                backgroundColor: 'rgba(26,86,219,0.08)',
+                color: '#8B949E',
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 10,
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'flex-end',
+                padding: 6,
+                pointerEvents: 'auto',
+              }}
+            >
+              Overlay on Price
+            </div>
+            {paneLayout.map((pane) => (
+              <div
+                key={`${pane.paneId}-drop`}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  moveIndicatorToPane(draggingIndicatorId, pane.paneId);
+                  setDraggingIndicatorId(null);
+                }}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  right: 70,
+                  top: pane.top,
+                  height: pane.height,
+                  border: '1px dashed rgba(139,148,158,0.35)',
+                  backgroundColor: 'rgba(139,148,158,0.06)',
+                  color: '#8B949E',
+                  fontFamily: '"JetBrains Mono", monospace',
+                  fontSize: 10,
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  justifyContent: 'flex-end',
+                  padding: 6,
+                  pointerEvents: 'auto',
+                }}
+              >
+                Merge Pane
+              </div>
+            ))}
+            <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                moveIndicatorToPane(draggingIndicatorId, makeDetachedPaneId());
+                setDraggingIndicatorId(null);
+              }}
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: 70,
+                bottom: source === 'tws' ? 24 : 4,
+                height: 20,
+                borderTop: '1px dashed rgba(245,158,11,0.5)',
+                backgroundColor: 'rgba(245,158,11,0.08)',
+                color: '#F59E0B',
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 10,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                pointerEvents: 'auto',
+              }}
+            >
+              New Pane
+            </div>
+          </>
+        )}
+        {/* Draggable sub-pane dividers */}
+        {paneLayout.map((pane) => (
+          <div
+            key={pane.paneId}
+            onMouseDown={(e) => handlePaneDividerMouseDown(e, pane.paneId)}
+            onMouseEnter={(e) => {
+              (e.currentTarget.firstElementChild as HTMLElement).style.backgroundColor = '#1A56DB';
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget.firstElementChild as HTMLElement).style.backgroundColor = '#21262D';
+            }}
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              top: pane.top - 3,
+              height: 7,
+              cursor: 'ns-resize',
+              zIndex: 10,
+            }}
+          >
+            <div
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                top: 3,
+                height: 1,
+                backgroundColor: '#21262D',
+              }}
+            />
+          </div>
+        ))}
         <div
           style={{
             position: 'absolute',
@@ -902,8 +1723,14 @@ export default function MiniChart({
           activeScripts={emptyScripts}
           onUpdateParams={updateIndicatorParams}
           onUpdateColor={updateIndicatorColor}
+          onUpdateLineWidth={updateIndicatorLineWidth}
+          onUpdateLineStyle={updateIndicatorLineStyle}
           onRemove={removeIndicator}
           onToggleVisibility={toggleIndicatorVisibility}
+          onMoveUp={(id) => moveIndicator(id, 'up')}
+          onMoveDown={(id) => moveIndicator(id, 'down')}
+          onDragStart={setDraggingIndicatorId}
+          onDragEnd={() => setDraggingIndicatorId(null)}
           onSetDefaultColor={(indicatorName, outputKey, color) => {
             onConfigChange({
               ...config,

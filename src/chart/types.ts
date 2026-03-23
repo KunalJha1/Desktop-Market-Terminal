@@ -13,6 +13,8 @@ export type ChartType = 'candlestick' | 'heikin-ashi' | 'volume-weighted' | 'bar
 
 export type YScaleMode = 'auto' | 'log';
 
+export type ChartBrandingMode = 'none' | 'fullLogo' | 'icon';
+
 export interface IndicatorMeta {
   name: string;
   shortName: string;
@@ -20,21 +22,31 @@ export interface IndicatorMeta {
   defaultParams: Record<string, number>;
   paramLabels: Record<string, string>;
   outputs: IndicatorOutput[];
+  guideLines?: IndicatorGuideLine[];
+}
+
+export interface IndicatorGuideLine {
+  value: number;
+  color?: string;
+  style?: 'solid' | 'dashed';
 }
 
 export interface IndicatorOutput {
   key: string;
   label: string;
   color: string;
-  style?: 'line' | 'histogram' | 'fill' | 'dots';
+  style?: 'line' | 'histogram' | 'fill' | 'dots' | 'markers';
   lineWidth?: number;
 }
 
 export interface ActiveIndicator {
   id: string;
   name: string;
+  paneId: string;
   params: Record<string, number>;
   colors: Record<string, string>;  // per-output color overrides keyed by output.key
+  lineWidths?: Record<string, number>;  // per-output lineWidth overrides
+  lineStyles?: Record<string, 'solid' | 'dashed' | 'dotted'>;  // per-output line style
   visible: boolean;
   data: number[][];  // one array per output
 }
@@ -50,7 +62,8 @@ export interface ChartLayout {
 }
 
 export interface SubPaneLayout {
-  indicatorId: string;
+  paneId: string;
+  indicatorIds: string[];
   top: number;
   height: number;
 }

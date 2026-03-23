@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Lock, Unlock, Link2, FolderOpen, Save } from "lucide-react";
+import { Plus, Lock, Unlock, Link2, FolderOpen, Save, ZoomIn, ZoomOut } from "lucide-react";
 import { LINK_CHANNELS } from "../lib/link-channels";
 
 // US market holidays for 2025-2026 (NYSE/NASDAQ)
@@ -97,6 +97,10 @@ function isMarketOpen(): boolean {
 interface DashboardToolbarProps {
   locked: boolean;
   onToggleLock: () => void;
+  zoom: number;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onZoomReset: () => void;
   linkChannel: number | null;
   onSetLinkChannel: (channel: number | null) => void;
   onAddComponent: () => void;
@@ -107,6 +111,10 @@ interface DashboardToolbarProps {
 export default function DashboardToolbar({
   locked,
   onToggleLock,
+  zoom,
+  onZoomIn,
+  onZoomOut,
+  onZoomReset,
   linkChannel,
   onSetLinkChannel,
   onAddComponent,
@@ -274,6 +282,23 @@ export default function DashboardToolbar({
               </div>
             )}
           </div>
+
+          <div className="mx-1 h-3 w-px bg-white/[0.06]" />
+
+          {/* Zoom controls */}
+          <button onClick={onZoomOut} className={btnClass} title="Zoom out (Cmd -)">
+            <ZoomOut className="h-2.5 w-2.5" strokeWidth={1.5} />
+          </button>
+          <button
+            onClick={onZoomReset}
+            className="rounded-sm px-1 py-0.5 font-mono text-[10px] text-white/30 transition-colors duration-75 hover:bg-white/[0.04] hover:text-white/55"
+            title="Reset zoom (Cmd 0)"
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <button onClick={onZoomIn} className={btnClass} title="Zoom in (Cmd +)">
+            <ZoomIn className="h-2.5 w-2.5" strokeWidth={1.5} />
+          </button>
 
           <div className="mx-1 h-3 w-px bg-white/[0.06]" />
 

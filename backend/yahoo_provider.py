@@ -46,9 +46,9 @@ def _fetch_quotes(symbols: list[str]) -> dict[str, dict]:
             results[sym] = {
                 "symbol": sym,
                 "last": last,
-                "bid": 0.0,
-                "ask": 0.0,
-                "mid": last,
+                "bid": None,
+                "ask": None,
+                "mid": None,
                 "open": open_,
                 "high": high,
                 "low": low,
@@ -56,7 +56,7 @@ def _fetch_quotes(symbols: list[str]) -> dict[str, dict]:
                 "change": change,
                 "changePct": change_pct,
                 "volume": volume,
-                "spread": 0.0,
+                "spread": None,
                 "source": "yahoo",
             }
         except Exception as e:

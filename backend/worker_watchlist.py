@@ -4,16 +4,32 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import math
+import random
 import time
+from collections import deque
+from pathlib import Path
 from typing import Dict, List
 
 from ib_insync import IB, Stock, Ticker
 from yahooquery import Ticker as YahooTicker
 
 from db_utils import sync_db_session
-from historical import get_historical_bars, save_realtime_bar, save_realtime_bar_1m, invalidate_yahoo_cache
+from historical import (
+    BACKGROUND_INTRADAY_DURATION,
+    DEFAULT_DAILY_DURATION,
+    get_historical_bars,
+    invalidate_yahoo_cache,
+    save_realtime_bar,
+    save_realtime_bar_1m,
+)
+from ibkr_utils import (
+    IbkrClientIdManager,
+    connect_with_client_id_fallback,
+    is_client_id_in_use_error,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,10 +40,25 @@ logger = logging.getLogger("watchlist-worker")
 
 WATCHLIST_REFRESH_S = 2.0
 YAHOO_POLL_S = 5.0
-TICK_THROTTLE_S = 1.0
+YAHOO_VALUATION_CHECK_S = 300.0
+YAHOO_VALUATION_MAX_AGE_S = 86400.0
+TICK_THROTTLE_S = 3.0
 ACTIVE_REFRESH_S = 3.0
 ACTIVE_TTL_S = 120
-STATUS_SUMMARY_S = 5.0
+STATUS_SUMMARY_S = 30.0
+UNIVERSE_REFRESH_S = 300.0
+SNAPSHOT_LOOP_SLEEP_S = 5.0
+SNAPSHOT_STALE_S = 300.0
+UNIVERSE_BATCH_SIZE = 8
+SUBSCRIPTION_PACE_S = 2.0
+REALTIME_PACE_S = 3.0
+REALTIME_BACKOFF_BASE_S = 10.0
+REALTIME_BACKOFF_MAX_S = 30.0
+MAX_REALTIME_BAR_SUBSCRIPTIONS = 25
+SHARD_THRESHOLD = 20
+MAX_SHARDS = 3
+UNIVERSE_SNAPSHOT_SLEEP_S = 1.0
+UNIVERSE_SNAPSHOT_CYCLE_PAUSE_S = 60.0
 
 STATE_QUEUED = "queued"
 STATE_SUBSCRIBED = "subscribed"
@@ -35,6 +66,12 @@ STATE_WAITING = "waiting_for_valid_quote"
 STATE_LIVE = "live_quote_active"
 STATE_ERROR = "subscription_error"
 CLIENT_ID_SCAN_LIMIT = 10000
+WORKER_ROLE = "watchlist-worker"
+TICKERS_PATH = Path(__file__).parent.parent / "data" / "tickers.json"
+
+
+def default_client_id() -> int:
+    return random.randint(1000, 9999)
 
 
 def _safe(v) -> float | None:
@@ -98,12 +135,14 @@ def yahoo_to_quote(symbol: str, data: dict) -> dict:
     change = round(last - prev_close, 4) if prev_close else 0.0
     change_pct = round((change / prev_close) * 100, 4) if prev_close else 0.0
 
+    # Yahoo doesn't provide reliable bid/ask — leave as None so the frontend
+    # shows a "TWS required" indicator instead of misleading zeros.
     return {
         "symbol": symbol,
         "last": last,
-        "bid": 0.0,
-        "ask": 0.0,
-        "mid": last,
+        "bid": None,
+        "ask": None,
+        "mid": None,
         "open": open_,
         "high": high,
         "low": low,
@@ -111,83 +150,387 @@ def yahoo_to_quote(symbol: str, data: dict) -> dict:
         "change": change,
         "change_pct": change_pct,
         "volume": volume,
-        "spread": 0.0,
+        "spread": None,
         "source": "yahoo",
     }
 
 
-def upsert_quote(q: dict) -> None:
+def _extract_yahoo_valuation(
+    data: dict, price_data: dict | None = None,
+) -> tuple[float | None, float | None, float | None]:
+    if not isinstance(data, dict):
+        return None, None, None
+    market_cap = _safe(data.get("marketCap"))
+    if market_cap is None and isinstance(price_data, dict):
+        market_cap = _safe(price_data.get("marketCap"))
+    return (
+        _safe(data.get("trailingPE")),
+        _safe(data.get("forwardPE")),
+        market_cap,
+    )
+
+
+def load_enabled_symbols() -> list[str]:
+    try:
+        with open(TICKERS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        logger.warning(f"Failed to load tickers.json: {exc}")
+        return []
+
+    seen: set[str] = set()
+    symbols: list[str] = []
+    for company in data.get("companies", []):
+        if not company.get("enabled", True):
+            continue
+        symbol = str(company.get("symbol") or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+    return symbols
+
+
+def _upsert_market_snapshot(snapshot: dict) -> None:
     now_ms = int(time.time() * 1000)
     with sync_db_session() as conn:
         conn.execute(
             """
-            INSERT INTO watchlist_quotes (
-                symbol, last, bid, ask, mid, open, high, low, prev_close,
-                change, change_pct, volume, spread, source, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO market_snapshots (
+                symbol, last, open, high, low, prev_close, change, change_pct, volume,
+                bid, ask, mid, spread, source, status,
+                quote_updated_at, intraday_updated_at, daily_updated_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(symbol) DO UPDATE SET
-                last = excluded.last,
-                bid = excluded.bid,
-                ask = excluded.ask,
-                mid = excluded.mid,
-                open = excluded.open,
-                high = excluded.high,
-                low = excluded.low,
-                prev_close = excluded.prev_close,
-                change = excluded.change,
-                change_pct = excluded.change_pct,
-                volume = excluded.volume,
-                spread = excluded.spread,
-                source = excluded.source,
+                last = COALESCE(excluded.last, market_snapshots.last),
+                open = COALESCE(excluded.open, market_snapshots.open),
+                high = COALESCE(excluded.high, market_snapshots.high),
+                low = COALESCE(excluded.low, market_snapshots.low),
+                prev_close = COALESCE(excluded.prev_close, market_snapshots.prev_close),
+                change = COALESCE(excluded.change, market_snapshots.change),
+                change_pct = COALESCE(excluded.change_pct, market_snapshots.change_pct),
+                volume = COALESCE(excluded.volume, market_snapshots.volume),
+                bid = COALESCE(excluded.bid, market_snapshots.bid),
+                ask = COALESCE(excluded.ask, market_snapshots.ask),
+                mid = COALESCE(excluded.mid, market_snapshots.mid),
+                spread = COALESCE(excluded.spread, market_snapshots.spread),
+                source = COALESCE(excluded.source, market_snapshots.source),
+                status = COALESCE(excluded.status, market_snapshots.status),
+                quote_updated_at = COALESCE(excluded.quote_updated_at, market_snapshots.quote_updated_at),
+                intraday_updated_at = COALESCE(excluded.intraday_updated_at, market_snapshots.intraday_updated_at),
+                daily_updated_at = COALESCE(excluded.daily_updated_at, market_snapshots.daily_updated_at),
                 updated_at = excluded.updated_at
             """,
             (
-                q["symbol"],
-                q["last"],
-                q["bid"],
-                q["ask"],
-                q["mid"],
-                q["open"],
-                q["high"],
-                q["low"],
-                q["prev_close"],
-                q["change"],
-                q["change_pct"],
-                q["volume"],
-                q["spread"],
-                q["source"],
+                snapshot["symbol"],
+                snapshot.get("last"),
+                snapshot.get("open"),
+                snapshot.get("high"),
+                snapshot.get("low"),
+                snapshot.get("prev_close"),
+                snapshot.get("change"),
+                snapshot.get("change_pct"),
+                snapshot.get("volume"),
+                snapshot.get("bid"),
+                snapshot.get("ask"),
+                snapshot.get("mid"),
+                snapshot.get("spread"),
+                snapshot.get("source"),
+                snapshot.get("status"),
+                snapshot.get("quote_updated_at"),
+                snapshot.get("intraday_updated_at"),
+                snapshot.get("daily_updated_at"),
                 now_ms,
             ),
         )
 
 
-class ClientIdManager:
-    def __init__(self, start: int, max_id: int = CLIENT_ID_SCAN_LIMIT):
-        self._start = start
-        self._max = max_id
-        self._retired: set[int] = set()
-        self._next = start
+def _snapshot_from_quote(q: dict) -> dict:
+    now_ms = int(time.time() * 1000)
+    return {
+        "symbol": q["symbol"],
+        "last": q.get("last"),
+        "open": q.get("open"),
+        "high": q.get("high"),
+        "low": q.get("low"),
+        "prev_close": q.get("prev_close"),
+        "change": q.get("change"),
+        "change_pct": q.get("change_pct"),
+        "volume": q.get("volume"),
+        "bid": q.get("bid"),
+        "ask": q.get("ask"),
+        "mid": q.get("mid"),
+        "spread": q.get("spread"),
+        "source": q.get("source", "unknown"),
+        "status": "ok" if q.get("last") else "pending",
+        "quote_updated_at": now_ms,
+        "intraday_updated_at": None,
+        "daily_updated_at": None,
+    }
 
-    def mark_in_use(self, client_id: int) -> None:
-        self._retired.add(client_id)
-        if client_id >= self._next:
-            self._next = client_id + 1
 
-    def next(self, preferred: int | None = None) -> int | None:
-        if preferred is not None and preferred not in self._retired:
-            return preferred
-        candidate = max(self._next, self._start)
-        while candidate <= self._max and candidate in self._retired:
-            candidate += 1
-        if candidate > self._max:
-            return None
-        self._next = candidate + 1
-        return candidate
+def refresh_snapshot_from_db(symbol: str) -> None:
+    now_ms = int(time.time() * 1000)
+    with sync_db_session() as conn:
+        quote_row = conn.execute(
+            """
+            SELECT last, bid, ask, mid, open, high, low, prev_close, change, change_pct,
+                   volume, spread, source, updated_at
+            FROM watchlist_quotes
+            WHERE symbol = ?
+            """,
+            (symbol,),
+        ).fetchone()
+        intraday_row = conn.execute(
+            """
+            SELECT ts, open, high, low, close, volume
+            FROM ohlcv_1m
+            WHERE symbol = ?
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            (symbol,),
+        ).fetchone()
+        daily_row = conn.execute(
+            """
+            SELECT ts, close
+            FROM ohlcv_1d
+            WHERE symbol = ?
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            (symbol,),
+        ).fetchone()
+        existing_row = conn.execute(
+            """
+            SELECT bid, ask, mid, spread, source, status, quote_updated_at,
+                   intraday_updated_at, daily_updated_at
+            FROM market_snapshots
+            WHERE symbol = ?
+            """,
+            (symbol,),
+        ).fetchone()
+
+    prev_close = None
+    daily_updated_at = None
+    if daily_row:
+        daily_updated_at = int(daily_row[0] or 0)
+        prev_close = _price(daily_row[1])
+
+    intraday_updated_at = None
+    last = None
+    open_ = None
+    high = None
+    low = None
+    volume = None
+    if intraday_row:
+        intraday_updated_at = int(intraday_row[0] or 0)
+        open_ = _price(intraday_row[1])
+        high = _price(intraday_row[2])
+        low = _price(intraday_row[3])
+        last = _price(intraday_row[4])
+        volume = _safe(intraday_row[5])
+
+    bid = ask = mid = spread = None
+    source = "bars"
+    quote_updated_at = None
+    if quote_row:
+        bid = _price(quote_row[1])
+        ask = _price(quote_row[2])
+        mid = _price(quote_row[3])
+        open_ = _price(quote_row[4]) or open_
+        high = _price(quote_row[5]) or high
+        low = _price(quote_row[6]) or low
+        prev_close = _price(quote_row[7]) or prev_close
+        quote_last = _price(quote_row[0])
+        if quote_last is not None:
+            last = quote_last
+        volume = _safe(quote_row[10]) or volume
+        spread = _price(quote_row[11])
+        source = str(quote_row[12] or "quote")
+        quote_updated_at = int(quote_row[13] or 0) or None
+        change = _safe(quote_row[8])
+        change_pct = _safe(quote_row[9])
+    else:
+        change = None
+        change_pct = None
+
+    if (change is None or change_pct is None) and last is not None and prev_close is not None and prev_close > 0:
+        change = round(last - prev_close, 4)
+        change_pct = round((change / prev_close) * 100, 4)
+
+    if existing_row:
+        if bid is None:
+            bid = _price(existing_row[0])
+        if ask is None:
+            ask = _price(existing_row[1])
+        if mid is None:
+            mid = _price(existing_row[2])
+        if spread is None:
+            spread = _price(existing_row[3])
+        if source == "bars":
+            source = str(existing_row[4] or "bars")
+        if quote_updated_at is None:
+            quote_updated_at = int(existing_row[6] or 0) or None
+        if intraday_updated_at is None:
+            intraday_updated_at = int(existing_row[7] or 0) or None
+        if daily_updated_at is None:
+            daily_updated_at = int(existing_row[8] or 0) or None
+
+    status = "ok"
+    if last is None:
+        status = "pending"
+    elif prev_close is None:
+        status = "stale"
+    elif intraday_updated_at and (now_ms - intraday_updated_at) > int(SNAPSHOT_STALE_S * 1000):
+        status = "stale"
+
+    _upsert_market_snapshot(
+        {
+            "symbol": symbol,
+            "last": last,
+            "open": open_,
+            "high": high,
+            "low": low,
+            "prev_close": prev_close,
+            "change": change,
+            "change_pct": change_pct,
+            "volume": volume,
+            "bid": bid,
+            "ask": ask,
+            "mid": mid,
+            "spread": spread,
+            "source": source,
+            "status": status,
+            "quote_updated_at": quote_updated_at,
+            "intraday_updated_at": intraday_updated_at,
+            "daily_updated_at": daily_updated_at,
+        }
+    )
 
 
-def _client_id_in_use(exc: Exception) -> bool:
-    err = str(exc).lower()
-    return "already in use" in err or "clientid" in err and "in use" in err or "326" in err
+def upsert_quote(q: dict) -> None:
+    now_ms = int(time.time() * 1000)
+    with sync_db_session() as conn:
+        # TWS is authoritative — write exactly what it sends (including None).
+        # Yahoo should never overwrite valid TWS bid/ask with None/0.
+        if q.get("source") == "tws":
+            conn.execute(
+                """
+                INSERT INTO watchlist_quotes (
+                    symbol, last, bid, ask, mid, open, high, low, prev_close,
+                    change, change_pct, volume, spread, source, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    last = excluded.last,
+                    bid = excluded.bid,
+                    ask = excluded.ask,
+                    mid = excluded.mid,
+                    open = excluded.open,
+                    high = excluded.high,
+                    low = excluded.low,
+                    prev_close = excluded.prev_close,
+                    change = excluded.change,
+                    change_pct = excluded.change_pct,
+                    volume = excluded.volume,
+                    spread = excluded.spread,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    q["symbol"], q["last"], q["bid"], q["ask"], q["mid"],
+                    q["open"], q["high"], q["low"], q["prev_close"],
+                    q["change"], q["change_pct"], q["volume"], q["spread"],
+                    q["source"], now_ms,
+                ),
+            )
+        else:
+            # Yahoo: never clobber bid/ask/mid/spread that TWS already set
+            conn.execute(
+                """
+                INSERT INTO watchlist_quotes (
+                    symbol, last, bid, ask, mid, open, high, low, prev_close,
+                    change, change_pct, volume, spread, source, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    last = excluded.last,
+                    bid = CASE WHEN watchlist_quotes.source = 'tws'
+                                   AND watchlist_quotes.bid IS NOT NULL
+                                   AND watchlist_quotes.bid > 0
+                               THEN watchlist_quotes.bid
+                               ELSE excluded.bid END,
+                    ask = CASE WHEN watchlist_quotes.source = 'tws'
+                                   AND watchlist_quotes.ask IS NOT NULL
+                                   AND watchlist_quotes.ask > 0
+                               THEN watchlist_quotes.ask
+                               ELSE excluded.ask END,
+                    mid = CASE WHEN watchlist_quotes.source = 'tws'
+                                   AND watchlist_quotes.mid IS NOT NULL
+                                   AND watchlist_quotes.mid > 0
+                               THEN watchlist_quotes.mid
+                               ELSE excluded.mid END,
+                    open = excluded.open,
+                    high = excluded.high,
+                    low = excluded.low,
+                    prev_close = excluded.prev_close,
+                    change = excluded.change,
+                    change_pct = excluded.change_pct,
+                    volume = excluded.volume,
+                    spread = CASE WHEN watchlist_quotes.source = 'tws'
+                                      AND watchlist_quotes.spread IS NOT NULL
+                                      AND watchlist_quotes.spread > 0
+                                  THEN watchlist_quotes.spread
+                                  ELSE excluded.spread END,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    q["symbol"], q["last"], q["bid"], q["ask"], q["mid"],
+                    q["open"], q["high"], q["low"], q["prev_close"],
+                    q["change"], q["change_pct"], q["volume"], q["spread"],
+                    q["source"], now_ms,
+                ),
+            )
+    _upsert_market_snapshot(_snapshot_from_quote(q))
+
+
+def upsert_quote_valuation(symbol: str, trailing_pe: float | None, forward_pe: float | None, market_cap: float | None = None) -> None:
+    now_ms = int(time.time() * 1000)
+    with sync_db_session() as conn:
+        conn.execute(
+            """
+            INSERT INTO watchlist_quotes (
+                symbol, trailing_pe, forward_pe, market_cap, valuation_updated_at, source, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                trailing_pe = excluded.trailing_pe,
+                forward_pe = excluded.forward_pe,
+                market_cap = excluded.market_cap,
+                valuation_updated_at = excluded.valuation_updated_at
+            """,
+            (symbol, trailing_pe, forward_pe, market_cap, now_ms, "yahoo", now_ms),
+        )
+
+
+def get_stale_valuation_symbols(symbols: List[str], max_age_s: float) -> List[str]:
+    if not symbols:
+        return []
+    cutoff_ms = int(time.time() * 1000 - (max_age_s * 1000))
+    placeholders = ", ".join("?" * len(symbols))
+    with sync_db_session() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT symbol
+            FROM watchlist_quotes
+            WHERE symbol IN ({placeholders})
+              AND (
+                  valuation_updated_at IS NULL
+                  OR valuation_updated_at < ?
+              )
+            """,
+            (*symbols, cutoff_ms),
+        ).fetchall()
+    return [row[0] for row in rows]
 
 
 def read_latest_bid_ask(symbol: str) -> tuple[float | None, float | None]:
@@ -269,7 +612,7 @@ def read_active_symbols() -> List[str]:
 
 
 async def connect_ib(ib: IB, host: str, ports: List[int], client_id: int) -> bool:
-    manager = ClientIdManager(client_id, CLIENT_ID_SCAN_LIMIT)
+    manager = IbkrClientIdManager(client_id, CLIENT_ID_SCAN_LIMIT)
     ok, _ = await connect_ib_with_manager(ib, host, ports, client_id, manager)
     return ok
 
@@ -279,17 +622,20 @@ async def connect_ib_with_manager(
     host: str,
     ports: List[int],
     client_id: int,
-    manager: ClientIdManager,
+    manager: IbkrClientIdManager,
 ) -> tuple[bool, int]:
-    candidate = manager.next(client_id)
-    if candidate is None:
+    try:
+        candidate = manager.acquire(WORKER_ROLE, preferred_id=client_id)
+    except RuntimeError:
         logger.error("No available TWS clientId in manager range")
         return False, client_id
 
-    while candidate is not None:
+    while True:
         for port in ports:
             try:
-                await ib.connectAsync(host, port, clientId=candidate, readonly=True)
+                await connect_with_client_id_fallback(
+                    ib, host, port, candidate, readonly=True
+                )
                 if ib.isConnected():
                     try:
                         ib.reqMarketDataType(1)
@@ -298,33 +644,39 @@ async def connect_ib_with_manager(
                     logger.info(f"Connected to TWS {host}:{port} (clientId={candidate})")
                     return True, candidate
             except Exception as exc:
-                if _client_id_in_use(exc):
+                if is_client_id_in_use_error(exc):
                     logger.warning(
                         f"TWS rejected clientId {candidate} (in use). Searching for next available ID."
                     )
-                    manager.mark_in_use(candidate)
-                    candidate = manager.next()
+                    manager.mark_rejected(candidate)
+                    try:
+                        candidate = manager.acquire(WORKER_ROLE, preferred_id=candidate + 1)
+                    except RuntimeError:
+                        logger.error("Exhausted TWS clientId range while attempting to connect")
+                        return False, client_id
                     break
                 logger.warning(f"TWS connect failed {host}:{port} (clientId={candidate}): {exc}")
         else:
             # Exhausted ports without a clientId-in-use signal; wait for reconnect loop.
             return False, candidate
 
-    logger.error("Exhausted TWS clientId range while attempting to connect")
-    return False, client_id
-
 
 async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
     ib = IB()
-    client_id_mgr = ClientIdManager(client_id, CLIENT_ID_SCAN_LIMIT)
+    client_id_mgr = IbkrClientIdManager(client_id, CLIENT_ID_SCAN_LIMIT)
     current_client_id = client_id
     last_write: Dict[str, float] = {}
     tickers: Dict[str, Ticker] = {}
+    quote_contracts: Dict[str, Stock] = {}
     watchlist: List[str] = []
     active_symbols: List[str] = []
+    universe_symbols: List[str] = load_enabled_symbols()
     rt_bars: Dict[str, object] = {}
     current_1m: Dict[str, dict] = {}
     symbol_states: Dict[str, str] = {}
+    subscription_queue: deque[tuple[str, str, str]] = deque()
+    queued_quote_symbols: set[str] = set()
+    queued_realtime_symbols: set[str] = set()
 
     def set_symbol_state(symbol: str, state: str, detail: str | None = None) -> None:
         if symbol_states.get(symbol) == state and detail is None:
@@ -336,13 +688,42 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
         symbol_states.pop(symbol, None)
         asyncio.create_task(asyncio.to_thread(delete_status, symbol))
 
-    def subscribe_realtime(sym: str) -> None:
+    def queue_subscription(kind: str, sym: str, reason: str) -> None:
+        if kind == "quote":
+            if sym in tickers or sym in queued_quote_symbols:
+                return
+            queued_quote_symbols.add(sym)
+        elif kind == "realtime":
+            if sym in rt_bars or sym in queued_realtime_symbols:
+                return
+            queued_realtime_symbols.add(sym)
+        else:
+            return
+        subscription_queue.append((kind, sym, reason))
+        logger.info("Queued %s subscription for %s (%s)", kind, sym, reason)
+
+    def cancel_quote_subscription(sym: str) -> None:
+        t = tickers.pop(sym, None)
+        quote_contracts.pop(sym, None)
+        queued_quote_symbols.discard(sym)
+        if t is not None and ib.isConnected():
+            try:
+                ib.cancelMktData(t.contract)
+            except Exception:
+                pass
+
+    def cancel_realtime_subscription(sym: str) -> None:
         existing = rt_bars.pop(sym, None)
+        queued_realtime_symbols.discard(sym)
+        current_1m.pop(sym, None)
         if existing and ib.isConnected():
             try:
                 ib.cancelRealTimeBars(existing)
             except Exception:
                 pass
+
+    def subscribe_realtime(sym: str) -> None:
+        cancel_realtime_subscription(sym)
         contract = Stock(sym, "SMART", "USD")
         bars = ib.reqRealTimeBars(
             contract, barSize=5, whatToShow="TRADES", useRTH=False
@@ -386,6 +767,16 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
 
         bars.updateEvent += on_rt_bar
 
+    def subscribe_quote(sym: str) -> None:
+        contract = Stock(sym, "SMART", "USD")
+        ticker = ib.reqMktData(contract, genericTickList="", snapshot=False)
+        ticker.updateEvent += lambda updated_ticker, s=sym: asyncio.create_task(on_tick(s, updated_ticker))
+        tickers[sym] = ticker
+        quote_contracts[sym] = contract
+        set_symbol_state(sym, STATE_SUBSCRIBED, "subscription active; waiting for first valid quote")
+        set_symbol_state(sym, STATE_WAITING, "subscription active; waiting for first valid quote")
+        logger.info("Watchlist subscribed %s", sym)
+
     async def on_tick(symbol: str, ticker: Ticker):
         now = time.time()
         last = last_write.get(symbol, 0)
@@ -407,7 +798,7 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                 q["spread"] = round(q["ask"] - q["bid"], 4)
         last_write[symbol] = now
         set_symbol_state(symbol, STATE_LIVE, f"last={q['last']} mid={q['mid']}")
-        logger.info(
+        logger.debug(
             "Quote %s: last=%s bid=%s ask=%s mid=%s prev_close=%s volume=%s",
             symbol,
             q["last"],
@@ -418,6 +809,74 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
             q["volume"],
         )
         asyncio.create_task(asyncio.to_thread(upsert_quote, q))
+
+    async def subscription_loop():
+        backoff_streak = 0
+        while True:
+            if not subscription_queue:
+                await asyncio.sleep(0.25)
+                continue
+            if not ib.isConnected():
+                await asyncio.sleep(1.0)
+                continue
+
+            kind, sym, reason = subscription_queue.popleft()
+            pace = SUBSCRIPTION_PACE_S
+
+            if kind == "quote":
+                queued_quote_symbols.discard(sym)
+                if sym not in watchlist:
+                    continue
+                if sym in tickers:
+                    logger.debug("Skipping quote subscribe for %s; already subscribed", sym)
+                    continue
+                try:
+                    subscribe_quote(sym)
+                    backoff_streak = 0
+                except Exception as exc:
+                    exc_str = str(exc)
+                    if "456" in exc_str or "Max number" in exc_str:
+                        backoff_streak += 1
+                        delay = min(REALTIME_BACKOFF_BASE_S * backoff_streak, REALTIME_BACKOFF_MAX_S)
+                        logger.warning("Rate limit hit for quote %s, backing off %.0fs (streak %d)", sym, delay, backoff_streak)
+                        queue_subscription("quote", sym, "rate_limit_retry")
+                        await asyncio.sleep(delay)
+                        continue
+                    set_symbol_state(sym, STATE_ERROR, exc_str)
+                    logger.warning(f"Failed to subscribe quote for {sym}: {exc}")
+            elif kind == "realtime":
+                pace = REALTIME_PACE_S
+                queued_realtime_symbols.discard(sym)
+                if sym not in active_symbols:
+                    continue
+                if sym in rt_bars:
+                    logger.debug("Skipping realtime subscribe for %s; already subscribed", sym)
+                    continue
+                if len(rt_bars) >= MAX_REALTIME_BAR_SUBSCRIPTIONS:
+                    logger.warning(
+                        "Deferring realtime bars for %s; cap reached (%s active bars)",
+                        sym,
+                        len(rt_bars),
+                    )
+                    queue_subscription("realtime", sym, "deferred_cap")
+                    await asyncio.sleep(REALTIME_PACE_S)
+                    continue
+                try:
+                    subscribe_realtime(sym)
+                    logger.info("Started realtime bars for %s (%s)", sym, reason)
+                    backoff_streak = 0
+                except Exception as exc:
+                    exc_str = str(exc)
+                    if "456" in exc_str or "Max number" in exc_str:
+                        backoff_streak += 1
+                        delay = min(REALTIME_BACKOFF_BASE_S * backoff_streak, REALTIME_BACKOFF_MAX_S)
+                        logger.warning("Rate limit hit for realtime %s, backing off %.0fs (streak %d)", sym, delay, backoff_streak)
+                        queue_subscription("realtime", sym, "rate_limit_retry")
+                        await asyncio.sleep(delay)
+                        continue
+                    logger.warning(f"Failed to start realtime bars for {sym}: {exc}")
+
+            await asyncio.sleep(pace)
 
     async def refresh_watchlist():
         nonlocal watchlist
@@ -442,12 +901,7 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                 )
 
                 for sym in removed:
-                    t = tickers.pop(sym, None)
-                    if t is not None and ib.isConnected():
-                        try:
-                            ib.cancelMktData(t.contract)
-                        except Exception:
-                            pass
+                    cancel_quote_subscription(sym)
                     drop_symbol_state(sym)
                     logger.info("Watchlist unsubscribed %s", sym)
 
@@ -458,17 +912,8 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
 
                 if ib.isConnected():
                     for sym in added:
-                        try:
-                            contract = Stock(sym, "SMART", "USD")
-                            t = ib.reqMktData(contract, genericTickList="", snapshot=False)
-                            t.updateEvent += lambda ticker, s=sym: asyncio.create_task(on_tick(s, ticker))
-                            tickers[sym] = t
-                            set_symbol_state(sym, STATE_SUBSCRIBED, "subscribed after watchlist refresh")
-                            set_symbol_state(sym, STATE_WAITING, "subscription active; waiting for first valid quote")
-                            logger.info("Watchlist subscribed %s", sym)
-                        except Exception as exc:
-                            set_symbol_state(sym, STATE_ERROR, str(exc))
-                            logger.warning(f"Failed to subscribe {sym}: {exc}")
+                        set_symbol_state(sym, STATE_QUEUED, "queued for paced quote subscription")
+                        queue_subscription("quote", sym, "watchlist_refresh")
 
             await asyncio.sleep(WATCHLIST_REFRESH_S)
 
@@ -487,22 +932,25 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                 active_symbols = current
 
                 for sym in removed:
-                    bars = rt_bars.pop(sym, None)
-                    current_1m.pop(sym, None)
-                    if bars and ib.isConnected():
-                        try:
-                            ib.cancelRealTimeBars(bars)
-                        except Exception:
-                            pass
+                    cancel_realtime_subscription(sym)
 
                 if ib.isConnected():
                     for sym in added:
-                        try:
-                            subscribe_realtime(sym)
-                        except Exception as exc:
-                            logger.warning(f"Failed to start realtime bars for {sym}: {exc}")
+                        queue_subscription("realtime", sym, "active_symbol")
 
             await asyncio.sleep(ACTIVE_REFRESH_S)
+
+    async def refresh_universe_symbols():
+        nonlocal universe_symbols
+        while True:
+            try:
+                current = load_enabled_symbols()
+                if current and current != universe_symbols:
+                    universe_symbols = current
+                    logger.info("Universe refresh: %s enabled symbols", len(universe_symbols))
+            except Exception as exc:
+                logger.warning(f"Universe refresh failed: {exc}")
+            await asyncio.sleep(UNIVERSE_REFRESH_S)
 
     async def status_summary_loop():
         while True:
@@ -552,16 +1000,66 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
             except Exception as exc:
                 logger.warning(f"Yahoo poll failed: {exc}")
 
+    async def yahoo_valuation_loop():
+        while True:
+            if not watchlist:
+                await asyncio.sleep(YAHOO_VALUATION_CHECK_S)
+                continue
+            stale_symbols = await asyncio.to_thread(
+                get_stale_valuation_symbols, watchlist, YAHOO_VALUATION_MAX_AGE_S
+            )
+            if not stale_symbols:
+                logger.info(f"[Valuation] All {len(watchlist)} symbols up-to-date, next check in {YAHOO_VALUATION_CHECK_S}s")
+                await asyncio.sleep(YAHOO_VALUATION_CHECK_S)
+                continue
+            logger.info(f"[Valuation] {len(stale_symbols)} stale symbols to refresh: {','.join(stale_symbols[:10])}{'...' if len(stale_symbols) > 10 else ''}")
+            # Process in small batches with rate-limiting sleeps
+            batch_size = 20
+            for i in range(0, len(stale_symbols), batch_size):
+                batch = stale_symbols[i : i + batch_size]
+                try:
+                    t = YahooTicker(batch, asynchronous=True)
+                    summary_data = t.summary_detail
+                    price_data = t.price
+                    if isinstance(summary_data, dict):
+                        for sym in batch:
+                            data = summary_data.get(sym)
+                            pd = price_data.get(sym) if isinstance(price_data, dict) else None
+                            trailing_pe, forward_pe, market_cap = _extract_yahoo_valuation(data, pd)
+                            await asyncio.to_thread(
+                                upsert_quote_valuation, sym, trailing_pe, forward_pe, market_cap
+                            )
+                            cap_str = f"${market_cap/1e9:.2f}B" if market_cap else "N/A"
+                            logger.info(f"[Valuation] {sym}: P/E={trailing_pe}, Fwd P/E={forward_pe}, MktCap={cap_str}")
+                except Exception as exc:
+                    logger.warning(f"Yahoo valuation poll failed: {exc}")
+                # Rate-limit between batches to avoid Yahoo API blocking
+                if i + batch_size < len(stale_symbols):
+                    await asyncio.sleep(1.5)
+            await asyncio.sleep(YAHOO_VALUATION_CHECK_S)
+
     async def backfill_loop():
         last_backfill: Dict[str, float] = {}
+        cursor = 0
         while True:
             await asyncio.sleep(2.0)
             if not ib.isConnected():
                 continue
-            symbols = list(dict.fromkeys(watchlist + active_symbols))
+            priority = list(dict.fromkeys(active_symbols + watchlist))
+            tail = [sym for sym in universe_symbols if sym not in set(priority)]
+            symbols = priority + tail
             if not symbols:
                 continue
-            for sym in symbols:
+            if cursor >= len(symbols):
+                cursor = 0
+            batch: list[str] = []
+            priority_budget = min(len(priority), UNIVERSE_BATCH_SIZE)
+            batch.extend(priority[:priority_budget])
+            while len(batch) < UNIVERSE_BATCH_SIZE and tail:
+                idx = cursor % len(tail)
+                batch.append(tail[idx])
+                cursor += 1
+            for sym in list(dict.fromkeys(batch)):
                 now = time.time()
                 if now - last_backfill.get(sym, 0) < 300:
                     continue
@@ -571,14 +1069,14 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                         symbol=sym,
                         ib=ib,
                         tws_connected=True,
-                        duration="5 D",
+                        duration=BACKGROUND_INTRADAY_DURATION,
                         bar_size="1 min",
                     )
                     await get_historical_bars(
                         symbol=sym,
                         ib=ib,
                         tws_connected=True,
-                        duration="5 D",
+                        duration="30 D",
                         bar_size="1 min",
                         what_to_show="BID",
                     )
@@ -586,7 +1084,7 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                         symbol=sym,
                         ib=ib,
                         tws_connected=True,
-                        duration="5 D",
+                        duration="30 D",
                         bar_size="1 min",
                         what_to_show="ASK",
                     )
@@ -594,12 +1092,32 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                         symbol=sym,
                         ib=ib,
                         tws_connected=True,
-                        duration="2 Y",
+                        duration=DEFAULT_DAILY_DURATION,
                         bar_size="1 day",
                     )
                     last_backfill[sym] = now
+                    await asyncio.to_thread(refresh_snapshot_from_db, sym)
                 except Exception as exc:
                     logger.debug(f"Backfill failed for {sym}: {exc}")
+
+    async def snapshot_loop():
+        cursor = 0
+        while True:
+            await asyncio.sleep(SNAPSHOT_LOOP_SLEEP_S)
+            symbols = list(dict.fromkeys(active_symbols + watchlist + universe_symbols))
+            if not symbols:
+                continue
+            if cursor >= len(symbols):
+                cursor = 0
+            batch = symbols[cursor:cursor + UNIVERSE_BATCH_SIZE]
+            if len(batch) < UNIVERSE_BATCH_SIZE and cursor > 0:
+                batch += symbols[:UNIVERSE_BATCH_SIZE - len(batch)]
+            cursor = (cursor + UNIVERSE_BATCH_SIZE) % max(len(symbols), 1)
+            for sym in batch:
+                try:
+                    await asyncio.to_thread(refresh_snapshot_from_db, sym)
+                except Exception as exc:
+                    logger.debug(f"Snapshot refresh failed for {sym}: {exc}")
 
     async def reconnect_loop():
         nonlocal current_client_id
@@ -610,53 +1128,56 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                 )
                 if ok:
                     current_client_id = new_id
+                    tickers.clear()
+                    quote_contracts.clear()
+                    rt_bars.clear()
+                    current_1m.clear()
+                    queued_quote_symbols.clear()
+                    queued_realtime_symbols.clear()
+                    subscription_queue.clear()
                     if watchlist:
                         await asyncio.to_thread(invalidate_yahoo_cache, watchlist)
                     # Re-subscribe to current watchlist
                     for sym in watchlist:
-                        try:
-                            contract = Stock(sym, "SMART", "USD")
-                            t = ib.reqMktData(contract, genericTickList="", snapshot=False)
-                            t.updateEvent += lambda ticker, s=sym: asyncio.create_task(on_tick(s, ticker))
-                            tickers[sym] = t
-                            set_symbol_state(sym, STATE_SUBSCRIBED, "resubscribed after reconnect")
-                            set_symbol_state(sym, STATE_WAITING, "resubscription active; waiting for first valid quote")
-                            logger.info("Watchlist resubscribed %s", sym)
-                        except Exception as exc:
-                            set_symbol_state(sym, STATE_ERROR, str(exc))
-                            logger.warning(f"Failed to resubscribe {sym}: {exc}")
+                        queue_subscription("quote", sym, "reconnect")
                     # Re-subscribe realtime bars for active symbols
                     for sym in active_symbols:
-                        try:
-                            subscribe_realtime(sym)
-                        except Exception as exc:
-                            logger.warning(f"Failed to resubscribe realtime bars for {sym}: {exc}")
+                        queue_subscription("realtime", sym, "reconnect")
             await asyncio.sleep(2.0)
 
-    ok, new_id = await connect_ib_with_manager(ib, host, ports, current_client_id, client_id_mgr)
-    if ok:
-        current_client_id = new_id
+    try:
+        ok, new_id = await connect_ib_with_manager(ib, host, ports, current_client_id, client_id_mgr)
+        if ok:
+            current_client_id = new_id
 
-    await asyncio.gather(
-        refresh_watchlist(),
-        refresh_active_symbols(),
-        status_summary_loop(),
-        yahoo_loop(),
-        backfill_loop(),
-        reconnect_loop(),
-    )
+        await asyncio.gather(
+            subscription_loop(),
+            refresh_watchlist(),
+            refresh_active_symbols(),
+            refresh_universe_symbols(),
+            status_summary_loop(),
+            yahoo_loop(),
+            yahoo_valuation_loop(),
+            backfill_loop(),
+            snapshot_loop(),
+            reconnect_loop(),
+        )
+    finally:
+        if ib.isConnected():
+            ib.disconnect()
+        client_id_mgr.release(current_client_id)
 
 
 def main() -> None:
+    global CLIENT_ID_SCAN_LIMIT
     parser = argparse.ArgumentParser(description="Watchlist worker")
     parser.add_argument("--tws-host", default="127.0.0.1")
     parser.add_argument("--tws-port", type=int, default=0)
-    parser.add_argument("--client-id", type=int, default=3)
+    parser.add_argument("--client-id", type=int, default=default_client_id())
     parser.add_argument("--client-id-max", type=int, default=CLIENT_ID_SCAN_LIMIT)
     args = parser.parse_args()
 
     ports = [args.tws_port] if args.tws_port else [7497, 7496]
-    global CLIENT_ID_SCAN_LIMIT
     CLIENT_ID_SCAN_LIMIT = args.client_id_max
     asyncio.run(worker_loop(args.tws_host, ports, args.client_id))
 

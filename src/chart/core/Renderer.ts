@@ -77,6 +77,7 @@ export class Renderer {
   polyline(points: [number, number][], color: string, width: number = 1.5) {
     if (points.length < 2) return;
     const ctx = this.ctx;
+    ctx.setLineDash([]);
     ctx.beginPath();
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
@@ -85,6 +86,22 @@ export class Renderer {
       ctx.lineTo(points[i][0], points[i][1]);
     }
     ctx.stroke();
+  }
+
+  dashedPolyline(points: [number, number][], color: string, width: number = 1.5, dash: number[] = [6, 4]) {
+    if (points.length < 2) return;
+    const ctx = this.ctx;
+    ctx.beginPath();
+    ctx.setLineDash(dash);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i][0], points[i][1]);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.setLineDash([]);
   }
 
   clip(x: number, y: number, w: number, h: number, fn: () => void) {
@@ -104,5 +121,13 @@ export class Renderer {
     grad.addColorStop(1, colorBottom);
     ctx.fillStyle = grad;
     ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+  }
+
+  image(image: CanvasImageSource, x: number, y: number, w: number, h: number, opacity: number = 1) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.drawImage(image, x, y, w, h);
+    ctx.restore();
   }
 }

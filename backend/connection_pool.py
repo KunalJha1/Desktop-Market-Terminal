@@ -7,6 +7,12 @@ from typing import Callable
 
 from ib_insync import IB
 
+from ibkr_utils import (
+    IbkrClientIdManager,
+    connect_with_client_id_fallback,
+    is_client_id_in_use_error,
+)
+
 logger = logging.getLogger(__name__)
 
 CLIENT_ID_START = 1000
@@ -32,14 +38,12 @@ class ConnectionPool:
         self._reconnect_tasks: dict[str, asyncio.Task] = {}
         self._role_to_client_id: dict[str, int] = {}
         self._client_id_to_role: dict[int, str] = {}
-        self._retired_ids: set[int] = set()
-        self._released_ids: set[int] = set()
-        self._next_client_id = CLIENT_ID_START
         self._connect_lock = asyncio.Lock()
         self._host: str | None = None
         self._port: int | None = None
         self._on_status_change = on_status_change
         self._loop = loop
+        self._client_id_manager = IbkrClientIdManager(CLIENT_ID_START, CLIENT_ID_SCAN_LIMIT)
 
     def set_tws_address(self, host: str, port: int):
         self._host = host
@@ -59,38 +63,10 @@ class ConnectionPool:
     def get_client_id(self, role: str) -> int | None:
         return self._role_to_client_id.get(role)
 
-    def _allocate_client_id(self) -> int:
-        if self._released_ids:
-            candidate = min(self._released_ids)
-            self._released_ids.remove(candidate)
-            return candidate
-
-        while self._next_client_id in self._client_id_to_role or self._next_client_id in self._retired_ids:
-            self._next_client_id += 1
-
-        if self._next_client_id > CLIENT_ID_SCAN_LIMIT:
-            raise RuntimeError("Exhausted managed TWS client IDs")
-
-        candidate = self._next_client_id
-        self._next_client_id += 1
-        return candidate
-
-    def _release_client_id(self, client_id: int):
-        if client_id >= CLIENT_ID_START and client_id not in self._retired_ids:
-            self._released_ids.add(client_id)
-
     def _unbind_role(self, role: str):
         client_id = self._role_to_client_id.pop(role, None)
         if client_id is not None:
             self._client_id_to_role.pop(client_id, None)
-            self._release_client_id(client_id)
-
-    def _retire_client_id(self, client_id: int):
-        role = self._client_id_to_role.pop(client_id, None)
-        if role is not None and self._role_to_client_id.get(role) == client_id:
-            self._role_to_client_id.pop(role, None)
-        self._released_ids.discard(client_id)
-        self._retired_ids.add(client_id)
 
     def _cleanup_client(self, client_id: int):
         ib = self._clients.pop(client_id, None)
@@ -123,11 +99,10 @@ class ConnectionPool:
 
             while attempts < CLIENT_ID_SCAN_LIMIT:
                 attempts += 1
-                try_id = self._role_to_client_id.get(role)
-                if try_id is None:
-                    try_id = self._allocate_client_id()
-                    self._role_to_client_id[role] = try_id
-                    self._client_id_to_role[try_id] = role
+                preferred_id = self._role_to_client_id.get(role)
+                try_id = self._client_id_manager.acquire(role, preferred_id=preferred_id)
+                self._role_to_client_id[role] = try_id
+                self._client_id_to_role[try_id] = role
 
                 ib = IB()
                 self._clients[try_id] = ib
@@ -136,10 +111,11 @@ class ConnectionPool:
                 ib.disconnectedEvent += lambda cid=try_id: self._on_disconnect(cid)
 
                 try:
-                    await ib.connectAsync(
+                    await connect_with_client_id_fallback(
+                        ib,
                         self._host,
                         self._port,
-                        clientId=try_id,
+                        try_id,
                         readonly=True,
                     )
                     self._states[try_id] = ClientState.CONNECTED
@@ -150,16 +126,18 @@ class ConnectionPool:
                     return ib
                 except Exception as e:
                     last_exc = e
-                    err_str = str(e).lower()
                     self._states[try_id] = ClientState.ERROR
                     self._notify(try_id)
                     self._cleanup_client(try_id)
 
-                    if "already in use" in err_str or "326" in err_str:
+                    if is_client_id_in_use_error(e):
                         logger.warning(
                             f"Client {try_id} rejected for role {role} (clientId in use), allocating a new ID"
                         )
-                        self._retire_client_id(try_id)
+                        self._client_id_manager.mark_rejected(try_id)
+                        self._client_id_to_role.pop(try_id, None)
+                        if self._role_to_client_id.get(role) == try_id:
+                            self._role_to_client_id.pop(role, None)
                         continue
 
                     logger.error(f"Client {try_id} connection failed for role {role}: {e}")
@@ -215,9 +193,10 @@ class ConnectionPool:
 
         if role:
             self._unbind_role(role)
+            self._client_id_manager.release(client_id)
             logger.info(f"Role {role} disconnected from client {client_id}")
         else:
-            self._release_client_id(client_id)
+            self._client_id_manager.release(client_id)
             logger.info(f"Client {client_id} disconnected")
 
     async def disconnect_all(self):

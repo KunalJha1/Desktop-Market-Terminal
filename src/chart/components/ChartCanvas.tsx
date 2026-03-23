@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback } from 'react';
 import { ChartEngine } from '../core/ChartEngine';
-import type { OHLCVBar, ChartType, Timeframe, ScriptResult } from '../types';
+import type { OHLCVBar, ChartType, Timeframe, ScriptResult, ChartBrandingMode, ChartLayout } from '../types';
 
 interface ChartCanvasProps {
   bars: OHLCVBar[];
@@ -11,6 +11,10 @@ interface ChartCanvasProps {
   liveMode?: boolean;
   stopperPx?: number;
   onStopperPxChange?: (px: number) => void;
+  brandingMode?: ChartBrandingMode;
+  onViewportChange?: (startIdx: number, endIdx: number) => void;
+  onLayoutChange?: (layout: ChartLayout) => void;
+  children?: React.ReactNode;
 }
 
 export default function ChartCanvas({
@@ -22,6 +26,10 @@ export default function ChartCanvas({
   liveMode = false,
   stopperPx = 0,
   onStopperPxChange,
+  brandingMode = 'none',
+  onViewportChange,
+  onLayoutChange,
+  children,
 }: ChartCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -46,9 +54,11 @@ export default function ChartCanvas({
     const engine = engineRef.current;
     if (!container || !engine) return;
 
-    const { width, height } = container.getBoundingClientRect();
-    engine.resize(Math.floor(width), Math.floor(height));
-  }, [engineRef]);
+    const width = container.offsetWidth;
+    const height = container.offsetHeight;
+    engine.resize(width, height);
+    onLayoutChange?.(engine.getLayout());
+  }, [engineRef, onLayoutChange]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -64,7 +74,9 @@ export default function ChartCanvas({
   // Update data
   useEffect(() => {
     engineRef.current?.setData(bars);
-  }, [bars, engineRef]);
+    const engine = engineRef.current;
+    if (engine) onLayoutChange?.(engine.getLayout());
+  }, [bars, engineRef, onLayoutChange]);
 
   // Update chart type
   useEffect(() => {
@@ -76,13 +88,23 @@ export default function ChartCanvas({
     engineRef.current?.setTimeframe(timeframe);
   }, [timeframe, engineRef]);
 
+  useEffect(() => {
+    engineRef.current?.setBrandingMode(brandingMode);
+  }, [brandingMode, engineRef]);
+
+  // Wire viewport change callback
+  useEffect(() => {
+    engineRef.current?.setOnViewportChange(onViewportChange ?? null);
+  }, [onViewportChange, engineRef]);
+
   // Update live mode / stopper
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
     engine.setLiveMode(liveMode);
     engine.setStopperPx(stopperPx);
-  }, [liveMode, stopperPx, engineRef]);
+    onLayoutChange?.(engine.getLayout());
+  }, [liveMode, stopperPx, engineRef, onLayoutChange]);
 
   // Update script results (multi-script)
   useEffect(() => {
@@ -95,7 +117,8 @@ export default function ChartCanvas({
         engine.setScriptResult(id, result);
       }
     }
-  }, [activeScripts, engineRef]);
+    onLayoutChange?.(engine.getLayout());
+  }, [activeScripts, engineRef, onLayoutChange]);
 
   return (
     <div ref={containerRef} className="flex-1 relative overflow-hidden">
@@ -104,6 +127,7 @@ export default function ChartCanvas({
         className="absolute inset-0"
         style={{ cursor: 'crosshair' }}
       />
+      {children}
       {liveMode && (
         <div
           className="absolute right-2 bottom-1 flex items-center gap-2"

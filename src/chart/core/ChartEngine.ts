@@ -1,4 +1,4 @@
-import type { OHLCVBar, ChartType, ActiveIndicator, ChartLayout, SubPaneLayout, YScaleMode } from '../types';
+import type { OHLCVBar, ChartType, ActiveIndicator, ChartLayout, SubPaneLayout, YScaleMode, ChartBrandingMode } from '../types';
 import { COLORS, PRICE_AXIS_WIDTH, TIME_AXIS_HEIGHT, SUB_PANE_HEIGHT, SUB_PANE_SEPARATOR } from '../constants';
 import { DEFAULT_BARS_VISIBLE } from '../constants';
 import { Viewport } from './Viewport';
@@ -20,6 +20,19 @@ import { indicatorRegistry } from '../indicators/registry';
 import { computeIndicator } from '../indicators/compute';
 import type { ScriptResult } from '../types';
 import type { Timeframe } from '../types';
+
+const BRANDING_ASSETS: Record<Exclude<ChartBrandingMode, 'none'>, { src: string; opacity: number }> = {
+  fullLogo: {
+    src: '/dailyiq-brand-resources/daily-iq-topbar-logo.svg',
+    opacity: 0.2,
+  },
+  icon: {
+    src: '/dailyiq-brand-resources/daily-iq-topbar-favicon.svg',
+    opacity: 0.26,
+  },
+};
+
+const brandingImageCache = new Map<string, HTMLImageElement>();
 
 export class ChartEngine {
   private canvas: HTMLCanvasElement;
@@ -55,6 +68,10 @@ export class ChartEngine {
   private destroyed = false;
   private liveMode = false;
   private stopperPx = 0;
+  private subPaneHeightOverrides: Map<string, number> = new Map();
+  private brandingMode: ChartBrandingMode = 'none';
+  private brandingImage: HTMLImageElement | null = null;
+  private _onViewportChange: ((startIdx: number, endIdx: number) => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -67,6 +84,7 @@ export class ChartEngine {
     this.crosshair = new Crosshair();
     this.tooltip = new Tooltip();
     this.panZoom = new PanZoom(this.viewport, () => this.markDirty());
+    this.panZoom.setCanvasEl(canvas);
 
     this.bindEvents();
     this.startRenderLoop();
@@ -91,6 +109,17 @@ export class ChartEngine {
     this.markDirty();
   }
 
+  setOnViewportChange(cb: ((startIdx: number, endIdx: number) => void) | null) {
+    this._onViewportChange = cb;
+  }
+
+  getViewportRange(): { startIndex: number; endIndex: number } {
+    return {
+      startIndex: Math.max(0, Math.floor(this.viewport.startIndex)),
+      endIndex: Math.min(this.bars.length, Math.ceil(this.viewport.endIndex)),
+    };
+  }
+
   setChartType(type: ChartType) {
     this.chartType = type;
     this.markDirty();
@@ -103,6 +132,32 @@ export class ChartEngine {
 
   setYScaleMode(mode: YScaleMode) {
     this.viewport.setYScaleMode(mode);
+    this.markDirty();
+  }
+
+  setBrandingMode(mode: ChartBrandingMode) {
+    if (this.brandingMode === mode) return;
+    this.brandingMode = mode;
+    this.brandingImage = null;
+
+    if (mode !== 'none') {
+      const asset = BRANDING_ASSETS[mode];
+      const cached = brandingImageCache.get(asset.src);
+      if (cached) {
+        this.brandingImage = cached;
+        if (!cached.complete) {
+          cached.addEventListener('load', () => this.markDirty(), { once: true });
+        }
+      } else {
+        const image = new Image();
+        image.decoding = 'async';
+        image.src = asset.src;
+        image.addEventListener('load', () => this.markDirty(), { once: true });
+        brandingImageCache.set(asset.src, image);
+        this.brandingImage = image;
+      }
+    }
+
     this.markDirty();
   }
 
@@ -149,15 +204,23 @@ export class ChartEngine {
     const meta = indicatorRegistry[name];
     if (!meta) return '';
     const id = `ind_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const paneId = meta.category === 'overlay' ? 'main' : `pane:${id}`;
     const colors: Record<string, string> = {};
+    const lineWidths: Record<string, number> = {};
+    const lineStyles: Record<string, 'solid' | 'dashed' | 'dotted'> = {};
     for (const output of meta.outputs) {
       colors[output.key] = output.color;
+      lineWidths[output.key] = output.lineWidth ?? 1.5;
+      lineStyles[output.key] = 'solid';
     }
     const indicator: ActiveIndicator = {
       id,
       name,
+      paneId,
       params: { ...meta.defaultParams },
       colors,
+      lineWidths,
+      lineStyles,
       visible: true,
       data: [],
     };
@@ -187,6 +250,22 @@ export class ChartEngine {
     this.markDirty();
   }
 
+  updateIndicatorLineWidth(id: string, outputKey: string, width: number) {
+    const ind = this.activeIndicators.find(i => i.id === id);
+    if (!ind) return;
+    if (!ind.lineWidths) ind.lineWidths = {};
+    ind.lineWidths[outputKey] = width;
+    this.markDirty();
+  }
+
+  updateIndicatorLineStyle(id: string, outputKey: string, style: 'solid' | 'dashed' | 'dotted') {
+    const ind = this.activeIndicators.find(i => i.id === id);
+    if (!ind) return;
+    if (!ind.lineStyles) ind.lineStyles = {};
+    ind.lineStyles[outputKey] = style;
+    this.markDirty();
+  }
+
   toggleVisibility(id: string) {
     const ind = this.activeIndicators.find(i => i.id === id);
     if (!ind) return;
@@ -194,8 +273,44 @@ export class ChartEngine {
     this.markDirty();
   }
 
+  setIndicatorVisibility(id: string, visible: boolean) {
+    const ind = this.activeIndicators.find(i => i.id === id);
+    if (!ind || ind.visible === visible) return;
+    ind.visible = visible;
+    this.markDirty();
+  }
+
+  moveIndicator(id: string, direction: 'up' | 'down') {
+    const index = this.activeIndicators.findIndex(ind => ind.id === id);
+    if (index === -1) return;
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= this.activeIndicators.length) return;
+    const next = [...this.activeIndicators];
+    const [item] = next.splice(index, 1);
+    next.splice(targetIndex, 0, item);
+    this.activeIndicators = next;
+    this.markDirty();
+  }
+
+  setIndicatorPane(id: string, paneId: string) {
+    const ind = this.activeIndicators.find(i => i.id === id);
+    if (!ind || ind.paneId === paneId) return;
+    ind.paneId = paneId;
+    this.markDirty();
+  }
+
   getActiveIndicators(): ActiveIndicator[] {
     return this.activeIndicators;
+  }
+
+  getLayout(): ChartLayout {
+    return this.computeLayout();
+  }
+
+  setSubPaneHeight(paneId: string, height: number) {
+    const clamped = Math.max(60, Math.min(400, height));
+    this.subPaneHeightOverrides.set(paneId, clamped);
+    this.markDirty();
   }
 
   /** Set result for a single script by id. Pass null to remove. */
@@ -230,32 +345,43 @@ export class ChartEngine {
   // --- Layout ---
 
   private computeLayout(): ChartLayout {
-    const oscillatorPanes = this.getOscillatorPanes();
+    const assignedPanes = this.getAssignedSubPanes();
     const scriptPanes = this.getScriptSubPanes();
 
-    const subPaneCount = oscillatorPanes.length + scriptPanes.length;
-    const totalSubPaneHeight = subPaneCount * (SUB_PANE_HEIGHT + SUB_PANE_SEPARATOR);
+    const assignedPaneHeights = assignedPanes.map(pane =>
+      (this.subPaneHeightOverrides.get(pane.paneId) ?? SUB_PANE_HEIGHT) + SUB_PANE_SEPARATOR
+    );
+    const scriptHeights = scriptPanes.map(id => {
+      const key = `__script_${id}__`;
+      return (this.subPaneHeightOverrides.get(key) ?? SUB_PANE_HEIGHT) + SUB_PANE_SEPARATOR;
+    });
+    const totalSubPaneHeight = [...assignedPaneHeights, ...scriptHeights].reduce((a, b) => a + b, 0);
     const mainHeight = this.height - TIME_AXIS_HEIGHT - totalSubPaneHeight;
 
     const subPanes: SubPaneLayout[] = [];
     let currentTop = mainHeight;
 
-    for (const ind of oscillatorPanes) {
+    for (const pane of assignedPanes) {
+      const h = this.subPaneHeightOverrides.get(pane.paneId) ?? SUB_PANE_HEIGHT;
       subPanes.push({
-        indicatorId: ind.id,
+        paneId: pane.paneId,
+        indicatorIds: pane.indicatorIds,
         top: currentTop + SUB_PANE_SEPARATOR,
-        height: SUB_PANE_HEIGHT,
+        height: h,
       });
-      currentTop += SUB_PANE_HEIGHT + SUB_PANE_SEPARATOR;
+      currentTop += h + SUB_PANE_SEPARATOR;
     }
 
     for (const scriptId of scriptPanes) {
+      const key = `__script_${scriptId}__`;
+      const h = this.subPaneHeightOverrides.get(key) ?? SUB_PANE_HEIGHT;
       subPanes.push({
-        indicatorId: `__script_${scriptId}__`,
+        paneId: key,
+        indicatorIds: [key],
         top: currentTop + SUB_PANE_SEPARATOR,
-        height: SUB_PANE_HEIGHT,
+        height: h,
       });
-      currentTop += SUB_PANE_HEIGHT + SUB_PANE_SEPARATOR;
+      currentTop += h + SUB_PANE_SEPARATOR;
     }
 
     return {
@@ -269,11 +395,23 @@ export class ChartEngine {
     };
   }
 
-  private getOscillatorPanes(): ActiveIndicator[] {
-    return this.activeIndicators.filter(ind => {
-      const meta = indicatorRegistry[ind.name];
-      return meta && (meta.category === 'oscillator' || meta.category === 'volume') && ind.visible;
-    });
+  private getAssignedSubPanes(): Array<{ paneId: string; indicatorIds: string[] }> {
+    const paneOrder: string[] = [];
+    const paneMap = new Map<string, string[]>();
+
+    for (const ind of this.activeIndicators) {
+      if (!ind.visible || ind.paneId === 'main') continue;
+      if (!paneMap.has(ind.paneId)) {
+        paneMap.set(ind.paneId, []);
+        paneOrder.push(ind.paneId);
+      }
+      paneMap.get(ind.paneId)!.push(ind.id);
+    }
+
+    return paneOrder.map((paneId) => ({
+      paneId,
+      indicatorIds: paneMap.get(paneId) ?? [],
+    }));
   }
 
   private getScriptSubPanes(): string[] {
@@ -311,6 +449,11 @@ export class ChartEngine {
 
   private markDirty() {
     this.dirty = true;
+    if (this._onViewportChange && this.bars.length > 0) {
+      const start = Math.max(0, Math.floor(this.viewport.startIndex));
+      const end = Math.min(this.bars.length, Math.ceil(this.viewport.endIndex));
+      this._onViewportChange(start, end);
+    }
   }
 
   private startRenderLoop() {
@@ -377,6 +520,9 @@ export class ChartEngine {
 
       // Overlay indicators
       this.renderOverlays();
+
+      // Branding watermark
+      this.renderBranding(chartAreaWidth, layout.mainHeight);
     });
 
     if (this.liveMode && this.stopperPx > 0 && this.bars.length > 0) {
@@ -417,57 +563,42 @@ export class ChartEngine {
     return this.stopperPx / barWidth;
   }
 
+  private renderBranding(chartAreaWidth: number, mainHeight: number) {
+    if (this.brandingMode === 'none' || !this.brandingImage?.complete) return;
+
+    const asset = BRANDING_ASSETS[this.brandingMode];
+    const intrinsicWidth = this.brandingImage.naturalWidth || this.brandingImage.width;
+    const intrinsicHeight = this.brandingImage.naturalHeight || this.brandingImage.height;
+    if (!intrinsicWidth || !intrinsicHeight) return;
+
+    const padding = this.brandingMode === 'fullLogo' ? 12 : 8;
+    const maxWidth = this.brandingMode === 'fullLogo'
+      ? Math.min(140, Math.max(72, chartAreaWidth * 0.14))
+      : Math.min(24, Math.max(18, chartAreaWidth * 0.045));
+    const width = Math.min(maxWidth, chartAreaWidth - padding * 2);
+    const height = width * (intrinsicHeight / intrinsicWidth);
+    const maxHeight = Math.max(0, mainHeight - padding * 2);
+    if (width <= 0 || height <= 0 || height > maxHeight) return;
+
+    const x = chartAreaWidth - padding - width;
+    const y = padding;
+    this.renderer.image(this.brandingImage, x, y, width, height, asset.opacity);
+  }
+
   private renderOverlays() {
     const start = Math.max(0, Math.floor(this.viewport.startIndex));
     const end = Math.min(this.bars.length, Math.ceil(this.viewport.endIndex));
 
     for (const ind of this.activeIndicators) {
-      const meta = indicatorRegistry[ind.name];
-      if (!meta || meta.category !== 'overlay' || !ind.visible) continue;
-
-      for (let oi = 0; oi < ind.data.length; oi++) {
-        const series = ind.data[oi];
-        const output = meta.outputs[oi];
-        if (!output || !series) continue;
-
-        const drawColor = ind.colors?.[output.key] ?? output.color;
-
-        if (output.style === 'fill' && oi + 1 < ind.data.length) {
-          const nextSeries = ind.data[oi + 1];
-          const fillPoints: [number, number][] = [];
-          const fillPoints2: [number, number][] = [];
-          for (let i = start; i < end; i++) {
-            if (isNaN(series[i]) || isNaN(nextSeries[i])) continue;
-            const x = this.viewport.barToPixelX(i);
-            fillPoints.push([x, this.viewport.priceToPixelY(series[i])]);
-            fillPoints2.push([x, this.viewport.priceToPixelY(nextSeries[i])]);
-          }
-          if (fillPoints.length > 1) {
-            const areaPoints = [...fillPoints, ...fillPoints2.reverse()];
-            this.renderer.fillArea(areaPoints, drawColor + '20');
-          }
-        }
-
-        if (output.style === 'dots') {
-          for (let i = start; i < end; i++) {
-            if (isNaN(series[i])) continue;
-            const x = this.viewport.barToPixelX(i);
-            const y = this.viewport.priceToPixelY(series[i]);
-            this.renderer.rect(x - 2, y - 2, 4, 4, drawColor);
-          }
-          continue;
-        }
-
-        // Default: line
-        const points: [number, number][] = [];
-        for (let i = start; i < end; i++) {
-          if (isNaN(series[i])) continue;
-          points.push([this.viewport.barToPixelX(i), this.viewport.priceToPixelY(series[i])]);
-        }
-        if (points.length > 1) {
-          this.renderer.polyline(points, drawColor, output.lineWidth || 1);
-        }
-      }
+      if (!ind.visible || ind.paneId !== 'main') continue;
+      this.renderIndicatorSeries(
+        ind,
+        (value) => this.viewport.priceToPixelY(value),
+        0,
+        this.height - TIME_AXIS_HEIGHT,
+        start,
+        end,
+      );
     }
 
     // Script overlay plots
@@ -495,8 +626,8 @@ export class ChartEngine {
     this.renderer.rect(0, pane.top, chartAreaWidth, pane.height, COLORS.bgBase);
 
     // Script sub-pane
-    if (pane.indicatorId.startsWith('__script_')) {
-      const scriptId = pane.indicatorId.replace('__script_', '').replace('__', '');
+    if (pane.paneId.startsWith('__script_')) {
+      const scriptId = pane.paneId.replace('__script_', '').replace('__', '');
       const result = this.scriptResults.get(scriptId);
       if (result) {
         this.renderScriptSubPane(pane, chartAreaWidth, result, scriptId);
@@ -504,71 +635,304 @@ export class ChartEngine {
       return;
     }
 
-    const ind = this.activeIndicators.find(i => i.id === pane.indicatorId);
-    if (!ind) return;
+    const start = Math.max(0, Math.floor(this.viewport.startIndex));
+    const end = Math.min(this.bars.length, Math.ceil(this.viewport.endIndex));
+    const indicators = pane.indicatorIds
+      .map((indicatorId) => this.activeIndicators.find((indicator) => indicator.id === indicatorId))
+      .filter((indicator): indicator is ActiveIndicator => !!indicator);
+    if (indicators.length === 0) return;
+
+    const ranges = indicators
+      .map((ind) => {
+        const meta = indicatorRegistry[ind.name];
+        if (!meta) return null;
+        if (ind.name === 'Technical Score') {
+          return { ind, meta, min: 0, max: 100 };
+        }
+
+        let min = Infinity;
+        let max = -Infinity;
+        for (const series of ind.data) {
+          for (let i = start; i < end; i++) {
+            if (i < series.length && !isNaN(series[i])) {
+              if (series[i] < min) min = series[i];
+              if (series[i] > max) max = series[i];
+            }
+          }
+        }
+
+        if (!isFinite(min) || !isFinite(max)) {
+          min = 0;
+          max = 100;
+        } else {
+          const pad = (max - min) * 0.1 || 1;
+          min -= pad;
+          max += pad;
+        }
+        return { ind, meta, min, max };
+      })
+      .filter((entry): entry is { ind: ActiveIndicator; meta: typeof indicatorRegistry[string]; min: number; max: number } => !!entry);
+
+    if (ranges.length === 0) return;
+
+    const primary = ranges[0];
+    this.scaleY.renderSubPane(this.renderer, pane.top, pane.height, primary.min, primary.max, this.width);
+    this.renderer.textSmall(ranges.map(({ meta }) => meta.shortName).join(' + '), 4, pane.top + 12, COLORS.textMuted, 'left');
+
+    this.renderer.clip(0, pane.top, chartAreaWidth, pane.height, () => {
+      if (ranges.length === 1) {
+        const [{ ind, meta, min, max }] = ranges;
+        const range = max - min || 1;
+        const isTechnicalScore = ind.name === 'Technical Score';
+
+        if (isTechnicalScore) {
+          for (const level of [30, 50, 70]) {
+            const y = pane.top + ((max - level) / (max - min)) * pane.height;
+            this.renderer.dashedLine(0, y, chartAreaWidth, y, level === 50 ? COLORS.textMuted : COLORS.border, 1, [4, 4]);
+          }
+        } else if (meta.guideLines?.length) {
+          for (const guideLine of meta.guideLines) {
+            const y = pane.top + ((max - guideLine.value) / range) * pane.height;
+            if (guideLine.style === 'solid') {
+              this.renderer.line(0, y, chartAreaWidth, y, guideLine.color ?? COLORS.border, 1);
+            } else {
+              this.renderer.dashedLine(0, y, chartAreaWidth, y, guideLine.color ?? COLORS.border, 1, [4, 4]);
+            }
+          }
+        }
+      }
+
+      for (const { ind, min, max } of ranges) {
+        const range = max - min || 1;
+        this.renderIndicatorSeries(
+          ind,
+          (value) => pane.top + ((max - value) / range) * pane.height,
+          pane.top,
+          pane.top + pane.height,
+          start,
+          end,
+          pane,
+          min,
+          max,
+        );
+      }
+    });
+
+    ranges.forEach(({ ind, meta, min, max }, index) => {
+      const output = meta.outputs[0];
+      const color = output ? (ind.colors?.[output.key] ?? output.color) : COLORS.textMuted;
+      this.renderer.textSmall(
+        `${meta.shortName} ${min.toFixed(1)}-${max.toFixed(1)}`,
+        chartAreaWidth - 8,
+        pane.top + 12 + index * 12,
+        color,
+        'right',
+      );
+    });
+  }
+
+  private renderIndicatorSeries(
+    ind: ActiveIndicator,
+    toY: (value: number) => number,
+    clipTop: number,
+    clipBottom: number,
+    start: number,
+    end: number,
+    pane?: SubPaneLayout,
+    min?: number,
+    max?: number,
+  ) {
     const meta = indicatorRegistry[ind.name];
     if (!meta) return;
 
-    const start = Math.max(0, Math.floor(this.viewport.startIndex));
-    const end = Math.min(this.bars.length, Math.ceil(this.viewport.endIndex));
+    for (let oi = 0; oi < ind.data.length; oi++) {
+      const series = ind.data[oi];
+      const output = meta.outputs[oi];
+      if (!output || !series) continue;
 
-    // Find range across all outputs
-    let min = Infinity, max = -Infinity;
-    for (const series of ind.data) {
+      const drawColor = ind.colors?.[output.key] ?? output.color;
+
+      if (output.style === 'fill' && oi + 1 < ind.data.length) {
+        const nextSeries = ind.data[oi + 1];
+        const fillPoints: [number, number][] = [];
+        const fillPoints2: [number, number][] = [];
+        for (let i = start; i < end; i++) {
+          if (i >= series.length || i >= nextSeries.length || isNaN(series[i]) || isNaN(nextSeries[i])) continue;
+          const x = this.viewport.barToPixelX(i);
+          fillPoints.push([x, toY(series[i])]);
+          fillPoints2.push([x, toY(nextSeries[i])]);
+        }
+        if (fillPoints.length > 1) {
+          const alpha = ind.name === 'Gap Zones' ? 0.28 : 0.12;
+          this.renderer.fillArea([...fillPoints, ...fillPoints2.reverse()], this.withAlpha(drawColor, alpha));
+        }
+      }
+
+      if (output.style === 'dots') {
+        for (let i = start; i < end; i++) {
+          if (i >= series.length || isNaN(series[i])) continue;
+          const x = this.viewport.barToPixelX(i);
+          const y = toY(series[i]);
+          if (y < clipTop || y > clipBottom) continue;
+          this.renderer.rect(x - 2, y - 2, 4, 4, drawColor);
+        }
+        continue;
+      }
+
+      if (output.style === 'markers') {
+        const direction = output.key.toLowerCase().includes('buy') ? 'up' : 'down';
+        for (let i = start; i < end; i++) {
+          if (i >= series.length || isNaN(series[i])) continue;
+          const x = this.viewport.barToPixelX(i);
+          const y = toY(series[i]);
+          if (y < clipTop - 20 || y > clipBottom + 20) continue;
+          this.renderSignalMarker(x, y, output.label, drawColor, direction);
+        }
+        continue;
+      }
+
+      if (output.style === 'histogram') {
+        const zeroY = toY(0);
+        const barW = Math.max(1, this.viewport.barWidth * 0.6);
+        for (let i = start; i < end; i++) {
+          if (i >= series.length || isNaN(series[i])) continue;
+          const x = this.viewport.barToPixelX(i);
+          const y = toY(series[i]);
+          const color = series[i] >= 0 ? COLORS.green : COLORS.red;
+          this.renderer.rect(x - barW / 2, Math.min(y, zeroY), barW, Math.abs(y - zeroY), color);
+        }
+        continue;
+      }
+
+      if (ind.name === 'Technical Score' && output.key === 'score' && pane && min != null && max != null) {
+        this.renderTechnicalScoreSeries(series, start, end, pane, min, max);
+        continue;
+      }
+
+      const points: [number, number][] = [];
       for (let i = start; i < end; i++) {
-        if (i < series.length && !isNaN(series[i])) {
-          if (series[i] < min) min = series[i];
-          if (series[i] > max) max = series[i];
+        if (i >= series.length || isNaN(series[i])) continue;
+        points.push([this.viewport.barToPixelX(i), toY(series[i])]);
+      }
+      if (points.length > 1) {
+        const lw = ind.lineWidths?.[output.key] ?? output.lineWidth ?? 1.5;
+        const ls = ind.lineStyles?.[output.key] ?? 'solid';
+        if (ls === 'dashed') {
+          this.renderer.dashedPolyline(points, drawColor, lw, [6, 4]);
+        } else if (ls === 'dotted') {
+          this.renderer.dashedPolyline(points, drawColor, lw, [2, 3]);
+        } else {
+          this.renderer.polyline(points, drawColor, lw);
         }
       }
     }
+  }
 
-    if (!isFinite(min)) { min = 0; max = 100; }
-    const pad = (max - min) * 0.1 || 1;
-    min -= pad;
-    max += pad;
+  private renderTechnicalScoreSeries(
+    series: number[],
+    start: number,
+    end: number,
+    pane: SubPaneLayout,
+    min: number,
+    max: number,
+  ) {
+    const range = max - min;
+    const toY = (v: number) => pane.top + ((max - v) / range) * pane.height;
+    const baseline = 50;
+    const baselineY = toY(baseline);
 
-    // Render Y scale for sub-pane
-    this.scaleY.renderSubPane(this.renderer, pane.top, pane.height, min, max, this.width);
+    const validPoints: Array<{ x: number; y: number; value: number }> = [];
+    for (let i = start; i < end; i++) {
+      if (i >= series.length || isNaN(series[i])) continue;
+      validPoints.push({
+        x: this.viewport.barToPixelX(i),
+        y: toY(series[i]),
+        value: series[i],
+      });
+    }
+    if (validPoints.length < 2) return;
 
-    // Label
-    this.renderer.textSmall(meta.shortName, 4, pane.top + 12, COLORS.textMuted, 'left');
+    for (let i = 1; i < validPoints.length; i++) {
+      const prev = validPoints[i - 1];
+      const curr = validPoints[i];
+      const avgValue = (prev.value + curr.value) / 2;
+      const fillColor = this.technicalScoreFillColor(avgValue);
+      const strokeColor = this.technicalScoreStrokeColor(avgValue);
 
-    // Draw series
-    this.renderer.clip(0, pane.top, chartAreaWidth, pane.height, () => {
-      for (let oi = 0; oi < ind.data.length; oi++) {
-        const series = ind.data[oi];
-        const output = meta.outputs[oi];
-        if (!output || !series) continue;
+      this.ctx.beginPath();
+      this.ctx.moveTo(prev.x, baselineY);
+      this.ctx.lineTo(prev.x, prev.y);
+      this.ctx.lineTo(curr.x, curr.y);
+      this.ctx.lineTo(curr.x, baselineY);
+      this.ctx.closePath();
+      this.ctx.fillStyle = fillColor;
+      this.ctx.fill();
 
-        const range = max - min;
-        const toY = (v: number) => pane.top + ((max - v) / range) * pane.height;
+      this.ctx.beginPath();
+      this.ctx.moveTo(prev.x, prev.y);
+      this.ctx.lineTo(curr.x, curr.y);
+      this.ctx.strokeStyle = strokeColor;
+      this.ctx.lineWidth = 2;
+      this.ctx.stroke();
+    }
+  }
 
-        const subDrawColor = ind.colors?.[output.key] ?? output.color;
+  private technicalScoreFillColor(value: number): string {
+    if (value >= 50) {
+      const intensity = Math.min(1, Math.max(0, (value - 50) / 50));
+      const alpha = 0.12 + intensity * 0.28;
+      return `rgba(16, 58, 138, ${alpha.toFixed(3)})`;
+    }
+    const intensity = Math.min(1, Math.max(0, (50 - value) / 50));
+    const alpha = 0.12 + intensity * 0.28;
+    return `rgba(190, 24, 56, ${alpha.toFixed(3)})`;
+  }
 
-        if (output.style === 'histogram') {
-          const zeroY = toY(0);
-          const barW = Math.max(1, this.viewport.barWidth * 0.6);
-          for (let i = start; i < end; i++) {
-            if (i >= series.length || isNaN(series[i])) continue;
-            const x = this.viewport.barToPixelX(i);
-            const y = toY(series[i]);
-            const color = series[i] >= 0 ? COLORS.green : COLORS.red;
-            this.renderer.rect(x - barW / 2, Math.min(y, zeroY), barW, Math.abs(y - zeroY), color);
-          }
-          continue;
-        }
+  private technicalScoreStrokeColor(value: number): string {
+    if (value >= 50) {
+      const intensity = Math.min(1, Math.max(0, (value - 50) / 50));
+      const channel = Math.round(96 + intensity * 74);
+      return `rgb(29, 78, ${channel})`;
+    }
+    const intensity = Math.min(1, Math.max(0, (50 - value) / 50));
+    const greenBlue = Math.round(82 - intensity * 52);
+    return `rgb(220, ${greenBlue}, ${greenBlue})`;
+  }
 
-        const points: [number, number][] = [];
-        for (let i = start; i < end; i++) {
-          if (i >= series.length || isNaN(series[i])) continue;
-          points.push([this.viewport.barToPixelX(i), toY(series[i])]);
-        }
-        if (points.length > 1) {
-          this.renderer.polyline(points, subDrawColor, output.lineWidth || 1);
-        }
-      }
-    });
+  private withAlpha(color: string, alpha: number): string {
+    if (color.startsWith('#')) {
+      const hex = color.slice(1);
+      const normalized = hex.length === 3 ? hex.split('').map((ch) => ch + ch).join('') : hex;
+      const r = parseInt(normalized.slice(0, 2), 16);
+      const g = parseInt(normalized.slice(2, 4), 16);
+      const b = parseInt(normalized.slice(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    if (color.startsWith('rgb(')) {
+      return color.replace('rgb(', 'rgba(').replace(')', `, ${alpha})`);
+    }
+
+    return color;
+  }
+
+  private renderSignalMarker(
+    x: number,
+    y: number,
+    label: string,
+    color: string,
+    direction: 'up' | 'down',
+  ) {
+    const verticalOffset = direction === 'up' ? -18 : 18;
+    const stemEndY = y + (direction === 'up' ? -6 : 6);
+    const textY = y + verticalOffset;
+    const textWidth = Math.max(18, this.ctx.measureText(label).width + 8);
+    const boxX = x - textWidth / 2;
+    const boxY = textY - 5;
+
+    this.renderer.line(x, y, x, stemEndY, color);
+    this.renderer.rect(boxX, boxY, textWidth, 10, color);
+    this.renderer.textSmall(label, x, textY, COLORS.bgBase, 'center');
   }
 
   private renderScriptSubPane(pane: SubPaneLayout, chartAreaWidth: number, result: ScriptResult, _scriptId: string) {
@@ -632,8 +996,12 @@ export class ChartEngine {
 
   private onMouseMove = (e: MouseEvent) => {
     const rect = this.canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
+    // rect is in viewport pixels; canvas draws in CSS pixels.
+    // Ancestor CSS transforms (e.g. layout zoom) make these differ — divide by scale.
+    const scaleX = rect.width / this.width;
+    const scaleY = rect.height / this.height;
+    const mx = (e.clientX - rect.left) / scaleX;
+    const my = (e.clientY - rect.top) / scaleY;
 
     this.panZoom.onMouseMove(e, rect);
 
@@ -650,6 +1018,7 @@ export class ChartEngine {
 
   private onMouseLeave = () => {
     this.crosshair.visible = false;
+    this.crosshair.hit = null;
     this.markDirty();
   };
 

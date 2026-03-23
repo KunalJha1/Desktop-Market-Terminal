@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
-import { X, GripVertical } from "lucide-react";
+import { X, GripVertical, Settings } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
 import { getChannelById } from "../lib/link-channels";
 import { linkBus } from "../lib/link-bus";
@@ -37,7 +37,7 @@ const COLUMNS: ColDef[] = [
 const ROW_H = 24;
 const HEADER_H = 22;
 const TA_COL_W = 44;
-const ROW_GRIP_W = 16;
+const ROW_GRIP_W = 12;
 const PANE_CHROME_W = 8;
 const PANE_GAP = 6;
 const HEADER_TINT_PRESETS: ReadonlyArray<{ label: string; value: string | null }> = [
@@ -121,6 +121,10 @@ export default function WatchlistCard({
   const savedTaColWidths = config.taColumnWidths as Record<string, number> | undefined;
   const taTimeframes: string[] = (config.taTimeframes as string[]) ?? [];
   const savedHeaderTints = (config.headerTints as HeaderTintConfig | undefined) ?? {};
+  const savedColumnLabels = (config.columnLabels as Record<string, string> | undefined) ?? {};
+  const [columnLabels, setColumnLabels] = useState<Record<string, string>>(savedColumnLabels);
+  const [editingHeaderKey, setEditingHeaderKey] = useState<string | null>(null);
+  const [editingHeaderValue, setEditingHeaderValue] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
 
@@ -557,6 +561,38 @@ export default function WatchlistCard({
     [colWidths, customColumns, taColWidths, headerTints, persistConfig],
   );
 
+  // ── Fixed partition count setting ──
+  const fixedPaneCount = config.paneCount as number | undefined;
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node))
+        setSettingsOpen(false);
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSettingsOpen(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [settingsOpen]);
+
+  const updateFixedPaneCount = useCallback(
+    (n: number | undefined) => {
+      const next = { ...config };
+      if (n == null) delete next.paneCount;
+      else next.paneCount = n;
+      onConfigChange(next);
+    },
+    [config, onConfigChange],
+  );
+
   // ── How many panes fit side-by-side? ──
   const paneWidth = useMemo(() => {
     const builtInWidth = colWidths.reduce((sum, width) => sum + width, 0);
@@ -573,7 +609,8 @@ export default function WatchlistCard({
     tracks.push(...taTimeframes.map((tf) => `${taColWidths[tf] ?? TA_COL_W}px`));
     return tracks.join(" ");
   }, [colWidths, customColumns, taColWidths, taTimeframes, sortCol]);
-  const paneCount = Math.max(1, Math.floor(containerWidth / paneWidth));
+  const autoPaneCount = Math.max(1, Math.floor(containerWidth / paneWidth));
+  const paneCount = fixedPaneCount ?? autoPaneCount;
 
   // ── TA timeframe mutations ──
   const updateTaTimeframes = useCallback(
@@ -805,10 +842,57 @@ export default function WatchlistCard({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [deleteRowAt, removeSelectedRows, selectedRows]);
 
+  // ── Arrow-key navigation: move selection up/down through non-empty symbols ──
+  const onSymbolSelectRef = useRef(onSymbolSelect);
+  onSymbolSelectRef.current = onSymbolSelect;
+  const linkChannelRef = useRef(linkChannel);
+  linkChannelRef.current = linkChannel;
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+        || target?.isContentEditable
+      ) return;
+
+      const displaySyms = sortCol ? sortedSymbols : symbols.filter((s) => s.trim() !== "");
+      if (displaySyms.length === 0) return;
+
+      e.preventDefault();
+
+      // anchorGlobal is a paddedSymbols index; displaySyms occupies indices 0..N-1
+      const anchorGlobal = selectionAnchorIdx;
+      const currentDisplayIdx = anchorGlobal !== null && anchorGlobal < displaySyms.length ? anchorGlobal : -1;
+
+      let nextDisplayIdx: number;
+      if (currentDisplayIdx < 0) {
+        nextDisplayIdx = e.key === "ArrowDown" ? 0 : displaySyms.length - 1;
+      } else {
+        nextDisplayIdx = e.key === "ArrowDown"
+          ? Math.min(currentDisplayIdx + 1, displaySyms.length - 1)
+          : Math.max(currentDisplayIdx - 1, 0);
+      }
+
+      const nextSymbol = displaySyms[nextDisplayIdx];
+      if (!nextSymbol) return;
+
+      setSelectedRows(new Set([nextDisplayIdx]));
+      setSelectionAnchorIdx(nextDisplayIdx);
+      onSymbolSelectRef.current?.(nextSymbol);
+      if (linkChannelRef.current) linkBus.publish(linkChannelRef.current, nextSymbol);
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [selectionAnchorIdx, sortCol, sortedSymbols, symbols]);
+
   // ── How many visible rows per pane? ──
   const bodyRef = useRef<HTMLDivElement>(null);
   const [bodyHeight, setBodyHeight] = useState(300);
-  const [rowsScrollbarWidth, setRowsScrollbarWidth] = useState(0);
   useEffect(() => {
     const el = bodyRef.current;
     if (!el) return;
@@ -818,17 +902,6 @@ export default function WatchlistCard({
     obs.observe(el);
     return () => obs.disconnect();
   }, []);
-  useEffect(() => {
-    const el = rowsAreaRef.current;
-    if (!el) return;
-    const updateScrollbarWidth = () => {
-      setRowsScrollbarWidth(el.offsetWidth - el.clientWidth);
-    };
-    updateScrollbarWidth();
-    const obs = new ResizeObserver(() => updateScrollbarWidth());
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [paneCount]);
 
   const rowsPerPane = Math.max(4, Math.floor((bodyHeight - HEADER_H) / ROW_H));
 
@@ -953,6 +1026,52 @@ export default function WatchlistCard({
               />
             )}
           </div>
+          {/* Settings cog */}
+          <div ref={settingsRef} className="relative">
+            <button
+              onClick={() => setSettingsOpen((v) => !v)}
+              className={`flex h-3.5 w-3.5 items-center justify-center rounded-sm transition-colors duration-75 ${
+                settingsOpen
+                  ? "bg-white/[0.06] text-white/60"
+                  : "text-white/30 hover:bg-white/[0.06] hover:text-white/50"
+              }`}
+              title="Settings"
+            >
+              <Settings className="h-2.5 w-2.5" strokeWidth={1.5} />
+            </button>
+            {settingsOpen && (
+              <div className="absolute right-0 top-full z-[100] mt-1 w-[170px] rounded-md border border-white/[0.08] bg-[#1C2128] p-2.5 shadow-xl shadow-black/40">
+                <div className="mb-2 text-[9px] uppercase tracking-wider text-white/25">
+                  Amt of Partitions
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  <button
+                    onClick={() => updateFixedPaneCount(undefined)}
+                    className={`h-5 rounded-sm px-2 text-[10px] transition-colors duration-75 ${
+                      fixedPaneCount === undefined
+                        ? "bg-blue/20 text-blue"
+                        : "text-white/40 hover:bg-white/[0.06] hover:text-white/60"
+                    }`}
+                  >
+                    Auto
+                  </button>
+                  {[1, 2, 3, 4, 5, 6].map((n) => (
+                    <button
+                      key={n}
+                      onClick={() => updateFixedPaneCount(n)}
+                      className={`h-5 w-5 rounded-sm text-[10px] transition-colors duration-75 ${
+                        fixedPaneCount === n
+                          ? "bg-blue/20 text-blue"
+                          : "text-white/40 hover:bg-white/[0.06] hover:text-white/60"
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
           <ComponentLinkMenu
             linkChannel={linkChannel}
             onSetLinkChannel={onSetLinkChannel}
@@ -967,13 +1086,21 @@ export default function WatchlistCard({
       </div>
 
       {/* Body — data-no-drag prevents GridLayout from starting a component move on row mousedown */}
-      <div ref={containerRef} className="flex flex-1 overflow-hidden" data-no-drag>
-        <div ref={bodyRef} className="flex h-full w-full gap-[6px]">
+      <div
+        ref={containerRef}
+        className={`flex flex-1 ${fixedPaneCount != null ? "overflow-x-auto overflow-y-hidden" : "overflow-hidden"}`}
+        data-no-drag
+      >
+        <div ref={bodyRef} className={`flex h-full gap-[6px] ${fixedPaneCount != null ? "" : "w-full"}`}>
           {panes.map((pane, paneIdx) => (
             <div
               key={paneIdx}
-              className="flex min-h-0 flex-1 flex-col overflow-hidden border border-white/[0.06]"
-              style={{ minWidth: 0 }}
+              className="flex min-h-0 flex-col overflow-hidden border border-white/[0.06]"
+              style={
+                fixedPaneCount != null
+                  ? { width: paneWidth - PANE_GAP, flexShrink: 0 }
+                  : { flex: 1, minWidth: 0 }
+              }
             >
               {/* Column headers — click to sort */}
               <div
@@ -981,7 +1108,6 @@ export default function WatchlistCard({
                 style={{
                   height: HEADER_H,
                   gridTemplateColumns: paneGridTemplate,
-                  paddingRight: rowsScrollbarWidth,
                 }}
               >
                 {!sortCol && <div />}
@@ -995,9 +1121,40 @@ export default function WatchlistCard({
                       textAlign: col.align,
                     }}
                     onClick={() => handleSort(col.key)}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setEditingHeaderKey(col.key);
+                      setEditingHeaderValue(columnLabels[col.key] ?? col.label);
+                    }}
                   >
-                    {col.label}
-                    {sortCol === col.key && (
+                    {editingHeaderKey === col.key ? (
+                      <input
+                        autoFocus
+                        className="w-full bg-transparent text-[9px] font-medium uppercase tracking-wider text-white/70 outline-none"
+                        value={editingHeaderValue}
+                        onChange={(e) => setEditingHeaderValue(e.target.value)}
+                        onBlur={() => {
+                          const trimmed = editingHeaderValue.trim();
+                          const next = { ...columnLabels };
+                          if (trimmed && trimmed !== col.label) {
+                            next[col.key] = trimmed;
+                          } else {
+                            delete next[col.key];
+                          }
+                          setColumnLabels(next);
+                          persistConfig({ columnLabels: next });
+                          setEditingHeaderKey(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          if (e.key === "Escape") setEditingHeaderKey(null);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : (
+                      columnLabels[col.key] ?? col.label
+                    )}
+                    {editingHeaderKey !== col.key && sortCol === col.key && (
                       <span className="ml-0.5 text-[8px] text-white/50">
                         {sortDir === "asc" ? "\u25B2" : "\u25BC"}
                       </span>
@@ -1099,7 +1256,6 @@ export default function WatchlistCard({
                 watchlistData={watchlistData}
                 symbolStatus={symbolStatus}
                 rowsAreaRef={paneIdx === 0 ? rowsAreaRef : undefined}
-                onRowsScrollbarWidthChange={paneIdx === 0 ? setRowsScrollbarWidth : undefined}
                 onContextMenu={(x, y, globalIdx, sym) =>
                   setContextMenu({
                     x,
@@ -1431,7 +1587,6 @@ interface WatchlistPaneRowsProps {
   watchlistData: Map<string, Quote>;
   symbolStatus: Map<string, SymbolStatus>;
   rowsAreaRef?: MutableRefObject<HTMLDivElement | null>;
-  onRowsScrollbarWidthChange?: (width: number) => void;
   onContextMenu: (x: number, y: number, globalIdx: number, symbol: string) => void;
   onReplace: (globalIdx: number, symbol: string, newSym: string) => void;
   onRemove: (globalIdx: number, symbol: string) => void;
@@ -1459,7 +1614,6 @@ function WatchlistPaneRows({
   watchlistData,
   symbolStatus,
   rowsAreaRef,
-  onRowsScrollbarWidthChange,
   onContextMenu,
   onReplace,
   onRemove,
@@ -1479,41 +1633,6 @@ function WatchlistPaneRows({
   startRowDrag,
 }: WatchlistPaneRowsProps) {
   const localRowsRef = useRef<HTMLDivElement | null>(null);
-  const scrollRef = rowsAreaRef ?? localRowsRef;
-  const [scrollMetrics, setScrollMetrics] = useState({
-    hasOverflow: false,
-    thumbHeight: 0,
-    thumbOffset: 0,
-  });
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    const updateMetrics = () => {
-      const maxScroll = el.scrollHeight - el.clientHeight;
-      const hasOverflow = maxScroll > 1;
-      const thumbHeight = hasOverflow
-        ? Math.max(28, (el.clientHeight / el.scrollHeight) * el.clientHeight)
-        : el.clientHeight;
-      const thumbOffset = hasOverflow
-        ? (el.scrollTop / maxScroll) * (el.clientHeight - thumbHeight)
-        : 0;
-      setScrollMetrics({ hasOverflow, thumbHeight, thumbOffset });
-      onRowsScrollbarWidthChange?.(el.offsetWidth - el.clientWidth);
-    };
-
-    updateMetrics();
-
-    el.addEventListener("scroll", updateMetrics);
-    const resizeObserver = new ResizeObserver(updateMetrics);
-    resizeObserver.observe(el);
-
-    return () => {
-      el.removeEventListener("scroll", updateMetrics);
-      resizeObserver.disconnect();
-    };
-  }, [onRowsScrollbarWidthChange, pane.length, scrollRef]);
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -1526,8 +1645,7 @@ function WatchlistPaneRows({
           }
           onRowsAreaRef?.(el);
         }}
-        className="scrollbar-watchlist relative h-full overflow-y-auto"
-        style={{ scrollbarGutter: "stable" }}
+        className="scrollbar-none relative h-full overflow-y-auto"
       >
         {pane.map((sym, rowIdx) => {
           const globalIdx = paneIdx * symbolsPerPane + rowIdx;
@@ -1566,18 +1684,6 @@ function WatchlistPaneRows({
         })}
       </div>
 
-      <div className="pointer-events-none absolute inset-y-0 right-0 flex w-[10px] justify-center bg-[#0D1117]">
-        <div className="my-1 w-[6px] rounded-full bg-white/[0.05]">
-          <div
-            className="rounded-full bg-white/[0.18] transition-[height,transform] duration-100"
-            style={{
-              height: `${Math.max(scrollMetrics.thumbHeight - 8, 18)}px`,
-              transform: `translateY(${scrollMetrics.thumbOffset + 4}px)`,
-              opacity: scrollMetrics.hasOverflow ? 1 : 0.35,
-            }}
-          />
-        </div>
-      </div>
     </div>
   );
 }
@@ -1971,7 +2077,7 @@ function WatchlistRow({
           onMouseDown={showGrip ? onGripMouseDown : undefined}
           data-no-drag
         >
-          {showGrip && <GripVertical className="h-3 w-3 text-white/25" strokeWidth={1.5} />}
+          {showGrip && <GripVertical className="h-2.5 w-2.5 text-white/25" strokeWidth={1.5} />}
         </div>
       )}
       {/* Symbol */}

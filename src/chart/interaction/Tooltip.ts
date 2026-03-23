@@ -19,8 +19,12 @@ export class Tooltip {
     const bullish = bar.close >= bar.open;
     const color = bullish ? COLORS.green : COLORS.red;
     const x = viewport.chartLeft + 8;
-    const y = viewport.chartTop + 14;
-    const spacing = 90;
+    const y = viewport.chartTop + 12;
+    const spacing = 76;
+
+    const delta = bar.close - bar.open;
+    const deltaPct = bar.open !== 0 ? (delta / bar.open) * 100 : 0;
+    const deltaStr = (bullish ? '+' : '') + delta.toFixed(2) + '  (' + (bullish ? '+' : '') + deltaPct.toFixed(2) + '%)';
 
     const items = [
       { label: 'O', value: bar.open.toFixed(2) },
@@ -28,12 +32,13 @@ export class Tooltip {
       { label: 'L', value: bar.low.toFixed(2) },
       { label: 'C', value: bar.close.toFixed(2) },
       { label: 'V', value: formatVolume(bar.volume) },
+      { label: 'Δ', value: deltaStr },
     ];
 
     for (let i = 0; i < items.length; i++) {
       const ix = x + i * spacing;
       renderer.text(items[i].label, ix, y, COLORS.textMuted, 'left');
-      renderer.text(items[i].value, ix + 14, y, color, 'left');
+      renderer.text(items[i].value, ix + 12, y, i === 5 ? color : color, 'left');
     }
   }
 }

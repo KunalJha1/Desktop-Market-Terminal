@@ -3,7 +3,7 @@ import {
   useRef,
   useCallback,
   useEffect,
-  type DragEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { X, Plus } from "lucide-react";
 import { useTabs, tabPresets, type TabType } from "../lib/tabs";
@@ -24,6 +24,15 @@ export default function TabBar() {
   // Drag reorder state
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const tabListRef = useRef<HTMLDivElement>(null);
+  const pointerDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    index: number;
+    active: boolean;
+  } | null>(null);
+  const suppressClickRef = useRef(false);
 
   // Context menu state
   const [menu, setMenu] = useState<{
@@ -64,42 +73,113 @@ export default function TabBar() {
     };
   }, [showAdd]);
 
-  const handleDragStart = useCallback(
-    (e: DragEvent, index: number) => {
-      setDragIndex(index);
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", tabs[index].id);
-    },
-    [tabs],
-  );
-
-  const handleDragOver = useCallback(
-    (e: DragEvent, index: number) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      if (dragIndex !== null && index !== dragIndex) {
-        setDragOverIndex(index);
-      }
-    },
-    [dragIndex],
-  );
-
-  const handleDrop = useCallback(
-    (e: DragEvent, toIndex: number) => {
-      e.preventDefault();
-      if (dragIndex !== null && dragIndex !== toIndex) {
-        reorderTabs(dragIndex, toIndex);
-      }
-      setDragIndex(null);
-      setDragOverIndex(null);
-    },
-    [dragIndex, reorderTabs],
-  );
-
-  const handleDragEnd = useCallback(() => {
+  const resetDragState = useCallback(() => {
     setDragIndex(null);
     setDragOverIndex(null);
   }, []);
+
+  const getTabIndexFromPoint = useCallback((clientX: number, clientY: number) => {
+    const tabList = tabListRef.current;
+    if (!tabList) return null;
+
+    const pointedTab = document
+      .elementFromPoint(clientX, clientY)
+      ?.closest<HTMLElement>("[data-tab-id]");
+
+    if (pointedTab) {
+      const pointedId = pointedTab.dataset.tabId;
+      const pointedIndex = tabs.findIndex((tab) => tab.id === pointedId);
+      if (pointedIndex >= 0) return pointedIndex;
+    }
+
+    const tabElements = Array.from(
+      tabList.querySelectorAll<HTMLElement>("[data-tab-id]"),
+    );
+    if (!tabElements.length) return null;
+
+    const firstRect = tabElements[0].getBoundingClientRect();
+    const lastRect = tabElements[tabElements.length - 1].getBoundingClientRect();
+
+    if (clientX < firstRect.left) return 0;
+    if (clientX > lastRect.right) return tabElements.length - 1;
+
+    const nearest = tabElements.reduce(
+      (best, element, index) => {
+        const rect = element.getBoundingClientRect();
+        const center = rect.left + rect.width / 2;
+        const distance = Math.abs(clientX - center);
+        return distance < best.distance ? { index, distance } : best;
+      },
+      { index: 0, distance: Number.POSITIVE_INFINITY },
+    );
+
+    return nearest.index;
+  }, [tabs]);
+
+  useEffect(() => {
+    const handlePointerMove = (e: PointerEvent) => {
+      const drag = pointerDragRef.current;
+      if (!drag || e.pointerId !== drag.pointerId) return;
+
+      const deltaX = e.clientX - drag.startX;
+      const deltaY = e.clientY - drag.startY;
+      if (!drag.active && Math.hypot(deltaX, deltaY) < 6) return;
+
+      if (!drag.active) {
+        drag.active = true;
+        suppressClickRef.current = true;
+        setDragIndex(drag.index);
+        setDragOverIndex(drag.index);
+      }
+
+      const hoveredIndex = getTabIndexFromPoint(e.clientX, e.clientY);
+      if (hoveredIndex !== null) {
+        setDragOverIndex(hoveredIndex);
+      }
+    };
+
+    const handlePointerEnd = (e: PointerEvent) => {
+      const drag = pointerDragRef.current;
+      if (!drag || e.pointerId !== drag.pointerId) return;
+
+      if (drag.active && dragIndex !== null && dragOverIndex !== null && dragIndex !== dragOverIndex) {
+        reorderTabs(dragIndex, dragOverIndex);
+      }
+
+      pointerDragRef.current = null;
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+      resetDragState();
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerEnd);
+    window.addEventListener("pointercancel", handlePointerEnd);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerEnd);
+      window.removeEventListener("pointercancel", handlePointerEnd);
+    };
+  }, [dragIndex, dragOverIndex, getTabIndexFromPoint, reorderTabs, resetDragState]);
+
+  const handlePointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>, index: number) => {
+      if (e.button !== 0 || renamingId) return;
+      const target = e.target as HTMLElement;
+      if (target.closest("button, input")) return;
+
+      pointerDragRef.current = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        index,
+        active: false,
+      };
+    },
+    [renamingId],
+  );
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, tabId: string) => {
@@ -133,26 +213,29 @@ export default function TabBar() {
 
   return (
     <div className="flex h-8 shrink-0 items-end border-b border-white/[0.06] bg-base">
-      <div className="flex h-full items-stretch overflow-x-auto">
+      <div ref={tabListRef} className="flex h-full items-stretch overflow-x-auto">
         {tabs.map((tab, index) => {
           const isActive = tab.id === activeTabId;
           const isDragOver = dragOverIndex === index;
+          const isDragging = dragIndex === index;
 
           return (
             <div
               key={tab.id}
-              draggable={renamingId !== tab.id}
-              onDragStart={(e) => handleDragStart(e, index)}
-              onDragOver={(e) => handleDragOver(e, index)}
-              onDrop={(e) => handleDrop(e, index)}
-              onDragEnd={handleDragEnd}
+              data-tab-id={tab.id}
+              onPointerDown={(e) => handlePointerDown(e, index)}
               onContextMenu={(e) => handleContextMenu(e, tab.id)}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => {
+                if (suppressClickRef.current) return;
+                setActiveTab(tab.id);
+              }}
               className={`group relative flex h-full cursor-pointer items-center gap-1.5 border-r border-white/[0.04] px-3 transition-colors duration-75 ${
                 isActive
                   ? "bg-panel text-white/80"
                   : "text-white/35 hover:bg-white/[0.03] hover:text-white/55"
-              } ${isDragOver ? "border-l-2 border-l-blue" : ""}`}
+              } ${isDragOver && !isDragging ? "border-l-2 border-l-blue" : ""} ${
+                isDragging ? "opacity-60" : ""
+              }`}
               style={{ minWidth: 80, maxWidth: 160 }}
             >
               {/* Active tab indicator */}

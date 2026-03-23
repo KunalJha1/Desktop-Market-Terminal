@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
-import type { Timeframe, ChartType } from '../types';
+import type { Timeframe, ChartType, YScaleMode } from '../types';
 import { TIMEFRAMES, CHART_TYPES } from '../constants';
 import {
   ChevronDown,
   BarChart3,
   LineChart,
   TrendingUp,
+  BrainCircuit,
   Activity,
   Code,
   Search,
@@ -24,6 +25,7 @@ interface ChartToolbarProps {
   chartType: ChartType;
   onChartTypeChange: (ct: ChartType) => void;
   onIndicatorPanelToggle: () => void;
+  onStrategyPanelToggle: () => void;
   onScriptEditorToggle: () => void;
   dataSource?: 'tws' | 'yahoo' | 'cache' | 'mock';
   loading?: boolean;
@@ -34,6 +36,8 @@ interface ChartToolbarProps {
   onZoomIn?: () => void;
   onZoomOut?: () => void;
   onZoomReset?: () => void;
+  yScaleMode?: YScaleMode;
+  onYScaleModeChange?: (mode: YScaleMode) => void;
 }
 
 export default function ChartToolbar({
@@ -44,6 +48,7 @@ export default function ChartToolbar({
   chartType,
   onChartTypeChange,
   onIndicatorPanelToggle,
+  onStrategyPanelToggle,
   onScriptEditorToggle,
   dataSource = 'mock',
   loading = false,
@@ -54,6 +59,8 @@ export default function ChartToolbar({
   onZoomIn,
   onZoomOut,
   onZoomReset,
+  yScaleMode = 'auto',
+  onYScaleModeChange,
 }: ChartToolbarProps) {
   const [symbolInput, setSymbolInput] = useState(symbol);
   const [chartTypeOpen, setChartTypeOpen] = useState(false);
@@ -233,6 +240,15 @@ export default function ChartToolbar({
 
       <div className="w-px h-4 bg-border-default" />
 
+      <button
+        onClick={onStrategyPanelToggle}
+        className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-text-secondary
+                   hover:text-text-primary hover:bg-hover rounded-btn transition-colors duration-120"
+      >
+        <BrainCircuit size={13} />
+        <span className="font-mono">Strategies</span>
+      </button>
+
       {/* Chart type dropdown */}
       <div className="relative mx-1" ref={dropdownRef}>
         <button
@@ -299,6 +315,34 @@ export default function ChartToolbar({
           title="Reset zoom"
         >
           <RotateCcw size={12} />
+        </button>
+      </div>
+
+      <div className="w-px h-4 bg-border-default" />
+
+      {/* Y-axis scale mode */}
+      <div className="flex items-center gap-0.5 mx-1">
+        <button
+          onClick={() => onYScaleModeChange?.('auto')}
+          className={`px-1.5 py-0.5 text-[10px] font-mono rounded-btn transition-colors duration-120
+            ${yScaleMode === 'auto'
+              ? 'text-blue bg-blue/10'
+              : 'text-text-muted hover:text-text-secondary hover:bg-hover'
+            }`}
+          title="Auto scale"
+        >
+          Auto
+        </button>
+        <button
+          onClick={() => onYScaleModeChange?.('log')}
+          className={`px-1.5 py-0.5 text-[10px] font-mono rounded-btn transition-colors duration-120
+            ${yScaleMode === 'log'
+              ? 'text-blue bg-blue/10'
+              : 'text-text-muted hover:text-text-secondary hover:bg-hover'
+            }`}
+          title="Logarithmic scale"
+        >
+          Log
         </button>
       </div>
 

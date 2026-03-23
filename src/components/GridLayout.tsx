@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, type ReactNode } from "react";
+import { useRef, useState, useCallback, useEffect, type ReactNode } from "react";
 import type { LayoutComponent } from "../lib/layout-types";
 
 type ResizeDir = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
@@ -12,6 +12,8 @@ interface GridLayoutProps {
   onResizeComponent: (id: string, w: number, h: number, x?: number, y?: number) => void;
   renderComponent: (comp: LayoutComponent) => ReactNode;
 }
+
+const SNAP_PX = 10; // pixel threshold for component-edge snapping
 
 const RESIZE_HANDLES: { dir: ResizeDir; cursor: string; className: string }[] = [
   { dir: "n",  cursor: "cursor-n-resize",  className: "top-0 left-2 right-2 h-1.5" },
@@ -35,6 +37,24 @@ export default function GridLayout({
 }: GridLayoutProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Track container height to derive maxRows
+  const [maxRows, setMaxRows] = useState(0);
+  const maxRowsRef = useRef(0);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const rows = entry.contentRect.height / rowHeight;
+        maxRowsRef.current = rows;
+        setMaxRows(rows);
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [rowHeight]);
+
   // Drag state
   const [dragging, setDragging] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<{ x: number; y: number } | null>(null);
@@ -50,6 +70,51 @@ export default function GridLayout({
     if (!containerRef.current) return 0;
     return containerRef.current.clientWidth / columns;
   }, [columns]);
+
+  // Snap dragged component to edges of other components
+  const snapToEdges = useCallback(
+    (newX: number, newY: number, dragComp: LayoutComponent, colW: number) => {
+      const snapCol = SNAP_PX / colW;
+      const snapRow = SNAP_PX / rowHeight;
+      let bestDX = snapCol;
+      let bestDY = snapRow;
+      let sx = newX;
+      let sy = newY;
+
+      for (const other of components) {
+        if (other.id === dragComp.id) continue;
+        const oL = other.x, oR = other.x + other.w;
+        const oT = other.y, oB = other.y + other.h;
+        const dL = newX, dR = newX + dragComp.w;
+        const dT = newY, dB = newY + dragComp.h;
+
+        const xCandidates: { from: number; to: number; offset?: number }[] = [
+          { from: dL, to: oL },
+          { from: dL, to: oR },
+          { from: dR, to: oL, offset: -dragComp.w },
+          { from: dR, to: oR, offset: -dragComp.w },
+        ];
+        for (const c of xCandidates) {
+          const d = Math.abs(c.from - c.to);
+          if (d < bestDX) { bestDX = d; sx = c.to + (c.offset ?? 0); }
+        }
+
+        const yCandidates: { from: number; to: number; offset?: number }[] = [
+          { from: dT, to: oT },
+          { from: dT, to: oB },
+          { from: dB, to: oT, offset: -dragComp.h },
+          { from: dB, to: oB, offset: -dragComp.h },
+        ];
+        for (const c of yCandidates) {
+          const d = Math.abs(c.from - c.to);
+          if (d < bestDY) { bestDY = d; sy = c.to + (c.offset ?? 0); }
+        }
+      }
+
+      return { x: sx, y: sy };
+    },
+    [components, rowHeight],
+  );
 
   // --- Drag handlers ---
   const handleDragStart = useCallback(
@@ -67,6 +132,7 @@ export default function GridLayout({
       const onMove = (ev: MouseEvent) => {
         const colW = getColWidth();
         if (!colW) return;
+        const mr = maxRowsRef.current;
         const dx = ev.clientX - startX;
         const dy = ev.clientY - startY;
         const isFreeForm = ev.ctrlKey || ev.metaKey;
@@ -75,10 +141,14 @@ export default function GridLayout({
         let newX: number, newY: number;
         if (isFreeForm) {
           newX = Math.max(0, Math.min(columns - comp.w, comp.x + dx / colW));
-          newY = Math.max(0, comp.y + dy / rowHeight);
+          newY = Math.max(0, Math.min(mr - comp.h, comp.y + dy / rowHeight));
         } else {
-          newX = Math.max(0, Math.min(columns - comp.w, comp.x + Math.round(dx / colW)));
-          newY = Math.max(0, comp.y + Math.round(dy / rowHeight));
+          // Snap runs on raw fractional position, THEN round — so the threshold fires correctly
+          const rawX = comp.x + dx / colW;
+          const rawY = comp.y + dy / rowHeight;
+          const snapped = snapToEdges(rawX, rawY, comp, colW);
+          newX = Math.max(0, Math.min(columns - comp.w, Math.round(snapped.x)));
+          newY = Math.max(0, Math.min(mr - comp.h, Math.round(snapped.y)));
         }
         setDragPreview({ x: newX, y: newY });
       };
@@ -86,6 +156,7 @@ export default function GridLayout({
       const onUp = (ev: MouseEvent) => {
         const colW = getColWidth();
         if (colW) {
+          const mr = maxRowsRef.current;
           const dx = ev.clientX - startX;
           const dy = ev.clientY - startY;
           const isFreeForm = ev.ctrlKey || ev.metaKey;
@@ -93,10 +164,13 @@ export default function GridLayout({
           let newX: number, newY: number;
           if (isFreeForm) {
             newX = Math.max(0, Math.min(columns - comp.w, comp.x + dx / colW));
-            newY = Math.max(0, comp.y + dy / rowHeight);
+            newY = Math.max(0, Math.min(mr - comp.h, comp.y + dy / rowHeight));
           } else {
-            newX = Math.max(0, Math.min(columns - comp.w, comp.x + Math.round(dx / colW)));
-            newY = Math.max(0, comp.y + Math.round(dy / rowHeight));
+            const rawX = comp.x + dx / colW;
+            const rawY = comp.y + dy / rowHeight;
+            const snapped = snapToEdges(rawX, rawY, comp, colW);
+            newX = Math.max(0, Math.min(columns - comp.w, Math.round(snapped.x)));
+            newY = Math.max(0, Math.min(mr - comp.h, Math.round(snapped.y)));
           }
           onMoveComponent(comp.id, newX, newY);
         }
@@ -110,7 +184,7 @@ export default function GridLayout({
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     },
-    [locked, columns, rowHeight, getColWidth, onMoveComponent],
+    [locked, columns, rowHeight, getColWidth, onMoveComponent, snapToEdges],
   );
 
   // --- Resize handlers (supports all 8 directions) ---
@@ -134,6 +208,7 @@ export default function GridLayout({
       const computeNew = (dx: number, dy: number, isFreeForm: boolean) => {
         const colW = getColWidth();
         if (!colW) return { x: comp.x, y: comp.y, w: comp.w, h: comp.h };
+        const mr = maxRowsRef.current;
 
         const snapOrRaw = (val: number) => isFreeForm ? val : Math.round(val);
 
@@ -153,7 +228,7 @@ export default function GridLayout({
           newW = comp.w - clampedD;
         }
         if (movesBottom) {
-          newH = Math.max(3, comp.h + snapOrRaw(dy / rowHeight));
+          newH = Math.max(3, Math.min(mr - comp.y, comp.h + snapOrRaw(dy / rowHeight)));
         }
         if (movesTop) {
           const dRows = snapOrRaw(dy / rowHeight);
@@ -161,6 +236,10 @@ export default function GridLayout({
           const clampedD = Math.max(-comp.y, Math.min(maxTopShift, dRows));
           newY = comp.y + clampedD;
           newH = comp.h - clampedD;
+          // Also clamp so component doesn't exceed bottom
+          if (newY + newH > mr) {
+            newH = mr - newY;
+          }
         }
 
         return { x: newX, y: newY, w: newW, h: newH };
@@ -198,21 +277,13 @@ export default function GridLayout({
     [locked, columns, rowHeight, getColWidth, onResizeComponent],
   );
 
-  const maxRow = components.reduce((max, c) => {
-    const h = resizing === c.id && resizePreview ? resizePreview.h : c.h;
-    const y = resizing === c.id && resizePreview ? resizePreview.y : (dragging === c.id && dragPreview ? dragPreview.y : c.y);
-    return Math.max(max, y + h);
-  }, 0);
-  const minRows = Math.max(maxRow + 2, Math.ceil(400 / rowHeight));
-
   return (
     <div
       ref={containerRef}
       className="relative h-full w-full overflow-hidden"
-      style={{ minHeight: minRows * rowHeight }}
     >
       {/* Grid lines when unlocked */}
-      {!locked && (
+      {!locked && maxRows > 0 && (
         <div className="pointer-events-none absolute inset-0" aria-hidden>
           {/* Column lines */}
           {Array.from({ length: columns + 1 }, (_, i) => (
@@ -230,7 +301,7 @@ export default function GridLayout({
             />
           ))}
           {/* Row lines */}
-          {Array.from({ length: minRows + 1 }, (_, i) => (
+          {Array.from({ length: Math.floor(maxRows) + 1 }, (_, i) => (
             <div
               key={`row-${i}`}
               className="absolute left-0 w-full"

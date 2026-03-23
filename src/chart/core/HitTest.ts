@@ -5,7 +5,8 @@ export interface HitResult {
   barIndex: number;
   bar: OHLCVBar | null;
   price: number;
-  pixelX: number;
+  pixelX: number;     // raw mouse X — used for vertical crosshair line
+  barPixelX: number;  // snapped bar center — used for time label centering
   pixelY: number;
   inChart: boolean;
 }
@@ -30,7 +31,8 @@ export class HitTest {
       barIndex: clampedIndex,
       bar,
       price,
-      pixelX: bar ? viewport.barToPixelX(clampedIndex) : mouseX,
+      pixelX: mouseX,
+      barPixelX: bar ? viewport.barToPixelX(clampedIndex) : mouseX,
       pixelY: mouseY,
       inChart,
     };

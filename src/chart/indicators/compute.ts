@@ -64,11 +64,20 @@ export function stdev(data: number[], period: number): number[] {
 
 import { computeSMA } from './overlays/sma';
 import { computeEMA } from './overlays/ema';
+import { computeEMARibbon } from './overlays/emaRibbon';
 import { computeBollinger } from './overlays/bollinger';
 import { computeVWAP } from './overlays/vwap';
 import { computeIchimoku } from './overlays/ichimoku';
 import { computeParabolicSAR } from './overlays/parabolicSar';
 import { computeEnvelope } from './overlays/envelope';
+import { computeGoldenDeathCross, computeEMACrossover } from './overlays/crossoverStrategy';
+import { computeEMA520Strategy } from './overlays/ema520Strategy';
+import { computeDailyIQTechScoreStrategy } from './overlays/dailyIQTechScoreStrategy';
+import { computeStructureBreaks } from './overlays/structureBreaks';
+import { computeLiquidityLevelLines } from './overlays/liquidityLevels';
+import { computeLiquiditySweeps } from './overlays/liquiditySweeps';
+import { computeFVGMomentum } from './overlays/fvgMomentum';
+import { computeGapZones } from './overlays/gapZones';
 import { computeRSI } from './oscillators/rsi';
 import { computeMACD } from './oscillators/macd';
 import { computeStochastic } from './oscillators/stochastic';
@@ -77,19 +86,38 @@ import { computeCCI } from './oscillators/cci';
 import { computeWilliamsR } from './oscillators/williamsR';
 import { computeROC } from './oscillators/roc';
 import { computeMFI } from './oscillators/mfi';
+import { computeTechnicalScore } from './oscillators/technicalScore';
+import { computeStochasticRsi } from './oscillators/stochasticRsi';
+import { computeBullBearPower } from './oscillators/bullBearPower';
+import { computeSupertrendSentiment } from './oscillators/supertrend';
+import { computeLinearRegressionSentiment } from './oscillators/linearRegression';
+import { computeMarketStructureSentiment } from './oscillators/marketStructure';
+import { computeMarketSentiment } from './oscillators/marketSentiment';
+import { computeTrendAngle } from './oscillators/trendAngle';
 import { computeOBV } from './volume/obv';
 import { computeVolumeProfile } from './volume/volumeProfile';
+import { computeMarketSentimentStrategy } from './overlays/marketSentimentStrategy';
 
 // --- Dispatch map ---
 
 const computeFns: Record<string, (bars: OHLCVBar[], params: Record<string, number>) => number[][]> = {
   SMA: computeSMA,
   EMA: computeEMA,
+  'EMA Ribbon 5/20/200': computeEMARibbon,
   'Bollinger Bands': computeBollinger,
   VWAP: computeVWAP,
   Ichimoku: computeIchimoku,
   'Parabolic SAR': computeParabolicSAR,
   Envelope: computeEnvelope,
+  'Golden/Death Cross': computeGoldenDeathCross,
+  'EMA 9/14 Crossover': computeEMACrossover,
+  'EMA 5/20 Crossover': computeEMA520Strategy,
+  'DailyIQ Tech Score Signal': computeDailyIQTechScoreStrategy,
+  'Structure Breaks': computeStructureBreaks,
+  'Liquidity Levels': computeLiquidityLevelLines,
+  'Liquidity Sweep Signal': computeLiquiditySweeps,
+  'FVG Momentum': computeFVGMomentum,
+  'Gap Zones': computeGapZones,
   RSI: computeRSI,
   MACD: computeMACD,
   Stochastic: computeStochastic,
@@ -98,6 +126,15 @@ const computeFns: Record<string, (bars: OHLCVBar[], params: Record<string, numbe
   'Williams %R': computeWilliamsR,
   ROC: computeROC,
   MFI: computeMFI,
+  'Technical Score': computeTechnicalScore,
+  'Stochastic RSI': computeStochasticRsi,
+  'Bull Bear Power': computeBullBearPower,
+  Supertrend: computeSupertrendSentiment,
+  'Linear Regression': computeLinearRegressionSentiment,
+  'Market Structure': computeMarketStructureSentiment,
+  'Market Sentiment': computeMarketSentiment,
+  'Market Sentiment Signal': computeMarketSentimentStrategy,
+  'Trend Angle': computeTrendAngle,
   OBV: computeOBV,
   'Volume Profile': computeVolumeProfile,
 };

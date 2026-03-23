@@ -31,6 +31,15 @@ INCREMENTAL_OVERLAP_DAYS = 5
 # Yahoo Finance hard limits for 1m data (API won't return further back)
 YAHOO_1M_MAX_DAYS = 29
 
+# Default/maximum horizons for deeper history pulls.
+DEFAULT_INTRADAY_DURATION = "30 D"
+BACKGROUND_INTRADAY_DURATION = "1 Y"
+DEFAULT_DAILY_DURATION = "30 Y"
+MAX_INTRADAY_LOOKBACK_DAYS = 365
+MAX_DAILY_LOOKBACK_DAYS = 365 * 30
+TWS_INTRADAY_CHUNK_DAYS = 30
+TWS_DAILY_CHUNK_YEARS = 10
+
 # Per-symbol async locks to prevent concurrent fetches for the same symbol+bar_size.
 # Key: "{symbol}:{bar_size}" (e.g. "HIMS:1m")
 _fetch_locks: dict[str, asyncio.Lock] = {}
@@ -69,6 +78,51 @@ def _latest_bar_ts(conn: sqlite3.Connection, symbol: str, table: str) -> int | N
         f"SELECT MAX(ts) FROM {table} WHERE symbol = ?", [symbol]
     ).fetchone()
     return row[0] if row and row[0] is not None else None
+
+
+def _earliest_bar_ts(conn: sqlite3.Connection, symbol: str, table: str) -> int | None:
+    """Return the Unix ms timestamp of the earliest cached bar, or None."""
+    row = conn.execute(
+        f"SELECT MIN(ts) FROM {table} WHERE symbol = ?", [symbol]
+    ).fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+def _duration_to_days(duration: str | None, fallback_days: int) -> int:
+    """Convert an IB duration string like '30 D' or '20 Y' into days."""
+    if not duration:
+        return fallback_days
+    try:
+        value_raw, unit_raw = duration.strip().split(maxsplit=1)
+        value = int(value_raw)
+    except Exception:
+        return fallback_days
+
+    unit = unit_raw.strip().upper()
+    if unit.startswith("D"):
+        return value
+    if unit.startswith("W"):
+        return value * 7
+    if unit.startswith("M"):
+        return value * 30
+    if unit.startswith("Y"):
+        return value * 365
+    return fallback_days
+
+
+def _ib_datetime_utc(ts_ms: int) -> str:
+    """Format a UTC timestamp for IB historical pagination."""
+    dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+    return dt.strftime("%Y%m%d %H:%M:%S UTC")
+
+
+def _dedupe_bars(bars: list[dict]) -> list[dict]:
+    if not bars:
+        return []
+    deduped: dict[int, dict] = {}
+    for bar in bars:
+        deduped[bar["time"]] = bar
+    return [deduped[ts] for ts in sorted(deduped)]
 
 
 def _incremental_tws_duration(last_ts_ms: int | None, default: str, is_daily: bool) -> str:
@@ -122,8 +176,14 @@ def _incremental_yahoo_period(last_ts_ms: int | None, default: str, is_daily: bo
         return "6mo"
     elif gap_days <= 364:
         return "1y"
-    else:
+    elif gap_days <= 729:
         return "2y"
+    elif gap_days <= 1825:
+        return "5y"
+    elif gap_days <= 3650:
+        return "10y"
+    else:
+        return "max"
 
 
 def _ensure_schema(conn: sqlite3.Connection):
@@ -299,6 +359,74 @@ def _read_cached(conn: sqlite3.Connection, symbol: str, limit_days: int = 5, tab
     ]
 
 
+def _read_cached_window(
+    conn: sqlite3.Connection,
+    symbol: str,
+    ts_start: int | None = None,
+    ts_end: int | None = None,
+    limit: int | None = None,
+    table: str = "ohlcv_1m",
+) -> list[dict]:
+    """Read a windowed slice of cached bars for viewport-based loading.
+
+    Uses the (symbol, ts) composite index for fast range scans.
+    When only `limit` is provided (no ts_start/ts_end), returns the most recent N bars.
+    """
+    conditions = ["symbol = ?"]
+    params: list = [symbol]
+
+    if ts_start is not None:
+        conditions.append("ts >= ?")
+        params.append(ts_start)
+    if ts_end is not None:
+        conditions.append("ts <= ?")
+        params.append(ts_end)
+
+    where = " AND ".join(conditions)
+
+    # When only limit is given (no time bounds), fetch the most recent bars
+    if limit is not None and ts_start is None and ts_end is None:
+        rows = conn.execute(
+            f"""
+            SELECT ts, open, high, low, close, volume
+            FROM {table}
+            WHERE {where}
+            ORDER BY ts DESC
+            LIMIT ?
+            """,
+            params + [limit],
+        ).fetchall()
+        rows.reverse()  # restore chronological order
+    else:
+        query = f"""
+            SELECT ts, open, high, low, close, volume
+            FROM {table}
+            WHERE {where}
+            ORDER BY ts ASC
+        """
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+        rows = conn.execute(query, params).fetchall()
+
+    return [
+        {"time": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]}
+        for r in rows
+    ]
+
+
+def _cached_extent(
+    conn: sqlite3.Connection, symbol: str, table: str
+) -> tuple[int | None, int | None]:
+    """Return (min_ts, max_ts) for a symbol's cached bars, or (None, None)."""
+    row = conn.execute(
+        f"SELECT MIN(ts), MAX(ts) FROM {table} WHERE symbol = ?", [symbol]
+    ).fetchone()
+    if row and row[0] is not None:
+        return row[0], row[1]
+    return None, None
+
+
 def _write_bars(
     conn: sqlite3.Connection,
     symbol: str,
@@ -376,6 +504,7 @@ async def fetch_from_tws(
     duration: str = "5 D",
     bar_size: str = "1 min",
     what_to_show: str = "TRADES",
+    end_date_time: str = "",
 ) -> list[dict]:
     """Fetch historical bars from TWS via ib_insync."""
     from ib_insync import Stock
@@ -383,7 +512,7 @@ async def fetch_from_tws(
     contract = Stock(symbol, "SMART", "USD")
     bars = await ib.reqHistoricalDataAsync(
         contract,
-        endDateTime="",
+        endDateTime=end_date_time,
         durationStr=duration,
         barSizeSetting=bar_size,
         whatToShow=_normalize_what_to_show(what_to_show),
@@ -412,6 +541,61 @@ async def fetch_from_tws(
     return result
 
 
+async def fetch_from_tws_paginated(
+    ib,
+    symbol: str,
+    duration: str,
+    bar_size: str = "1 min",
+    what_to_show: str = "TRADES",
+) -> list[dict]:
+    """
+    Walk backwards through TWS history in chunks so first-time backfills can
+    collect materially more than a single IB request window.
+    """
+    is_daily = bar_size in ("1 day", "1d")
+    requested_days = _duration_to_days(
+        duration,
+        MAX_DAILY_LOOKBACK_DAYS if is_daily else MAX_INTRADAY_LOOKBACK_DAYS,
+    )
+    max_days = MAX_DAILY_LOOKBACK_DAYS if is_daily else MAX_INTRADAY_LOOKBACK_DAYS
+    requested_days = max(1, min(requested_days, max_days))
+    cutoff_ms = int((time.time() - requested_days * 86400) * 1000)
+
+    if is_daily:
+        chunk_years = min(TWS_DAILY_CHUNK_YEARS, max(1, (requested_days + 364) // 365))
+        chunk_duration = f"{chunk_years} Y"
+    else:
+        chunk_days = min(TWS_INTRADAY_CHUNK_DAYS, requested_days)
+        chunk_duration = f"{chunk_days} D"
+
+    all_bars: list[dict] = []
+    end_date_time = ""
+    seen_earliest: set[int] = set()
+
+    while True:
+        batch = await fetch_from_tws(
+            ib,
+            symbol,
+            duration=chunk_duration,
+            bar_size=bar_size,
+            what_to_show=what_to_show,
+            end_date_time=end_date_time,
+        )
+        if not batch:
+            break
+
+        all_bars.extend(batch)
+        earliest_ts = batch[0]["time"]
+        if earliest_ts <= cutoff_ms:
+            break
+        if earliest_ts in seen_earliest:
+            break
+        seen_earliest.add(earliest_ts)
+        end_date_time = _ib_datetime_utc(max(0, earliest_ts - 1000))
+
+    return [bar for bar in _dedupe_bars(all_bars) if bar["time"] >= cutoff_ms]
+
+
 # ── Yahoo historical fetch (yahooquery) ──────────────────────────────
 
 def _fetch_from_yahoo_sync(symbol: str, period: str = "5d", interval: str = "1m") -> list[dict]:
@@ -438,6 +622,9 @@ def _fetch_from_yahoo_sync(symbol: str, period: str = "5d", interval: str = "1m"
     result = []
     for idx, row in df.iterrows():
         try:
+            # Daily bars return datetime.date objects which lack .timestamp()
+            if isinstance(idx, date) and not isinstance(idx, datetime):
+                idx = datetime(idx.year, idx.month, idx.day, tzinfo=timezone.utc)
             ts_ms = int(idx.timestamp() * 1000)
             result.append({
                 "time": ts_ms,
@@ -462,11 +649,42 @@ async def fetch_from_yahoo(symbol: str, period: str = "5d", interval: str = "1m"
 
 # ── Public API ────────────────────────────────────────────────────────
 
+
+def read_bars_window(
+    symbol: str,
+    bar_size: str = "1m",
+    what_to_show: str = "TRADES",
+    ts_start: int | None = None,
+    ts_end: int | None = None,
+    limit: int | None = None,
+) -> dict:
+    """Synchronous windowed read for viewport-based chart loading.
+
+    Returns { bars, count, ts_min, ts_max } from the DB cache.
+    Designed for fast reads — no network fetches, no lock contention.
+    """
+    table = _table_for_series(bar_size, _normalize_what_to_show(what_to_show))
+    with sync_db_session() as conn:
+        _init_schema(conn)
+        bars = _read_cached_window(
+            conn, symbol,
+            ts_start=ts_start, ts_end=ts_end, limit=limit,
+            table=table,
+        )
+        ts_min, ts_max = _cached_extent(conn, symbol, table)
+    return {
+        "bars": bars,
+        "count": len(bars),
+        "ts_min": ts_min,
+        "ts_max": ts_max,
+    }
+
+
 async def get_historical_bars(
     symbol: str,
     ib=None,
     tws_connected: bool = False,
-    duration: str = "5 D",
+    duration: str = DEFAULT_INTRADAY_DURATION,
     bar_size: str = "1 min",
     what_to_show: str = "TRADES",
 ) -> tuple[list[dict], str]:
@@ -488,7 +706,14 @@ async def get_historical_bars(
     cache_key = _cache_key_for_series(db_bar_size, what_to_show)
     ttl = CACHE_TTL_DAILY if is_daily else CACHE_TTL
     table = _table_for_series(db_bar_size, what_to_show)
-    lookback_days = 730 if is_daily else 7
+    lookback_days = _duration_to_days(
+        duration,
+        MAX_DAILY_LOOKBACK_DAYS if is_daily else MAX_INTRADAY_LOOKBACK_DAYS,
+    )
+    lookback_days = max(1, min(
+        lookback_days,
+        MAX_DAILY_LOOKBACK_DAYS if is_daily else MAX_INTRADAY_LOOKBACK_DAYS,
+    ))
 
     lock = _get_fetch_lock(symbol, db_bar_size)
     async with lock:
@@ -504,6 +729,7 @@ async def get_historical_bars(
                     )
                     return cached, "cache"
             last_ts_ms = _latest_bar_ts(conn, symbol, table)
+            earliest_ts_ms = _earliest_bar_ts(conn, symbol, table)
             if last_ts_ms is not None:
                 gap_days = (time.time() - last_ts_ms / 1000) / 86400
                 logger.info(
@@ -521,9 +747,18 @@ async def get_historical_bars(
         if tws_connected and ib is not None:
             try:
                 tws_bar = "1 day" if is_daily else bar_size
-                tws_default_dur = "2 Y" if is_daily else duration
+                tws_default_dur = DEFAULT_DAILY_DURATION if is_daily else duration
                 tws_dur = _incremental_tws_duration(last_ts_ms, tws_default_dur, is_daily)
-                fetched_bars = await fetch_from_tws(ib, symbol, tws_dur, tws_bar, what_to_show)
+                if last_ts_ms is None:
+                    fetched_bars = await fetch_from_tws_paginated(
+                        ib,
+                        symbol,
+                        duration=tws_dur,
+                        bar_size=tws_bar,
+                        what_to_show=what_to_show,
+                    )
+                else:
+                    fetched_bars = await fetch_from_tws(ib, symbol, tws_dur, tws_bar, what_to_show)
                 if fetched_bars:
                     fetch_source = "tws"
                     logger.info(
@@ -542,23 +777,26 @@ async def get_historical_bars(
                     logger.info(f"Returning stale {what_to_show} cache for {symbol} ({len(cached)} bars)")
                     return cached, "cache"
                 return [], "none"
-            # If cached source is TWS and we're offline, return stale TWS data
-            # rather than overwriting with Yahoo (TWS data is authoritative).
-            if cached_source == "tws":
-                async with _raw_db_session() as conn:
-                    _init_schema(conn)
-                    cached = _read_cached(conn, symbol, limit_days=lookback_days, table=table)
-                if cached:
-                    logger.info(
-                        f"Returning stale TWS cache for {symbol} ({len(cached)} bars) — "
-                        f"Yahoo will not overwrite TWS-sourced bars"
-                    )
-                    return cached, "cache"
-
+            # Even if cached source is TWS, still fetch from Yahoo to gap-fill
+            # older history. Yahoo uses INSERT OR IGNORE so TWS bars stay intact.
             try:
                 yf_interval = "1d" if is_daily else "1m"
-                yf_default = "2y" if is_daily else ("5d" if "D" in duration else "1mo")
-                yf_period = _incremental_yahoo_period(last_ts_ms, yf_default, is_daily)
+                yf_default = "max" if is_daily else ("1mo" if lookback_days > 5 else "5d")
+                # If we have cached bars but they don't go back far enough,
+                # use the full default period to backfill older history
+                need_backfill = False
+                if earliest_ts_ms is not None and is_daily:
+                    cached_span_days = (time.time() - earliest_ts_ms / 1000) / 86400
+                    if cached_span_days < lookback_days * 0.8:  # less than 80% of requested range
+                        need_backfill = True
+                        logger.info(
+                            f"Cached data for {symbol} only spans {cached_span_days:.0f} days "
+                            f"but {lookback_days} requested — doing full backfill"
+                        )
+                if need_backfill:
+                    yf_period = yf_default
+                else:
+                    yf_period = _incremental_yahoo_period(last_ts_ms, yf_default, is_daily)
                 fetched_bars = await fetch_from_yahoo(symbol, period=yf_period, interval=yf_interval)
                 if fetched_bars:
                     fetch_source = "yahoo"
