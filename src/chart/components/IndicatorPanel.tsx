@@ -18,7 +18,6 @@ const STRATEGY_KEYS = new Set([
   'EMA 5/20 Crossover',
   'DailyIQ Tech Score Signal',
   'Market Sentiment Signal',
-  'Liquidity Sweep Signal',
 ]);
 
 const categories = [
@@ -43,7 +42,7 @@ const INDICATOR_DESCRIPTIONS: Record<string, string> = {
   'Market Sentiment Signal': 'BUY above 50 sentiment crossover, SELL below 50 crossover',
   'Structure Breaks': 'Pivot break markers for bullish and bearish structure breaks',
   'Liquidity Levels': 'Today, previous day, week, and month liquidity lines',
-  'Liquidity Sweep Signal': 'Buy/sell markers when liquidity levels are swept and reclaimed/rejected',
+  'Liquidity Sweep Signal': 'Groups sweep candles into bullish/bearish liquidity zones with fewer signals',
   'FVG Momentum': 'Latest fair value gap boundaries with pullback/rejection markers',
   'Gap Zones': 'Highlights simple gap-up and gap-down price voids on the chart',
   RSI: 'Momentum oscillator (0–100)',

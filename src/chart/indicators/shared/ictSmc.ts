@@ -188,6 +188,8 @@ export function detectFvg(
   let lastBullBottom = NaN;
   let lastBearTop = NaN;
   let lastBearBottom = NaN;
+  let lastBullSize = NaN;
+  let lastBearSize = NaN;
   const threshold = thresholdPercent / 100;
   const closes = bars.map((bar) => bar.close);
   const ema20 = ema(closes, 20);
@@ -203,12 +205,36 @@ export function detectFvg(
       && ((bars[i - 2].low - bars[i].high) / bars[i].high) > threshold;
 
     if (bullGap) {
-      lastBullTop = Math.max(bars[i].low, bars[i - 2].high);
-      lastBullBottom = Math.min(bars[i].low, bars[i - 2].high);
+      const nextBullTop = Math.max(bars[i].low, bars[i - 2].high);
+      const nextBullBottom = Math.min(bars[i].low, bars[i - 2].high);
+      const nextBullSize = nextBullTop - nextBullBottom;
+      if (Number.isNaN(lastBullTop) || Number.isNaN(lastBullBottom) || nextBullSize >= lastBullSize) {
+        lastBullTop = nextBullTop;
+        lastBullBottom = nextBullBottom;
+        lastBullSize = nextBullSize;
+      }
     }
     if (bearGap) {
-      lastBearTop = Math.max(bars[i - 2].low, bars[i].high);
-      lastBearBottom = Math.min(bars[i - 2].low, bars[i].high);
+      const nextBearTop = Math.max(bars[i - 2].low, bars[i].high);
+      const nextBearBottom = Math.min(bars[i - 2].low, bars[i].high);
+      const nextBearSize = nextBearTop - nextBearBottom;
+      if (Number.isNaN(lastBearTop) || Number.isNaN(lastBearBottom) || nextBearSize >= lastBearSize) {
+        lastBearTop = nextBearTop;
+        lastBearBottom = nextBearBottom;
+        lastBearSize = nextBearSize;
+      }
+    }
+
+    if (!Number.isNaN(lastBullBottom) && bars[i].low <= lastBullBottom) {
+      lastBullTop = NaN;
+      lastBullBottom = NaN;
+      lastBullSize = NaN;
+    }
+
+    if (!Number.isNaN(lastBearTop) && bars[i].high >= lastBearTop) {
+      lastBearTop = NaN;
+      lastBearBottom = NaN;
+      lastBearSize = NaN;
     }
 
     bullTop[i] = lastBullTop;
@@ -241,4 +267,91 @@ export function detectFvg(
   }
 
   return { bullTop, bullBottom, bearTop, bearBottom, bullPullback, bullReject, bearPullback, bearReject };
+}
+
+export interface ActiveFvgZone {
+  leftIndex: number;
+  rightIndex: number;
+  top: number;
+  bottom: number;
+  isBull: boolean;
+}
+
+export function detectActiveFvgZones(
+  bars: OHLCVBar[],
+  thresholdPercent: number,
+  extendBars: number = 80,
+  requireNextBarReaction: boolean = true,
+): ActiveFvgZone[] {
+  const zones: Array<{
+    top: number;
+    bottom: number;
+    isBull: boolean;
+    createdIndex: number;
+    touched: boolean;
+    touchIndex: number;
+  }> = [];
+  const threshold = thresholdPercent / 100;
+
+  for (let i = 2; i < bars.length; i += 1) {
+    const bullGap = bars[i].low > bars[i - 2].high
+      && bars[i - 1].close > bars[i - 2].high
+      && ((bars[i].low - bars[i - 2].high) / bars[i - 2].high) > threshold;
+
+    const bearGap = bars[i].high < bars[i - 2].low
+      && bars[i - 1].close < bars[i - 2].low
+      && ((bars[i - 2].low - bars[i].high) / bars[i].high) > threshold;
+
+    if (bullGap) {
+      zones.push({
+        top: Math.max(bars[i].low, bars[i - 2].high),
+        bottom: Math.min(bars[i].low, bars[i - 2].high),
+        isBull: true,
+        createdIndex: i,
+        touched: false,
+        touchIndex: -1,
+      });
+    }
+
+    if (bearGap) {
+      zones.push({
+        top: Math.max(bars[i - 2].low, bars[i].high),
+        bottom: Math.min(bars[i - 2].low, bars[i].high),
+        isBull: false,
+        createdIndex: i,
+        touched: false,
+        touchIndex: -1,
+      });
+    }
+  }
+
+  const active = [...zones];
+  for (let i = 0; i < bars.length; i += 1) {
+    for (let zi = active.length - 1; zi >= 0; zi -= 1) {
+      const zone = active[zi];
+      if (i <= zone.createdIndex) continue;
+
+      const touchedNow = bars[i].low <= zone.top && bars[i].high >= zone.bottom;
+      if (touchedNow && !zone.touched) {
+        zone.touched = true;
+        zone.touchIndex = i;
+      }
+
+      const afterTouchOk = zone.touched && (!requireNextBarReaction || i > zone.touchIndex);
+      const bullUsed = zone.isBull && afterTouchOk && bars[i].close > zone.top;
+      const bearUsed = !zone.isBull && afterTouchOk && bars[i].close < zone.bottom;
+
+      if (bullUsed || bearUsed) {
+        active.splice(zi, 1);
+      }
+    }
+  }
+
+  return active.map((zone) => ({
+    leftIndex: zone.createdIndex,
+    rightIndex: Math.min(bars.length - 1, zone.createdIndex + extendBars),
+    top: zone.top,
+    bottom: zone.bottom,
+    isBull: zone.isBull,
+  }));
 }

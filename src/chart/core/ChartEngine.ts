@@ -30,6 +30,7 @@ import { Crosshair } from '../interaction/Crosshair';
 import { Tooltip } from '../interaction/Tooltip';
 import { indicatorRegistry } from '../indicators/registry';
 import { computeIndicator } from '../indicators/compute';
+import { detectActiveFvgZones } from '../indicators/shared/ictSmc';
 import type { ScriptResult } from '../types';
 import type { Timeframe } from '../types';
 
@@ -1251,6 +1252,13 @@ export class ChartEngine {
     const meta = indicatorRegistry[ind.name];
     if (!meta) return;
 
+    if (ind.name === 'Liquidity Sweep Signal') {
+      this.renderLiquiditySweepBox(ind, toY, clipTop, clipBottom);
+    }
+    if (ind.name === 'FVG Momentum') {
+      this.renderFvgBoxes(ind, toY, clipTop, clipBottom);
+    }
+
     for (let oi = 0; oi < ind.data.length; oi++) {
       const series = ind.data[oi];
       const output = meta.outputs[oi];
@@ -1334,6 +1342,90 @@ export class ChartEngine {
           this.renderer.polyline(points, drawColor, lw);
         }
       }
+    }
+  }
+
+  private renderLiquiditySweepBox(
+    ind: ActiveIndicator,
+    toY: (value: number) => number,
+    clipTop: number,
+    clipBottom: number,
+  ) {
+    const bullTop = ind.data[2];
+    const bullBottom = ind.data[3];
+    const bearTop = ind.data[4];
+    const bearBottom = ind.data[5];
+    if (!bullTop || !bullBottom || !bearTop || !bearBottom) return;
+
+    const sweepEvents: Array<{ index: number; top: number; bottom: number; color: string }> = [];
+    const buyColor = '#2563EB';
+    const sellColor = '#DC2626';
+
+    for (let i = 0; i < ind.data[0]?.length; i += 1) {
+      if (!Number.isNaN(bullTop[i]) && !Number.isNaN(bullBottom[i])) {
+        sweepEvents.push({
+          index: i,
+          top: bullTop[i],
+          bottom: bullBottom[i],
+          color: buyColor,
+        });
+      }
+      if (!Number.isNaN(bearTop[i]) && !Number.isNaN(bearBottom[i])) {
+        sweepEvents.push({
+          index: i,
+          top: bearTop[i],
+          bottom: bearBottom[i],
+          color: sellColor,
+        });
+      }
+    }
+
+    if (sweepEvents.length === 0) return;
+
+    const recentSweeps = sweepEvents.slice(-5);
+    const extraWidth = Math.max(12, ind.params.boxWidthPx ?? 56);
+
+    for (const sweep of recentSweeps) {
+      const x = this.viewport.barToPixelX(sweep.index);
+      const left = x;
+      const right = Math.max(left + extraWidth, this.viewport.chartLeft + this.viewport.chartWidth);
+      const yTop = toY(Math.max(sweep.top, sweep.bottom));
+      const yBottom = toY(Math.min(sweep.top, sweep.bottom));
+      const rectTop = Math.max(clipTop, Math.min(yTop, yBottom));
+      const rectBottom = Math.min(clipBottom, Math.max(yTop, yBottom));
+      const rectHeight = rectBottom - rectTop;
+      if (rectHeight <= 0) continue;
+
+      this.renderer.rect(left, rectTop, right - left, rectHeight, this.withAlpha(sweep.color, 0.24));
+      this.renderer.rectStroke(left, rectTop, right - left, rectHeight, this.withAlpha(sweep.color, 0.9), 1.5);
+    }
+  }
+
+  private renderFvgBoxes(
+    ind: ActiveIndicator,
+    toY: (value: number) => number,
+    clipTop: number,
+    clipBottom: number,
+  ) {
+    const thresholdPercent = Math.max(0, ind.params.thresholdPercent ?? 0);
+    const zones = detectActiveFvgZones(this.bars, thresholdPercent, 80, true);
+
+    for (const zone of zones) {
+      const leftX = this.viewport.barToPixelX(zone.leftIndex) - (this.viewport.getBarSlotWidth(zone.leftIndex) * 0.5);
+      const rightX = this.viewport.barToPixelX(zone.rightIndex) + (this.viewport.getBarSlotWidth(zone.rightIndex) * 0.5);
+      const yTop = toY(zone.top);
+      const yBottom = toY(zone.bottom);
+      const rectTop = Math.max(clipTop, Math.min(yTop, yBottom));
+      const rectBottom = Math.min(clipBottom, Math.max(yTop, yBottom));
+      const rectHeight = rectBottom - rectTop;
+      if (rectHeight <= 0) continue;
+
+      const baseColor = zone.isBull
+        ? (ind.colors?.bullTop ?? indicatorRegistry[ind.name].outputs[0].color)
+        : (ind.colors?.bearTop ?? indicatorRegistry[ind.name].outputs[2].color);
+
+      this.renderer.rect(leftX, rectTop, Math.max(1, rightX - leftX), rectHeight, this.withAlpha(baseColor, 0.18));
+      this.renderer.rectStroke(leftX, rectTop, Math.max(1, rightX - leftX), rectHeight, this.withAlpha(baseColor, 0.55), 1);
     }
   }
 

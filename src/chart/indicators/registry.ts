@@ -190,11 +190,11 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     name: 'Liquidity Sweep Signal',
     shortName: 'Liq Sweep',
     category: 'overlay',
-    defaultParams: { requireCloseConfirm: 1, externalOnly: 1, padTicks: 0 },
-    paramLabels: { requireCloseConfirm: 'Close Confirm 1/0', externalOnly: 'External Only 1/0', padTicks: 'Pad Ticks' },
+    defaultParams: { requireCloseConfirm: 1, externalOnly: 1, padTicks: 0, boxWidthPx: 56 },
+    paramLabels: { requireCloseConfirm: 'Close Confirm 1/0', externalOnly: 'External Only 1/0', padTicks: 'Pad Ticks', boxWidthPx: 'Box Width Px' },
     outputs: [
-      { key: 'buy', label: 'BUY', color: C[5], style: 'markers' },
-      { key: 'sell', label: 'SELL', color: C[7], style: 'markers' },
+      { key: 'buy', label: 'BUY', color: '#2563EB', style: 'markers' },
+      { key: 'sell', label: 'SELL', color: '#DC2626', style: 'markers' },
     ],
   },
 

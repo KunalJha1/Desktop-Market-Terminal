@@ -2,11 +2,13 @@
 
 import argparse
 import asyncio
+from collections import defaultdict
 import json
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -27,6 +29,12 @@ from historical import (
     seed_duration_for_bar_size,
 )
 from ibkr_utils import IbkrClientIdManager, is_client_id_in_use_error
+from options_collector import (
+    DEFAULT_INTERVAL_MINUTES as OPTIONS_DEFAULT_INTERVAL_MINUTES,
+    DEFAULT_RISK_FREE_RATE as OPTIONS_DEFAULT_RISK_FREE_RATE,
+    DEFAULT_SOURCE as OPTIONS_DEFAULT_SOURCE,
+    OptionsCollectorWorker,
+)
 from runtime_paths import data_dir, resource_path
 from score_worker import TechnicalsScorer, read_scores
 from technicals import compute_indicators_for_symbols
@@ -588,18 +596,266 @@ def _enrich_with_valuations(payloads: list[dict], valuation_map: dict[str, dict]
         p["marketCap"] = v.get("marketCap")
 
 
+def _format_option_expiration_label(expiration_ms: int) -> str:
+    dt = datetime.fromtimestamp(expiration_ms / 1000, tz=timezone.utc)
+    return dt.strftime("%b %d")
+
+
+def _format_option_month_label(expiration_ms: int) -> str:
+    dt = datetime.fromtimestamp(expiration_ms / 1000, tz=timezone.utc)
+    return dt.strftime("%b %Y")
+
+
+def _option_snapshot_payload(row) -> dict:
+    return {
+        "contractId": row[0],
+        "underlyingPrice": row[1],
+        "bid": row[2],
+        "ask": row[3],
+        "bidSize": row[4],
+        "askSize": row[5],
+        "mid": row[6],
+        "lastPrice": row[7],
+        "change": row[8],
+        "changePct": row[9],
+        "volume": row[10],
+        "openInterest": row[11],
+        "impliedVolatility": row[12],
+        "inTheMoney": bool(row[13]) if row[13] is not None else None,
+        "lastTradeDate": row[14],
+        "delta": row[15],
+        "gamma": row[16],
+        "theta": row[17],
+        "vega": row[18],
+        "rho": row[19],
+        "intrinsicValue": row[20],
+        "extrinsicValue": row[21],
+        "daysToExpiration": row[22],
+        "riskFreeRate": row[23],
+        "greeksSource": row[24],
+        "ivSource": row[25],
+        "calcError": row[26],
+        "source": row[27],
+    }
+
+
+def read_options_summary(symbol: str) -> dict:
+    normalized = symbol.strip().upper()
+    if not normalized:
+        return {
+            "symbol": "",
+            "hasData": False,
+            "underlyingPrice": None,
+            "capturedAt": None,
+            "source": None,
+            "months": [],
+        }
+
+    with sync_db_session() as conn:
+        latest = conn.execute(
+            """
+            SELECT MAX(s.captured_at)
+            FROM option_snapshots s
+            JOIN option_contracts c ON c.contract_id = s.contract_id
+            WHERE c.underlying = ?
+            """,
+            (normalized,),
+        ).fetchone()
+        captured_at = latest[0] if latest and latest[0] is not None else None
+        if captured_at is None:
+            return {
+                "symbol": normalized,
+                "hasData": False,
+                "underlyingPrice": None,
+                "capturedAt": None,
+                "source": None,
+                "months": [],
+            }
+
+        rows = conn.execute(
+            """
+            SELECT
+                c.expiration,
+                COUNT(*) AS contract_count,
+                MAX(s.underlying_price) AS underlying_price,
+                MAX(s.source) AS source
+            FROM option_contracts c
+            JOIN option_snapshots s ON s.contract_id = c.contract_id
+            WHERE c.underlying = ? AND s.captured_at = ?
+            GROUP BY c.expiration
+            ORDER BY c.expiration ASC
+            """,
+            (normalized, captured_at),
+        ).fetchall()
+
+    months: dict[str, dict] = {}
+    underlying_price = None
+    source = None
+    for expiration, contract_count, exp_underlying_price, exp_source in rows:
+        month_key = datetime.fromtimestamp(expiration / 1000, tz=timezone.utc).strftime("%Y-%m")
+        month_bucket = months.setdefault(
+            month_key,
+            {
+                "monthKey": month_key,
+                "monthLabel": _format_option_month_label(expiration),
+                "expirations": [],
+            },
+        )
+        month_bucket["expirations"].append({
+            "expiration": expiration,
+            "label": _format_option_expiration_label(expiration),
+            "contractCount": contract_count,
+        })
+        if underlying_price is None and exp_underlying_price is not None:
+            underlying_price = exp_underlying_price
+        if source is None and exp_source:
+            source = exp_source
+
+    return {
+        "symbol": normalized,
+        "hasData": bool(rows),
+        "underlyingPrice": underlying_price,
+        "capturedAt": captured_at,
+        "source": source,
+        "months": list(months.values()),
+    }
+
+
+def read_options_chain(symbol: str, expiration: int | None = None) -> dict:
+    normalized = symbol.strip().upper()
+    if not normalized:
+        return {
+            "symbol": "",
+            "hasData": False,
+            "expiration": None,
+            "expirationLabel": None,
+            "capturedAt": None,
+            "rows": [],
+        }
+
+    with sync_db_session() as conn:
+        latest = conn.execute(
+            """
+            SELECT MAX(s.captured_at)
+            FROM option_snapshots s
+            JOIN option_contracts c ON c.contract_id = s.contract_id
+            WHERE c.underlying = ?
+            """,
+            (normalized,),
+        ).fetchone()
+        captured_at = latest[0] if latest and latest[0] is not None else None
+        if captured_at is None:
+            return {
+                "symbol": normalized,
+                "hasData": False,
+                "expiration": None,
+                "expirationLabel": None,
+                "capturedAt": None,
+                "rows": [],
+            }
+
+        selected_expiration = expiration
+        if selected_expiration is None:
+            exp_row = conn.execute(
+                """
+                SELECT MIN(c.expiration)
+                FROM option_contracts c
+                JOIN option_snapshots s ON s.contract_id = c.contract_id
+                WHERE c.underlying = ? AND s.captured_at = ?
+                """,
+                (normalized, captured_at),
+            ).fetchone()
+            selected_expiration = exp_row[0] if exp_row and exp_row[0] is not None else None
+
+        if selected_expiration is None:
+            return {
+                "symbol": normalized,
+                "hasData": False,
+                "expiration": None,
+                "expirationLabel": None,
+                "capturedAt": captured_at,
+                "rows": [],
+            }
+
+        rows = conn.execute(
+            """
+            SELECT
+                c.strike,
+                c.option_type,
+                s.contract_id,
+                s.underlying_price,
+                s.bid,
+                s.ask,
+                s.bid_size,
+                s.ask_size,
+                s.mid,
+                s.last_price,
+                s.change,
+                s.change_pct,
+                s.volume,
+                s.open_interest,
+                s.implied_volatility,
+                s.in_the_money,
+                s.last_trade_date,
+                s.delta,
+                s.gamma,
+                s.theta,
+                s.vega,
+                s.rho,
+                s.intrinsic_value,
+                s.extrinsic_value,
+                s.days_to_expiration,
+                s.risk_free_rate,
+                s.greeks_source,
+                s.iv_source,
+                s.calc_error,
+                s.source
+            FROM option_contracts c
+            JOIN option_snapshots s ON s.contract_id = c.contract_id
+            WHERE c.underlying = ? AND c.expiration = ? AND s.captured_at = ?
+            ORDER BY c.strike ASC, c.option_type ASC
+            """,
+            (normalized, selected_expiration, captured_at),
+        ).fetchall()
+
+    ladder: dict[float, dict] = defaultdict(lambda: {"strike": None, "call": None, "put": None})
+    for row in rows:
+        strike = row[0]
+        option_type = row[1]
+        payload = _option_snapshot_payload(row[2:])
+        ladder[strike]["strike"] = strike
+        ladder[strike][option_type] = payload
+
+    ordered_rows = [ladder[strike] for strike in sorted(ladder)]
+    return {
+        "symbol": normalized,
+        "hasData": bool(ordered_rows),
+        "expiration": selected_expiration,
+        "expirationLabel": _format_option_expiration_label(selected_expiration),
+        "capturedAt": captured_at,
+        "rows": ordered_rows,
+    }
+
+
 def create_app() -> FastAPI:
     scorer = TechnicalsScorer()
+    options_worker = OptionsCollectorWorker(
+        source=OPTIONS_DEFAULT_SOURCE,
+        interval_minutes=OPTIONS_DEFAULT_INTERVAL_MINUTES,
+        risk_free_rate=OPTIONS_DEFAULT_RISK_FREE_RATE,
+    )
     ticker_metadata = _load_ticker_metadata()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         scorer.set_symbols(await run_db(read_watchlist_symbols))
         scorer.start()
+        options_worker.start()
         try:
             yield
         finally:
             scorer.stop()
+            options_worker.stop()
 
     app = FastAPI(lifespan=lifespan)
 
@@ -1239,6 +1495,14 @@ def create_app() -> FastAPI:
             "count": len(tiles),
             "tiles": tiles,
         }
+
+    @app.get("/options/summary")
+    async def get_options_summary(symbol: str = ""):
+        return await run_db(read_options_summary, symbol)
+
+    @app.get("/options/chain")
+    async def get_options_chain(symbol: str = "", expiration: int | None = None):
+        return await run_db(read_options_chain, symbol, expiration)
 
     class ActiveSymbolsPayload(BaseModel):
         symbols: list[str]

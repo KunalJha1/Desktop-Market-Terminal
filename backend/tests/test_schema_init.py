@@ -50,6 +50,9 @@ class SchemaInitTests(unittest.TestCase):
             "ohlcv_1d_ask",
             "ohlcv_5s",
             "fetch_meta",
+            "option_contracts",
+            "option_snapshots",
+            "option_chain_fetch_meta",
         }
         self.assertTrue(expected.issubset(tables), expected - tables)
 

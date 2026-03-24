@@ -1524,7 +1524,7 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                     last_backfill[sym] = now
                     await asyncio.to_thread(refresh_snapshot_from_db, sym)
                 except Exception as exc:
-                    logger.debug(f"Backfill failed for {sym}: {exc}")
+                    logger.warning(f"Backfill failed for {sym}: {exc}")
                 if not tws_connected:
                     await asyncio.sleep(YAHOO_HISTORICAL_SYMBOL_SLEEP_S)
 

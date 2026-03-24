@@ -316,8 +316,150 @@ def ensure_historical_schema(conn: sqlite3.Connection) -> None:
     """)
 
 
+def ensure_options_schema(conn: sqlite3.Connection) -> None:
+    """Create SQLite tables for options chain data."""
+
+    # --- Contract master ---
+    # One row per unique option contract. Static/slow-changing metadata.
+    # contract_id is the OCC symbol (e.g. AAPL260325C00250000).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS option_contracts (
+            contract_id    TEXT    PRIMARY KEY,
+            underlying     TEXT    NOT NULL,
+            expiration     INTEGER NOT NULL,  -- unix epoch, midnight UTC of expiration date
+            strike         REAL    NOT NULL,
+            option_type    TEXT    NOT NULL CHECK(option_type IN ('call', 'put')),
+            contract_size  TEXT    NOT NULL DEFAULT 'REGULAR',
+            currency       TEXT    NOT NULL DEFAULT 'USD',
+            exchange       TEXT,
+            exercise_style TEXT,
+            created_at     INTEGER NOT NULL,
+            last_seen_at   INTEGER NOT NULL
+        )
+    """)
+    for col_def in (
+        "exchange TEXT",
+        "exercise_style TEXT",
+        "last_seen_at INTEGER NOT NULL DEFAULT 0",
+    ):
+        try:
+            conn.execute(f"ALTER TABLE option_contracts ADD COLUMN {col_def}")
+        except Exception:
+            pass
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_option_contracts_underlying
+        ON option_contracts (underlying)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_option_contracts_underlying_exp
+        ON option_contracts (underlying, expiration)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_option_contracts_underlying_exp_type
+        ON option_contracts (underlying, expiration, option_type)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_option_contracts_underlying_exp_type_strike
+        ON option_contracts (underlying, expiration, option_type, strike)
+    """)
+
+    # --- Point-in-time snapshots ---
+    # One row per contract per capture. Accumulates over time for history.
+    # Greeks (delta/gamma/theta/vega/rho) are NULL when not available from source.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS option_snapshots (
+            contract_id        TEXT    NOT NULL,
+            captured_at        INTEGER NOT NULL,  -- unix epoch of this snapshot
+            underlying_price   REAL,              -- spot price of underlying at capture time
+            bid                REAL,
+            ask                REAL,
+            bid_size           INTEGER,
+            ask_size           INTEGER,
+            mid                REAL,              -- (bid+ask)/2, stored for query convenience
+            last_price         REAL,
+            change             REAL,
+            change_pct         REAL,
+            volume             INTEGER,
+            open_interest      INTEGER,
+            implied_volatility REAL,
+            in_the_money       INTEGER,           -- 1/0 boolean
+            last_trade_date    INTEGER,           -- unix epoch of last trade
+            delta              REAL,
+            gamma              REAL,
+            theta              REAL,
+            vega               REAL,
+            rho                REAL,
+            intrinsic_value    REAL,
+            extrinsic_value    REAL,
+            days_to_expiration REAL,
+            risk_free_rate     REAL,
+            greeks_source      TEXT,
+            iv_source          TEXT,
+            calc_error         TEXT,
+            source             TEXT    NOT NULL DEFAULT 'yahoo',
+            PRIMARY KEY (contract_id, captured_at),
+            FOREIGN KEY (contract_id) REFERENCES option_contracts(contract_id)
+        )
+    """)
+    for col_def in (
+        "bid_size INTEGER",
+        "ask_size INTEGER",
+        "intrinsic_value REAL",
+        "extrinsic_value REAL",
+        "days_to_expiration REAL",
+        "risk_free_rate REAL",
+        "greeks_source TEXT",
+        "iv_source TEXT",
+        "calc_error TEXT",
+    ):
+        try:
+            conn.execute(f"ALTER TABLE option_snapshots ADD COLUMN {col_def}")
+        except Exception:
+            pass
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_option_snapshots_contract_time
+        ON option_snapshots (contract_id, captured_at DESC)
+    """)
+    # Fast lookup: latest snapshot across all contracts for a given underlying
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_option_snapshots_captured
+        ON option_snapshots (captured_at DESC)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_option_snapshots_greeks_source
+        ON option_snapshots (greeks_source, captured_at DESC)
+    """)
+
+    # --- Fetch metadata ---
+    # Tracks the last time we successfully fetched the full chain for an underlying.
+    # Use this to decide when a refresh is needed.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS option_chain_fetch_meta (
+            underlying        TEXT    NOT NULL,
+            source            TEXT    NOT NULL DEFAULT 'yahoo',
+            fetched_at        INTEGER NOT NULL,
+            expiration_count  INTEGER,  -- how many expiration dates were in the chain
+            contract_count    INTEGER,  -- total contracts (calls + puts) fetched
+            success           INTEGER NOT NULL DEFAULT 1,
+            error_message     TEXT,
+            duration_ms       INTEGER,
+            PRIMARY KEY (underlying, source)
+        )
+    """)
+    for col_def in (
+        "success INTEGER NOT NULL DEFAULT 1",
+        "error_message TEXT",
+        "duration_ms INTEGER",
+    ):
+        try:
+            conn.execute(f"ALTER TABLE option_chain_fetch_meta ADD COLUMN {col_def}")
+        except Exception:
+            pass
+
+
 def ensure_all_schema(conn: sqlite3.Connection) -> None:
     """Create all SQLite tables used by the backend."""
     ensure_base_schema(conn)
     ensure_historical_schema(conn)
+    ensure_options_schema(conn)
     conn.commit()

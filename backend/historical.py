@@ -597,20 +597,18 @@ def _write_bars(
             """,
             bar_params,
         )
-        # Yahoo only updates fetch_meta if the current source is not TWS
-        existing = conn.execute(
-            "SELECT source FROM fetch_meta WHERE symbol = ? AND bar_size = ?",
-            [symbol, cache_key],
-        ).fetchone()
-        if not existing or existing[0] != "tws":
-            execute_one_tx_with_retry(
-                conn,
-                """
-                INSERT OR REPLACE INTO fetch_meta (symbol, bar_size, fetched_at, source)
-                VALUES (?, ?, ?, ?)
-                """,
-                (symbol, cache_key, int(time.time() * 1000), "yahoo"),
-            )
+        # Always update fetch_meta so the cache is marked fresh.
+        # Bar-level protection (INSERT OR IGNORE above) already prevents Yahoo
+        # from overwriting TWS bars — the metadata must still be updated so
+        # _cache_fresh() doesn't loop forever when TWS was the prior source.
+        execute_one_tx_with_retry(
+            conn,
+            """
+            INSERT OR REPLACE INTO fetch_meta (symbol, bar_size, fetched_at, source)
+            VALUES (?, ?, ?, ?)
+            """,
+            (symbol, cache_key, int(time.time() * 1000), "yahoo"),
+        )
 
 
 # ── TWS historical fetch ─────────────────────────────────────────────

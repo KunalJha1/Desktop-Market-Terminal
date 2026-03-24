@@ -5,3 +5,4 @@ websockets
 yahooquery
 pandas
 numpy
+scipy
