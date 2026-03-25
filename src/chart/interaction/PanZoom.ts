@@ -5,6 +5,7 @@ export class PanZoom {
   private dragging = false;
   private yScaling = false;
   private lastX = 0;
+  private lastY = 0;
   private onDirty: () => void;
   private viewport: Viewport;
   private canvasWidth = 0;
@@ -39,15 +40,18 @@ export class PanZoom {
     const { sx, sy } = this.getScale();
     const mx = (e.clientX - rect.left) / sx;
 
-    // If clicking on price axis, start Y-scale drag
+    // If clicking on price axis, start Y-scale drag (blocked in auto mode)
     if (this.viewport.isInPriceAxis(mx, this.canvasWidth, PRICE_AXIS_WIDTH)) {
-      this.yScaling = true;
-      this.viewport.startYScaleDrag((e.clientY - rect.top) / sy);
+      if (this.viewport.yScaleMode !== 'auto') {
+        this.yScaling = true;
+        this.viewport.startYScaleDrag((e.clientY - rect.top) / sy);
+      }
       return;
     }
 
     this.dragging = true;
     this.lastX = e.clientX;
+    this.lastY = e.clientY;
   }
 
   onMouseMove(e: MouseEvent, canvasRect?: DOMRect) {
@@ -60,11 +64,16 @@ export class PanZoom {
     }
 
     if (!this.dragging) return;
-    const { sx } = this.getScale();
+    const { sx, sy } = this.getScale();
     // dx is in viewport pixels — divide by scale to get CSS pixel delta
     const dx = (e.clientX - this.lastX) / sx;
+    const dy = (e.clientY - this.lastY) / sy;
     this.lastX = e.clientX;
+    this.lastY = e.clientY;
     this.viewport.pan(dx);
+    if (this.viewport.yScaleMode === 'manual') {
+      this.viewport.panY(dy);
+    }
     this.onDirty();
   }
 

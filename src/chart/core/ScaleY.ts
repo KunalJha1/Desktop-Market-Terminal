@@ -1,6 +1,7 @@
 import { Renderer } from './Renderer';
 import { Viewport } from './Viewport';
 import { COLORS, PRICE_AXIS_WIDTH } from '../constants';
+import type { YScaleMode } from '../types';
 
 /**
  * Price axis: computes nice-number tick marks and renders labels.
@@ -81,14 +82,36 @@ export class ScaleY {
     min: number,
     max: number,
     canvasWidth: number,
+    mode: YScaleMode = 'auto',
   ) {
     const axisX = canvasWidth - PRICE_AXIS_WIDTH;
-    const range = max - min;
-    if (range <= 0) return;
 
     // BG
     renderer.rect(axisX, top, PRICE_AXIS_WIDTH, height, COLORS.bgPanel);
     renderer.line(axisX, top, axisX, top + height, COLORS.border);
+
+    if (mode === 'log' && min > 0 && max > 0) {
+      const logMin = Math.log10(min);
+      const logMax = Math.log10(max);
+      const logRange = logMax - logMin;
+      if (logRange <= 0) return;
+
+      const rawStep = logRange / 4;
+      const step = niceNumber(rawStep, false);
+      const start = Math.ceil(logMin / step) * step;
+      for (let lv = start; lv <= logMax; lv += step) {
+        const v = Math.pow(10, lv);
+        const ratio = (logMax - lv) / logRange;
+        const y = top + ratio * height;
+        if (y < top + 5 || y > top + height - 5) continue;
+        renderer.line(0, y, axisX, y, COLORS.gridLine);
+        renderer.textSmall(formatPrice(v), axisX + 4, y, COLORS.textPrimary, 'left');
+      }
+      return;
+    }
+
+    const range = max - min;
+    if (range <= 0) return;
 
     const step = niceNumber(range / 4, false);
     const start = Math.ceil(min / step) * step;

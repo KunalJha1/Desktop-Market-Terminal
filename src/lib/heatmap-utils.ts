@@ -1,3 +1,16 @@
+/** Cached technical score horizons (matches `technical_scores` / sidecar). */
+export type HeatmapTechTimeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1d" | "1w";
+
+export const HEATMAP_TECH_TIMEFRAMES: { key: HeatmapTechTimeframe; label: string }[] = [
+  { key: "1m", label: "1m" },
+  { key: "5m", label: "5m" },
+  { key: "15m", label: "15m" },
+  { key: "1h", label: "1H" },
+  { key: "4h", label: "4H" },
+  { key: "1d", label: "1D" },
+  { key: "1w", label: "1W" },
+];
+
 export interface HeatmapTile {
   symbol: string;
   name: string;
@@ -15,6 +28,8 @@ export interface HeatmapTile {
   marketCap: number | null;
   techScore1d: number | null;
   techScore1w: number | null;
+  /** All cached horizons from `/heatmap/sp500` when sidecar provides them. */
+  techScores?: Partial<Record<HeatmapTechTimeframe, number | null>>;
   // ScreenerPage extras (optional)
   week52High?: number | null;
   week52Low?: number | null;

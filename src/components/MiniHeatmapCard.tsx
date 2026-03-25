@@ -13,7 +13,6 @@ import {
 } from "../lib/heatmap-utils";
 
 const DATA_POLL_MS = 5_000;
-const HEADER_HEIGHT = 28;
 
 interface MiniHeatmapCardProps {
   linkChannel: number | null;
@@ -151,19 +150,18 @@ export default function MiniHeatmapCard({
     <div className="flex h-full flex-col overflow-hidden border border-white/[0.06] bg-panel">
       {/* Header */}
       <div
-        className="flex shrink-0 items-center justify-between border-b border-white/[0.06] bg-[#0d0f13] px-2"
-        style={{ height: HEADER_HEIGHT }}
+        className="flex h-7 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2"
       >
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-white/60">
+        <span className="text-[10px] font-medium text-white/70">
           S&P 500 Heatmap
         </span>
         <div className="flex items-center gap-1">
           <ComponentLinkMenu linkChannel={linkChannel} onSetLinkChannel={onSetLinkChannel} />
           <button
             onClick={onClose}
-            className="rounded-sm p-0.5 text-white/25 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/50"
+            className="rounded-sm p-0.5 text-white/70 transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
           >
-            <X className="h-3 w-3" />
+            <X className="h-2.5 w-2.5" strokeWidth={1.5} />
           </button>
         </div>
       </div>

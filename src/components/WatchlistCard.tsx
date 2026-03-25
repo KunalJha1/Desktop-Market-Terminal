@@ -1170,8 +1170,8 @@ export default function WatchlistCard({
               onClick={() => setSettingsOpen((v) => !v)}
               className={`flex h-3.5 w-3.5 items-center justify-center rounded-sm transition-colors duration-75 ${
                 settingsOpen
-                  ? "bg-white/[0.06] text-white/60"
-                  : "text-white/30 hover:bg-white/[0.06] hover:text-white/50"
+                  ? "bg-white/[0.06] text-white"
+                  : "text-white/70 hover:bg-white/[0.06] hover:text-white"
               }`}
               title="Settings"
             >
@@ -1216,7 +1216,7 @@ export default function WatchlistCard({
           />
           <button
             onClick={onClose}
-            className="rounded-sm p-0.5 text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
+            className="rounded-sm p-0.5 text-white/70 transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
           >
             <X className="h-2.5 w-2.5" strokeWidth={1.5} />
           </button>

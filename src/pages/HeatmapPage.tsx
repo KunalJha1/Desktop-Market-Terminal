@@ -3,15 +3,24 @@ import { formatMarketCap } from "../lib/market-data";
 import { useTws } from "../lib/tws";
 import CircularGauge from "../components/CircularGauge";
 import {
+  type HeatmapTechTimeframe,
   type HeatmapTile,
   type Rect,
   type LayoutRect,
   type SectorBound,
+  HEATMAP_TECH_TIMEFRAMES,
   squarify,
   tileColor,
   formatPct,
   formatPrice,
 } from "../lib/heatmap-utils";
+
+function resolveHeatmapTechScore(tile: HeatmapTile, key: HeatmapTechTimeframe): number | null {
+  return (
+    tile.techScores?.[key] ??
+    (key === "1d" ? tile.techScore1d : key === "1w" ? tile.techScore1w : null)
+  );
+}
 
 function formatAsOf(asOf: number | null): string {
   if (!asOf) return "Waiting";
@@ -369,24 +378,20 @@ export default function HeatmapPage() {
                 </div>
               </div>
 
-              {/* Technical Scores */}
-              {(hovered.techScore1d != null || hovered.techScore1w != null) && (
-                <div className="border-t border-white/[0.06] pt-3">
-                  <p className="mb-2 font-mono text-[9px] uppercase tracking-[0.14em] text-white/30">
-                    Technical Scores
-                  </p>
-                  <div className="flex items-center gap-4">
-                    <div className="flex flex-col items-center gap-1">
-                      <CircularGauge score={hovered.techScore1d} size={44} />
-                      <span className="font-mono text-[9px] text-white/35">1D</span>
+              {/* Technical Scores — all cached horizons (intraday often empty off watchlist) */}
+              <div className="border-t border-white/[0.06] pt-3">
+                <p className="mb-2 font-mono text-[9px] uppercase tracking-[0.14em] text-white/30">
+                  Technical Scores
+                </p>
+                <div className="grid grid-cols-3 gap-x-1 gap-y-2">
+                  {HEATMAP_TECH_TIMEFRAMES.map(({ key, label }) => (
+                    <div key={key} className="flex flex-col items-center gap-0.5">
+                      <CircularGauge score={resolveHeatmapTechScore(hovered, key)} size={38} />
+                      <span className="font-mono text-[8px] text-white/35">{label}</span>
                     </div>
-                    <div className="flex flex-col items-center gap-1">
-                      <CircularGauge score={hovered.techScore1w} size={44} />
-                      <span className="font-mono text-[9px] text-white/35">1W</span>
-                    </div>
-                  </div>
+                  ))}
                 </div>
-              )}
+              </div>
             </div>
           ) : (
             <div className="font-sans text-[11px] text-white/40">

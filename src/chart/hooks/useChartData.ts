@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import type { OHLCVBar, Timeframe } from '../types';
-import { TIMEFRAME_MS, DEFAULT_BARS_VISIBLE } from '../constants';
+import type { OHLCVBar } from '../types';
+import { getTimeframeMs, DEFAULT_BARS_VISIBLE } from '../constants';
 import { generateMockData } from '../mock-data';
 
 interface UseChartDataOptions {
   symbol: string;
-  timeframe: Timeframe;
+  timeframe: string;
   sidecarPort: number | null;
 }
 
@@ -20,15 +20,23 @@ interface UseChartDataResult {
   tailChangeOffset: number;
 }
 
-const DAILY_TIMEFRAMES = new Set<Timeframe>(['1D', '1W', '1M']);
-const SYNTHETIC_DAILY_TIMEFRAME: Timeframe = '1D';
+const SYNTHETIC_DAILY_TIMEFRAME = '1D';
 const SYNTHETIC_DAILY_MINUTE_DURATION = '90 D';
 
-// How many raw 1m bars each resampled bar needs
-const RESAMPLE_FACTOR: Record<Timeframe, number> = {
-  '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1H': 60, '4H': 240,
-  '1D': 1, '1W': 1, '1M': 1,
-};
+function isDailyTimeframe(tf: string): boolean {
+  return getTimeframeMs(tf) >= 86_400_000;
+}
+
+function getResampleFactor(tf: string): number {
+  const PRESET: Record<string, number> = {
+    '1m': 1, '2m': 2, '3m': 3, '5m': 5, '10m': 10, '15m': 15, '30m': 30,
+    '1H': 60, '2H': 120, '3H': 180, '4H': 240,
+    '1D': 1, '3D': 1, '1W': 1, '1M': 1, '3M': 1, '6M': 1, '12M': 1,
+  };
+  if (tf in PRESET) return PRESET[tf];
+  const ms = getTimeframeMs(tf);
+  return ms >= 86_400_000 ? 1 : Math.max(1, Math.round(ms / 60_000));
+}
 
 // Buffer: fetch 3x the visible range to avoid constant re-fetches while panning
 const BUFFER_MULTIPLIER = 3;
@@ -121,7 +129,7 @@ function mergeBarsByTime(existingBars: OHLCVBar[], incomingBars: OHLCVBar[]): OH
   return Array.from(merged.values()).sort((a, b) => a.time - b.time);
 }
 
-function getDisplayBars(rawBars: OHLCVBar[], rawBarSize: '1m' | '1d', timeframe: Timeframe): OHLCVBar[] {
+function getDisplayBars(rawBars: OHLCVBar[], rawBarSize: '1m' | '1d', timeframe: string): OHLCVBar[] {
   if ((rawBarSize === '1d' && timeframe === '1D') || (rawBarSize === '1m' && timeframe === '1m')) {
     return rawBars;
   }
@@ -151,11 +159,11 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
   // Keep ref in sync for async access
   rawBarsRef.current = rawBars;
 
-  const useDaily = DAILY_TIMEFRAMES.has(timeframe);
+  const useDaily = isDailyTimeframe(timeframe);
 
   // How many raw 1m bars to fetch for the initial load
   const initialLimit = useMemo(() => {
-    const factor = RESAMPLE_FACTOR[timeframe] || 1;
+    const factor = getResampleFactor(timeframe);
     return DEFAULT_BARS_VISIBLE * BUFFER_MULTIPLIER * factor;
   }, [timeframe]);
 
@@ -249,7 +257,8 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
         setLoading(false);
       } catch {
         if (!cancelled) {
-          setRawBars([]);
+          // Don't clear bars on error — keep showing existing data.
+          // A transient network failure shouldn't reset the viewport.
           setSource('mock');
           setLoading(false);
         }
@@ -457,19 +466,22 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
   return { bars, loading, source, onViewportChange, pendingViewportShift, onViewportShiftApplied, updateMode, tailChangeOffset };
 }
 
-function bucketFor(tsMs: number, timeframe: Timeframe): number {
+function bucketFor(tsMs: number, timeframe: string): number {
   if (timeframe === '1W') {
     const MONDAY_OFFSET_MS = 4 * 86_400_000;
     return Math.floor((tsMs - MONDAY_OFFSET_MS) / 604_800_000) * 604_800_000 + MONDAY_OFFSET_MS;
   }
-  if (timeframe === '1M') {
+  if (timeframe === '1M' || timeframe === '3M' || timeframe === '6M' || timeframe === '12M') {
     const d = new Date(tsMs);
-    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+    const monthsPerBucket = timeframe === '3M' ? 3 : timeframe === '6M' ? 6 : timeframe === '12M' ? 12 : 1;
+    const bucketMonth = Math.floor(d.getUTCMonth() / monthsPerBucket) * monthsPerBucket;
+    return Date.UTC(d.getUTCFullYear(), bucketMonth, 1);
   }
-  return Math.floor(tsMs / TIMEFRAME_MS[timeframe]) * TIMEFRAME_MS[timeframe];
+  const ms = getTimeframeMs(timeframe);
+  return Math.floor(tsMs / ms) * ms;
 }
 
-function resampleBars(bars1m: OHLCVBar[], timeframe: Timeframe): OHLCVBar[] {
+function resampleBars(bars1m: OHLCVBar[], timeframe: string): OHLCVBar[] {
   if (timeframe === '1m') return bars1m;
 
   const result: OHLCVBar[] = [];

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastModified": "2026-03-25T02:31:20.943Z",
+  "lastModified": "2026-03-25T03:09:30.276Z",
   "global": {
     "activeTabId": "ac8e7bdc-2a10-4036-968e-22d8706f5e7b"
   },
@@ -25,7 +25,7 @@
             "h": 8.375,
             "linkChannel": 1,
             "config": {
-              "symbol": "HIMS"
+              "symbol": "MUU"
             }
           },
           {
@@ -38,8 +38,16 @@
             "linkChannel": 1,
             "config": {
               "paneCount": 3,
-              "columnWidths": [56, 68, 58, 58],
-              "taTimeframes": ["1h", "1d"],
+              "columnWidths": [
+                56,
+                68,
+                58,
+                58
+              ],
+              "taTimeframes": [
+                "1h",
+                "1d"
+              ],
               "customColumns": [],
               "taColumnWidths": {},
               "headerTints": {
@@ -59,7 +67,7 @@
             "h": 14,
             "linkChannel": 1,
             "config": {
-              "symbol": "HIMS",
+              "symbol": "MUU",
               "timeframe": "1D",
               "chartType": "candlestick",
               "indicators": [
@@ -137,7 +145,7 @@
               "techScoreColorMode": "heat",
               "sortKey": "change",
               "sortDirection": "desc",
-              "symbol": "HIMS",
+              "symbol": "MUU",
               "columnOrder": [
                 "b:symbol",
                 "b:unrealizedPnl",
@@ -163,6 +171,30 @@
                 "1h": 80
               }
             }
+          },
+          {
+            "id": "d9161072-6bd7-4aae-ad44-7ef584372fb4",
+            "type": "mini-screener",
+            "x": 9,
+            "y": 14,
+            "w": 3,
+            "h": 11.444140625,
+            "linkChannel": 1,
+            "config": {
+              "symbol": "MUU"
+            }
+          },
+          {
+            "id": "75ef62bd-f2ff-4d28-aa77-1178ff0ac90f",
+            "type": "mini-heatmap",
+            "x": 6,
+            "y": 14,
+            "w": 3.0056258790436003,
+            "h": 11.444140625,
+            "linkChannel": 1,
+            "config": {
+              "symbol": "MUU"
+            }
           }
         ]
       }
@@ -179,10 +211,10 @@
         "components": []
       },
       "chartState": {
-        "symbol": "HIMS",
+        "symbol": "SPY",
         "timeframe": "1D",
         "chartType": "candlestick",
-        "linkChannel": null,
+        "linkChannel": 1,
         "indicators": [
           {
             "name": "Volume",

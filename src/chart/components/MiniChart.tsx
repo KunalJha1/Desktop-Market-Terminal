@@ -3,8 +3,9 @@ import { interpretScript } from '../scripting/interpreter';
 import { ChartEngine } from '../core/ChartEngine';
 import { useChartData } from '../hooks/useChartData';
 import { indicatorRegistry } from '../indicators/registry';
+import { STRATEGY_KEYS } from '../indicators/strategyKeys';
 import type { Timeframe, ChartType, ActiveIndicator, YScaleMode } from '../types';
-import { PRICE_AXIS_WIDTH } from '../constants';
+import { PRICE_AXIS_WIDTH, parseCustomTimeframe } from '../constants';
 import { useTws } from '../../lib/tws';
 import { linkBus } from '../../lib/link-bus';
 import { X, ChevronDown, Search, TrendingUp, BrainCircuit, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
@@ -20,11 +21,24 @@ interface MiniChartProps {
 }
 
 const MINI_TIMEFRAMES: { label: string; value: Timeframe }[] = [
-  { label: '1m', value: '1m' },
-  { label: '5m', value: '5m' },
+  { label: '1m',  value: '1m'  },
+  { label: '2m',  value: '2m'  },
+  { label: '3m',  value: '3m'  },
+  { label: '5m',  value: '5m'  },
+  { label: '10m', value: '10m' },
   { label: '15m', value: '15m' },
-  { label: '1H', value: '1H' },
-  { label: '1D', value: '1D' },
+  { label: '30m', value: '30m' },
+  { label: '1H',  value: '1H'  },
+  { label: '2H',  value: '2H'  },
+  { label: '3H',  value: '3H'  },
+  { label: '4H',  value: '4H'  },
+  { label: '1D',  value: '1D'  },
+  { label: '3D',  value: '3D'  },
+  { label: '1W',  value: '1W'  },
+  { label: '1M',  value: '1M'  },
+  { label: '3M',  value: '3M'  },
+  { label: '6M',  value: '6M'  },
+  { label: '12M', value: '12M' },
 ];
 
 const CHART_TYPES: { label: string; short: string; value: ChartType }[] = [
@@ -43,8 +57,6 @@ const INDICATOR_CATEGORIES = [
   { key: 'oscillator' as const, label: 'Oscillators' },
   { key: 'volume' as const, label: 'Volume' },
 ];
-
-const STRATEGY_KEYS = new Set(['Golden/Death Cross', 'EMA 9/14 Crossover', 'DailyIQ Tech Score Signal']);
 
 interface PersistedMiniIndicator {
   name: string;
@@ -172,14 +184,19 @@ export default function MiniChart({
   const chartType = (config.chartType as ChartType) || 'candlestick';
   const yScaleMode = (config.yScaleMode as YScaleMode) || 'auto';
 
+  const [customTfInput, setCustomTfInput] = useState('');
+  const [customTfError, setCustomTfError] = useState('');
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   const [showStrategyMenu, setShowStrategyMenu] = useState(false);
   const [showScriptEditor, setShowScriptEditor] = useState(false);
   const [indicatorSearch, setIndicatorSearch] = useState('');
   const [activeIndicators, setActiveIndicators] = useState<ActiveIndicator[]>([]);
+  /** Bumps when ChartEngine is (re)created so indicator reconcile runs against the new instance. */
+  const [engineVersion, setEngineVersion] = useState(0);
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
-  const [paneLayout, setPaneLayout] = useState<Array<{ paneId: string; top: number; height: number }>>([]);
+  const [paneLayout, setPaneLayout] = useState<Array<{ paneId: string; top: number; height: number; yScaleMode: YScaleMode }>>([]);
+  const [priceSectionHeight, setPriceSectionHeight] = useState(0);
   const [scriptSource, setScriptSource] = useState('');
   const [scriptErrors, setScriptErrors] = useState<string[]>([]);
   const [draggingIndicatorId, setDraggingIndicatorId] = useState<string | null>(null);
@@ -229,6 +246,7 @@ export default function MiniChart({
     if (!canvas) return;
     const engine = new ChartEngine(canvas);
     engineRef.current = engine;
+    setEngineVersion((v) => v + 1);
     return () => {
       engine.destroy();
       engineRef.current = null;
@@ -247,7 +265,8 @@ export default function MiniChart({
     requestAnimationFrame(() => {
       const layout = engineRef.current?.getLayout();
       if (layout) {
-        setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height })));
+        setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode })));
+        setPriceSectionHeight(layout.mainHeight);
       }
     });
   }, []);
@@ -272,7 +291,8 @@ export default function MiniChart({
     const engine = engineRef.current;
     if (!engine) return;
     const layout = engine.getLayout();
-    setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height })));
+    setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode })));
+    setPriceSectionHeight(layout.mainHeight);
   }, []);
 
   useEffect(() => {
@@ -299,7 +319,8 @@ export default function MiniChart({
       requestAnimationFrame(() => {
         const layout = engineRef.current?.getLayout();
         if (layout) {
-          setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height })));
+          setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode })));
+          setPriceSectionHeight(layout.mainHeight);
         }
       });
     };
@@ -326,6 +347,7 @@ export default function MiniChart({
 
   // Push timeframe to engine
   useEffect(() => {
+    engineRef.current?.resetViewport();
     engineRef.current?.setTimeframe(timeframe);
   }, [timeframe]);
 
@@ -378,16 +400,16 @@ export default function MiniChart({
   }, [showIndicatorMenu]);
 
   const setTimeframeValue = (tf: Timeframe) => {
-    onConfigChange({ ...config, timeframe: tf });
+    onConfigChange({ ...configRef.current, timeframe: tf });
   };
 
   const setChartTypeValue = (ct: ChartType) => {
-    onConfigChange({ ...config, chartType: ct });
+    onConfigChange({ ...configRef.current, chartType: ct });
     setShowChartTypeMenu(false);
   };
 
   const setYScaleModeValue = (mode: YScaleMode) => {
-    onConfigChange({ ...config, yScaleMode: mode });
+    onConfigChange({ ...configRef.current, yScaleMode: mode });
   };
 
   // Filtered indicators for search
@@ -561,7 +583,9 @@ export default function MiniChart({
     const fingerprint = persistedIndicators
       .map((i) => `${i.name}:${i.paneId}:${JSON.stringify(i.params)}:${i.visible}`)
       .join('|');
-    if (fingerprint === lastRestoredFingerprintRef.current) {
+    const needsRestoreDespiteFingerprint =
+      engineIndicators.length === 0 && persistedIndicators.length > 0;
+    if (fingerprint === lastRestoredFingerprintRef.current && !needsRestoreDespiteFingerprint) {
       // Also restore script if needed (doesn't depend on fingerprint)
       if (persistedScript && engine.getActiveIndicators().length === engineIndicators.length) {
         const result = interpretScript(persistedScript.source, bars);
@@ -601,6 +625,7 @@ export default function MiniChart({
     syncIndicators(false);
   }, [
     bars,
+    engineVersion,
     activeIndicators,
     persistedIndicators,
     persistedIndicatorsMatch,
@@ -781,11 +806,50 @@ export default function MiniChart({
         {/* Right: timeframes + chart type + indicators + collapse + close */}
         <div className="flex items-center gap-0.5 shrink-0">
           {!toolbarCollapsed && (<>
+          {/* Custom timeframe input */}
+          <input
+            type="text"
+            value={customTfInput}
+            onChange={(e) => { setCustomTfInput(e.target.value); setCustomTfError(''); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                const val = customTfInput.trim();
+                if (!val) return;
+                const parsed = parseCustomTimeframe(val);
+                if (!parsed.valid) {
+                  setCustomTfError(parsed.error ?? 'Invalid format');
+                } else {
+                  setCustomTfError('');
+                  setTimeframeValue(parsed.label as Timeframe);
+                }
+              } else if (e.key === 'Escape') {
+                setCustomTfInput('');
+                setCustomTfError('');
+              }
+            }}
+            onBlur={() => { if (customTfInput.trim() === '') setCustomTfError(''); }}
+            placeholder="2H"
+            title={customTfError || undefined}
+            style={{
+              fontFamily: '"JetBrains Mono", monospace',
+              fontSize: 9,
+              width: 28,
+              padding: '2px 3px',
+              borderRadius: 2,
+              outline: 'none',
+              background: 'transparent',
+              border: customTfError ? '1px solid #FF3D71' : '1px solid rgba(255,255,255,0.08)',
+              color: customTfError ? '#FF3D71' : '#E6EDF3',
+              lineHeight: 1,
+            }}
+            spellCheck={false}
+          />
+          <div style={{ width: 1, height: 10, background: 'rgba(255,255,255,0.08)', margin: '0 2px' }} />
           {/* Timeframe buttons */}
           {MINI_TIMEFRAMES.map((tf) => (
             <button
               key={tf.value}
-              onClick={() => setTimeframeValue(tf.value)}
+              onClick={() => { setTimeframeValue(tf.value); setCustomTfInput(''); setCustomTfError(''); }}
               className="rounded-sm transition-colors duration-75 hover:bg-white/[0.06]"
               style={{
                 fontFamily: '"JetBrains Mono", monospace',
@@ -794,8 +858,8 @@ export default function MiniChart({
                 borderRadius: 2,
                 border: 'none',
                 cursor: 'pointer',
-                backgroundColor: timeframe === tf.value ? '#1A56DB' : 'transparent',
-                color: timeframe === tf.value ? '#E6EDF3' : '#8B949E',
+                backgroundColor: timeframe === tf.value && customTfInput === '' ? '#1A56DB' : 'transparent',
+                color: timeframe === tf.value && customTfInput === '' ? '#E6EDF3' : '#8B949E',
                 lineHeight: 1,
               }}
             >
@@ -1185,7 +1249,7 @@ export default function MiniChart({
                 value={stopperPx}
                 onChange={(e) => {
                   const next = Math.max(0, Math.min(200, Number(e.target.value) || 0));
-                  onConfigChange({ ...config, stopperPx: next });
+                  onConfigChange({ ...configRef.current, stopperPx: next });
                 }}
                 style={{
                   width: 36,
@@ -1431,36 +1495,7 @@ export default function MiniChart({
           onMouseLeave={handleCanvasPointerLeave}
           style={{ cursor: yAxisHovered ? 'ns-resize' : 'crosshair' }}
         />
-        {yAxisHovered && (
-          <div
-            style={{
-              pointerEvents: 'none',
-              position: 'absolute',
-              right: 5,
-              top: '50%',
-              transform: 'translateY(-50%)',
-              zIndex: 20,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 16,
-              height: 64,
-              borderRadius: 999,
-              border: '1px solid rgba(26,86,219,0.4)',
-              backgroundColor: 'rgba(13,17,23,0.85)',
-              boxShadow: '0 8px 24px rgba(0,0,0,0.28)',
-              backdropFilter: 'blur(4px)',
-            }}
-          >
-            <div style={{ width: 6, height: 6, borderRadius: 999, backgroundColor: 'rgba(26,86,219,0.95)' }} />
-            <div style={{ width: 1, height: 24, margin: '4px 0', backgroundColor: 'rgba(26,86,219,0.8)' }} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <div style={{ width: 8, height: 2, borderRadius: 999, backgroundColor: 'rgba(26,86,219,0.8)' }} />
-              <div style={{ width: 8, height: 2, borderRadius: 999, backgroundColor: 'rgba(26,86,219,0.8)' }} />
-            </div>
-          </div>
-        )}
+
         {draggingIndicatorId && (
           <>
             <div
@@ -1473,7 +1508,7 @@ export default function MiniChart({
               style={{
                 position: 'absolute',
                 left: 0,
-                right: 70,
+                right: PRICE_AXIS_WIDTH,
                 top: 0,
                 height: Math.max(0, (paneLayout[0]?.top ?? containerRef.current?.offsetHeight ?? 0) - 1),
                 border: '1px dashed rgba(26,86,219,0.5)',
@@ -1502,7 +1537,7 @@ export default function MiniChart({
                 style={{
                   position: 'absolute',
                   left: 0,
-                  right: 70,
+                  right: PRICE_AXIS_WIDTH,
                   top: pane.top,
                   height: pane.height,
                   border: '1px dashed rgba(139,148,158,0.35)',
@@ -1530,7 +1565,7 @@ export default function MiniChart({
               style={{
                 position: 'absolute',
                 left: 0,
-                right: 70,
+                right: PRICE_AXIS_WIDTH,
                 bottom: source === 'tws' ? 24 : 4,
                 height: 20,
                 borderTop: '1px dashed rgba(245,158,11,0.5)',
@@ -1584,28 +1619,26 @@ export default function MiniChart({
         <div
           style={{
             position: 'absolute',
-            right: 6,
-            bottom: source === 'tws' ? 24 : 4,
+            right: 0,
+            top: priceSectionHeight > 0 ? priceSectionHeight - 22 : undefined,
+            bottom: priceSectionHeight > 0 ? undefined : 24,
+            width: PRICE_AXIS_WIDTH,
             display: 'flex',
-            gap: 4,
-            padding: '1px 3px',
-            backgroundColor: 'rgba(13,17,23,0.7)',
-            border: '1px solid rgba(33,38,45,0.7)',
-            borderRadius: 3,
-            backdropFilter: 'blur(2px)',
+            justifyContent: 'center',
+            gap: 1,
           }}
         >
           <button
-            onClick={() => setYScaleModeValue('auto')}
+            onClick={() => setYScaleModeValue(yScaleMode === 'auto' ? 'manual' : 'auto')}
             style={{
               fontFamily: '"JetBrains Mono", monospace',
               fontSize: 8,
               padding: '1px 3px',
               borderRadius: 2,
-              border: 'none',
+              border: yScaleMode === 'auto' ? '1px solid #ffffff' : '1px solid rgba(255,255,255,0.35)',
               cursor: 'pointer',
-              backgroundColor: yScaleMode === 'auto' ? '#1A56DB' : 'transparent',
-              color: yScaleMode === 'auto' ? '#E6EDF3' : '#8B949E',
+              backgroundColor: yScaleMode === 'auto' ? '#ffffff' : 'transparent',
+              color: yScaleMode === 'auto' ? '#000000' : '#ffffff',
               lineHeight: 1,
             }}
             title="Auto scale"
@@ -1613,16 +1646,16 @@ export default function MiniChart({
             A
           </button>
           <button
-            onClick={() => setYScaleModeValue('log')}
+            onClick={() => setYScaleModeValue(yScaleMode === 'log' ? 'manual' : 'log')}
             style={{
               fontFamily: '"JetBrains Mono", monospace',
               fontSize: 8,
               padding: '1px 3px',
               borderRadius: 2,
-              border: 'none',
+              border: yScaleMode === 'log' ? '1px solid #ffffff' : '1px solid rgba(255,255,255,0.35)',
               cursor: 'pointer',
-              backgroundColor: yScaleMode === 'log' ? '#1A56DB' : 'transparent',
-              color: yScaleMode === 'log' ? '#E6EDF3' : '#8B949E',
+              backgroundColor: yScaleMode === 'log' ? '#ffffff' : 'transparent',
+              color: yScaleMode === 'log' ? '#000000' : '#ffffff',
               lineHeight: 1,
             }}
             title="Log scale"
@@ -1630,6 +1663,64 @@ export default function MiniChart({
             L
           </button>
         </div>
+        {/* Per-sub-pane A / L scale mode buttons */}
+        {paneLayout.map((pane) => (
+          <div
+            key={pane.paneId}
+            style={{
+              position: 'absolute',
+              right: 0,
+              top: pane.top + pane.height - 22,
+              width: 70,
+              display: 'flex',
+              justifyContent: 'center',
+              gap: 1,
+            }}
+          >
+            <button
+              onClick={() => {
+                const next = pane.yScaleMode === 'auto' ? 'manual' : 'auto';
+                engineRef.current?.setSubPaneScaleMode(pane.paneId, next);
+                syncPaneLayout();
+              }}
+              style={{
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 8,
+                padding: '1px 3px',
+                borderRadius: 2,
+                border: pane.yScaleMode === 'auto' ? '1px solid #ffffff' : '1px solid rgba(255,255,255,0.35)',
+                cursor: 'pointer',
+                backgroundColor: pane.yScaleMode === 'auto' ? '#ffffff' : 'transparent',
+                color: pane.yScaleMode === 'auto' ? '#000000' : '#ffffff',
+                lineHeight: 1,
+              }}
+              title="Auto scale"
+            >
+              A
+            </button>
+            <button
+              onClick={() => {
+                const next = pane.yScaleMode === 'log' ? 'manual' : 'log';
+                engineRef.current?.setSubPaneScaleMode(pane.paneId, next);
+                syncPaneLayout();
+              }}
+              style={{
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 8,
+                padding: '1px 3px',
+                borderRadius: 2,
+                border: pane.yScaleMode === 'log' ? '1px solid #ffffff' : '1px solid rgba(255,255,255,0.35)',
+                cursor: 'pointer',
+                backgroundColor: pane.yScaleMode === 'log' ? '#ffffff' : 'transparent',
+                color: pane.yScaleMode === 'log' ? '#000000' : '#ffffff',
+                lineHeight: 1,
+              }}
+              title="Log scale"
+            >
+              L
+            </button>
+          </div>
+        ))}
         {source === 'tws' && (
           <div
             style={{
@@ -1663,7 +1754,7 @@ export default function MiniChart({
               step={2}
               value={stopperPx}
               onChange={(e) => {
-                onConfigChange({ ...config, stopperPx: Number(e.target.value) });
+                onConfigChange({ ...configRef.current, stopperPx: Number(e.target.value) });
               }}
               style={{ width: 70 }}
             />

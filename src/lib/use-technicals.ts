@@ -12,6 +12,8 @@ export function resolveTechnicalScoreTimeframe(
       return { requestTimeframe: "1m", label: "1m" };
     case "5m":
       return { requestTimeframe: "5m", label: "5m" };
+    case "10m":
+      return { requestTimeframe: "15m", label: "15m proxy" };
     case "15m":
       return { requestTimeframe: "15m", label: "15m" };
     case "30m":

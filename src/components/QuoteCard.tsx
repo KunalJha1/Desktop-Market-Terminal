@@ -97,7 +97,7 @@ export default function QuoteCard({
           {/* Search toggle */}
           <button
             onClick={() => setSearchOpen((v) => !v)}
-            className="flex items-center gap-1 rounded-sm p-0.5 text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/55"
+            className="flex items-center gap-1 rounded-sm p-0.5 text-white/70 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
           >
             <Search className="h-2.5 w-2.5" strokeWidth={1.5} />
           </button>
@@ -118,7 +118,7 @@ export default function QuoteCard({
           />
           <button
             onClick={onClose}
-            className="rounded-sm p-0.5 text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
+            className="rounded-sm p-0.5 text-white/70 transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
           >
             <X className="h-2.5 w-2.5" strokeWidth={1.5} />
           </button>

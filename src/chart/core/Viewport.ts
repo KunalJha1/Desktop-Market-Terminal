@@ -82,8 +82,9 @@ export class Viewport {
   setTotalBars(total: number) {
     this.totalBars = total;
     if (total === 0) {
-      this.initialized = false;
-      this.startIndex = 0;
+      // Don't reset initialized or startIndex — transient empty states
+      // (fetch errors, poll gaps) shouldn't wipe the user's scroll position.
+      // Symbol changes use reset() explicitly which handles that case.
       return;
     }
     // On first non-empty load, scroll to end
@@ -265,7 +266,22 @@ export class Viewport {
   setYScaleMode(mode: YScaleMode) {
     if (this.yScaleMode === mode) return;
     this.yScaleMode = mode;
-    this.manualYScale = false;
+    if (mode === 'manual') {
+      this.manualYScale = true;
+    } else {
+      this.manualYScale = false;
+    }
+  }
+
+  /** Pan the price axis vertically by a pixel delta (positive = scroll down = prices shift up). */
+  panY(pixelDelta: number) {
+    if (this.chartHeight === 0) return;
+    const range = this.priceMax - this.priceMin;
+    const pricePerPixel = range / this.chartHeight;
+    const priceDelta = pixelDelta * pricePerPixel;
+    this.priceMin += priceDelta;
+    this.priceMax += priceDelta;
+    this.manualYScale = true;
   }
 
   get isYScaleDragging(): boolean {

@@ -360,10 +360,73 @@ def _read_cached(conn: sqlite3.Connection, symbol: str, limit_days: int = 5, tab
         """,
         [symbol, cutoff_ms],
     ).fetchall()
-    return [
+    bars = [
         {"time": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]}
         for r in rows
     ]
+
+    # For daily bars, fill in any days that have 1m data but no ohlcv_1d entry.
+    if table == "ohlcv_1d":
+        bars = _fill_daily_gaps_from_1m(conn, symbol, cutoff_ms, bars)
+
+    return bars
+
+
+def _fill_daily_gaps_from_1m(
+    conn: sqlite3.Connection,
+    symbol: str,
+    cutoff_ms: int,
+    daily_bars: list[dict],
+) -> list[dict]:
+    """Supplement daily bars with aggregated 1m data for any missing days."""
+    MS_PER_DAY = 86_400_000
+    existing_days = {b["time"] // MS_PER_DAY for b in daily_bars}
+
+    # Aggregate 1m bars by UTC day bucket
+    rows = conn.execute(
+        """
+        SELECT
+            (ts / 86400000) * 86400000 AS day_ts,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            ts
+        FROM ohlcv_1m
+        WHERE symbol = ? AND ts >= ?
+        ORDER BY ts ASC
+        """,
+        [symbol, cutoff_ms],
+    ).fetchall()
+
+    # Group rows by day_ts, keeping first open, max high, min low, last close, sum volume
+    day_data: dict[int, dict] = {}
+    for day_ts, open_, high, low, close, volume, ts in rows:
+        if day_ts // MS_PER_DAY in existing_days:
+            continue  # already have a native daily bar for this day
+        if day_ts not in day_data:
+            day_data[day_ts] = {
+                "time": day_ts,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+            }
+        else:
+            d = day_data[day_ts]
+            d["high"] = max(d["high"], high)
+            d["low"] = min(d["low"], low)
+            d["close"] = close
+            d["volume"] += volume
+
+    if not day_data:
+        return daily_bars
+
+    merged = daily_bars + list(day_data.values())
+    merged.sort(key=lambda b: b["time"])
+    return merged
 
 
 def _read_cached_window(

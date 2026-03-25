@@ -31,7 +31,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
     symbol: 'AAPL',
     timeframe: '1D',
     chartType: 'candlestick',
-    linkChannel: null,
+    linkChannel: 1,
     indicators: defaultIndicatorsRef.current,
     stopperPx: 80,
     indicatorColorDefaults: {},

@@ -1,7 +1,7 @@
 import { Renderer } from './Renderer';
 import { Viewport } from './Viewport';
 import type { OHLCVBar, Timeframe } from '../types';
-import { COLORS, TIME_AXIS_HEIGHT } from '../constants';
+import { COLORS, TIME_AXIS_HEIGHT, getTimeframeMs } from '../constants';
 
 /**
  * Time axis: renders time labels below the chart.
@@ -58,14 +58,15 @@ export class ScaleX {
     const tf = this.timeframe;
     const currentYear = new Date().getFullYear();
 
-    if (tf === '1D' || tf === '1W' || tf === '1M') {
+    const tfMs = getTimeframeMs(tf);
+    if (tfMs >= 86_400_000) {
       const month = d.toLocaleString('en', { month: 'short' });
       if (d.getFullYear() !== currentYear) {
         return `${month} ${d.getDate()} '${String(d.getFullYear()).slice(2)}`;
       }
       return `${month} ${d.getDate()}`;
     }
-    if (tf === '4H' || tf === '1H') {
+    if (tf === '4H' || tf === '1H' || tfMs >= 3_600_000) {
       if (d.getFullYear() !== currentYear) {
         const month = d.toLocaleString('en', { month: 'short' });
         return `${month} ${d.getDate()} '${String(d.getFullYear()).slice(2)}`;

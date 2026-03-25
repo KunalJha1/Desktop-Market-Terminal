@@ -88,6 +88,17 @@ export default function ChartCanvas({
   const [pendingTextAnchor, setPendingTextAnchor] = useState<DrawingAnchor | null>(null);
   const [pendingTextValue, setPendingTextValue] = useState('');
   const [ctxMenu, setCtxMenu] = useState<DrawingContextMenu | null>(null);
+  const [priceSectionHeight, setPriceSectionHeight] = useState(0);
+  const [paneLayout, setPaneLayout] = useState<Array<{ paneId: string; top: number; height: number; yScaleMode: YScaleMode }>>([]);
+
+  const notifyLayout = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const layout = engine.getLayout();
+    setPriceSectionHeight(layout.mainHeight);
+    setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode })));
+    onLayoutChange?.(layout);
+  }, [engineRef, onLayoutChange]);
 
   // Initialize engine
   useEffect(() => {
@@ -114,8 +125,8 @@ export default function ChartCanvas({
     const width = container.offsetWidth;
     const height = container.offsetHeight;
     engine.resize(width, height);
-    onLayoutChange?.(engine.getLayout());
-  }, [engineRef, onLayoutChange]);
+    notifyLayout();
+  }, [engineRef, notifyLayout]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -137,7 +148,7 @@ export default function ChartCanvas({
     } else {
       engine.setData(bars);
     }
-    onLayoutChange?.(engine.getLayout());
+    notifyLayout();
   }, [bars, updateMode, tailChangeOffset, engineRef, onLayoutChange]);
 
   useEffect(() => {
@@ -145,7 +156,7 @@ export default function ChartCanvas({
     const engine = engineRef.current;
     if (!engine) return;
     engine.shiftViewportBy(pendingViewportShift);
-    onLayoutChange?.(engine.getLayout());
+    notifyLayout();
     onViewportShiftApplied?.();
   }, [pendingViewportShift, engineRef, onLayoutChange, onViewportShiftApplied]);
 
@@ -156,6 +167,7 @@ export default function ChartCanvas({
 
   // Update timeframe
   useEffect(() => {
+    engineRef.current?.resetViewport();
     engineRef.current?.setTimeframe(timeframe);
   }, [timeframe, engineRef]);
 
@@ -208,7 +220,7 @@ export default function ChartCanvas({
     if (!engine) return;
     engine.setLiveMode(liveMode);
     engine.setStopperPx(stopperPx);
-    onLayoutChange?.(engine.getLayout());
+    notifyLayout();
   }, [liveMode, stopperPx, engineRef, onLayoutChange]);
 
   // Update script results (multi-script)
@@ -222,7 +234,7 @@ export default function ChartCanvas({
         engine.setScriptResult(id, result);
       }
     }
-    onLayoutChange?.(engine.getLayout());
+    notifyLayout();
   }, [activeScripts, engineRef, onLayoutChange]);
 
   const handleSelectTool = useCallback((tool: DrawingTool) => {
@@ -452,38 +464,82 @@ export default function ChartCanvas({
             </div>
           </div>
         )}
-        {/* Auto / Log scale buttons pinned to bottom of y-axis */}
+        {/* A / L scale mode buttons pinned to bottom of price section y-axis */}
         <div
-          className="pointer-events-auto absolute z-10 flex flex-col gap-1"
+          className="pointer-events-auto absolute z-10 flex flex-row justify-center gap-px"
           style={{
-            right: 4,
-            bottom: 6 + 24,
-            width: PRICE_AXIS_WIDTH - 8,
+            right: 0,
+            top: priceSectionHeight > 0 ? priceSectionHeight - 22 : undefined,
+            bottom: priceSectionHeight > 0 ? undefined : 24,
+            width: PRICE_AXIS_WIDTH,
           }}
         >
           <button
-            onClick={() => onYScaleModeChange?.('auto')}
-            className={`w-full px-1.5 py-0.5 text-[9px] font-mono rounded transition-colors duration-120 ${
+            onClick={() => onYScaleModeChange?.(yScaleMode === 'auto' ? 'manual' : 'auto')}
+            className={`px-1.5 py-0.5 text-[9px] font-mono rounded-sm transition-colors duration-[120ms] ${
               yScaleMode === 'auto'
-                ? 'text-blue bg-blue/15 border border-blue/30'
-                : 'text-text-muted bg-base/70 border border-white/[0.06] hover:text-text-secondary hover:bg-hover'
+                ? 'bg-white text-black border border-white'
+                : 'bg-transparent text-white border border-white/40 hover:border-white/70'
             }`}
             title="Auto scale"
           >
-            Auto
+            A
           </button>
           <button
-            onClick={() => onYScaleModeChange?.('log')}
-            className={`w-full px-1.5 py-0.5 text-[9px] font-mono rounded transition-colors duration-120 ${
+            onClick={() => onYScaleModeChange?.(yScaleMode === 'log' ? 'manual' : 'log')}
+            className={`px-1.5 py-0.5 text-[9px] font-mono rounded-sm transition-colors duration-[120ms] ${
               yScaleMode === 'log'
-                ? 'text-blue bg-blue/15 border border-blue/30'
-                : 'text-text-muted bg-base/70 border border-white/[0.06] hover:text-text-secondary hover:bg-hover'
+                ? 'bg-white text-black border border-white'
+                : 'bg-transparent text-white border border-white/40 hover:border-white/70'
             }`}
             title="Logarithmic scale"
           >
-            Log
+            L
           </button>
         </div>
+        {/* Per-sub-pane A / L scale mode buttons */}
+        {paneLayout.map((pane) => (
+          <div
+            key={pane.paneId}
+            className="pointer-events-auto absolute z-10 flex flex-row justify-center gap-px"
+            style={{
+              right: 0,
+              top: pane.top + pane.height - 22,
+              width: PRICE_AXIS_WIDTH,
+            }}
+          >
+            <button
+              onClick={() => {
+                const next = pane.yScaleMode === 'auto' ? 'manual' : 'auto';
+                engineRef.current?.setSubPaneScaleMode(pane.paneId, next);
+                notifyLayout();
+              }}
+              className={`px-1.5 py-0.5 text-[9px] font-mono rounded-sm transition-colors duration-[120ms] ${
+                pane.yScaleMode === 'auto'
+                  ? 'bg-white text-black border border-white'
+                  : 'bg-transparent text-white border border-white/40 hover:border-white/70'
+              }`}
+              title="Auto scale"
+            >
+              A
+            </button>
+            <button
+              onClick={() => {
+                const next = pane.yScaleMode === 'log' ? 'manual' : 'log';
+                engineRef.current?.setSubPaneScaleMode(pane.paneId, next);
+                notifyLayout();
+              }}
+              className={`px-1.5 py-0.5 text-[9px] font-mono rounded-sm transition-colors duration-[120ms] ${
+                pane.yScaleMode === 'log'
+                  ? 'bg-white text-black border border-white'
+                  : 'bg-transparent text-white border border-white/40 hover:border-white/70'
+              }`}
+              title="Logarithmic scale"
+            >
+              L
+            </button>
+          </div>
+        ))}
         {pendingTextAnchor && pendingTextPosition && (
           <div
             className="absolute z-30 flex w-52 flex-col gap-2 rounded-md border border-white/[0.08] bg-[#161B22]/95 p-2 shadow-xl shadow-black/40 backdrop-blur-sm"

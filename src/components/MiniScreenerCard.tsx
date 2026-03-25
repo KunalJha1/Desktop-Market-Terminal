@@ -7,11 +7,11 @@ import { useWatchlist } from "../lib/watchlist";
 import { LOGO_SYMBOLS } from "../lib/logo-symbols";
 import type { HeatmapTile } from "../lib/heatmap-utils";
 import { formatMarketCap } from "../lib/market-data";
+import { linkBus } from "../lib/link-bus";
 
 const DATA_POLL_MS = 5_000;
 const SCORE_POLL_MS = 60_000;
 const ROW_HEIGHT = 40;
-const HEADER_HEIGHT = 32;
 
 interface TechScores {
   "1d": number | null;
@@ -66,12 +66,14 @@ interface MiniScreenerCardProps {
   onClose: () => void;
   config: Record<string, unknown>;
   onConfigChange: (config: Record<string, unknown>) => void;
+  onSymbolSelect?: (symbol: string) => void;
 }
 
 export default function MiniScreenerCard({
   linkChannel,
   onSetLinkChannel,
   onClose,
+  onSymbolSelect,
 }: MiniScreenerCardProps) {
   const { sidecarPort } = useTws();
   const { symbols: watchlistSymbols } = useWatchlist();
@@ -183,11 +185,10 @@ export default function MiniScreenerCard({
     <div className="flex h-full flex-col overflow-hidden border border-white/[0.06] bg-panel">
       {/* Header */}
       <div
-        className="flex shrink-0 items-center justify-between border-b border-white/[0.06] bg-[#0d0f13] px-3"
-        style={{ height: HEADER_HEIGHT }}
+        className="flex h-7 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2"
       >
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-white/60">
+          <span className="text-[10px] font-medium text-white/70">
             Screener
           </span>
           <span className="font-mono text-[10px] text-white/25">
@@ -198,9 +199,9 @@ export default function MiniScreenerCard({
           <ComponentLinkMenu linkChannel={linkChannel} onSetLinkChannel={onSetLinkChannel} />
           <button
             onClick={onClose}
-            className="rounded-sm p-0.5 text-white/25 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/50"
+            className="rounded-sm p-0.5 text-white/70 transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
           >
-            <X className="h-3 w-3" />
+            <X className="h-2.5 w-2.5" strokeWidth={1.5} />
           </button>
         </div>
       </div>
@@ -240,8 +241,12 @@ export default function MiniScreenerCard({
             return (
               <div
                 key={row.symbol}
-                className="flex items-center border-b border-white/[0.03] px-3 transition-colors duration-75 hover:bg-white/[0.03]"
+                className="flex cursor-pointer items-center border-b border-white/[0.03] px-3 transition-colors duration-75 hover:bg-white/[0.06]"
                 style={{ height: ROW_HEIGHT }}
+                onClick={() => {
+                  if (linkChannel) linkBus.publish(linkChannel, row.symbol);
+                  onSymbolSelect?.(row.symbol);
+                }}
               >
                 {/* Symbol */}
                 <div className="flex min-w-0 flex-[2.5] items-center gap-2 overflow-hidden">

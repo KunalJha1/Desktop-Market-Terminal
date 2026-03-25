@@ -233,6 +233,15 @@ impl ManagedChild {
     fn kill(self) {
         match self {
             ManagedChild::System(mut child) => {
+                // On Windows, child.kill() only terminates the direct process.
+                // Use taskkill /F /T to kill the entire process tree (uvicorn workers, etc.)
+                #[cfg(target_os = "windows")]
+                {
+                    let pid = child.id();
+                    let _ = Command::new("taskkill")
+                        .args(&["/F", "/T", "/PID", &pid.to_string()])
+                        .spawn();
+                }
                 let _ = child.kill();
                 let _ = child.wait();
             }
@@ -522,18 +531,21 @@ fn main() {
             Ok(())
         })
         .on_window_event(|event| {
-            if let tauri::WindowEvent::Destroyed = event.event() {
-                // Kill sidecar on app exit
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event.event() {
+                // Prevent the window from closing until child processes are killed.
+                // Using CloseRequested (not Destroyed) because on Windows, Destroyed
+                // fires too late — the runtime may already be partially torn down.
+                api.prevent_close();
                 let window = event.window().clone();
                 let state: tauri::State<SidecarState> = window.state();
-                let child = state.child.lock().unwrap().take();
-                if let Some(child) = child {
+                if let Some(child) = state.child.lock().unwrap().take() {
                     child.kill();
                 }
-                let worker = state.worker_child.lock().unwrap().take();
-                if let Some(worker) = worker {
+                if let Some(worker) = state.worker_child.lock().unwrap().take() {
                     worker.kill();
                 }
+                *state.port.lock().unwrap() = None;
+                let _ = window.close();
             }
         })
         .run(tauri::generate_context!())

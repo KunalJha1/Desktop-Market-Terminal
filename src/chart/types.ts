@@ -7,11 +7,12 @@ export interface OHLCVBar {
   volume: number;
 }
 
-export type Timeframe = '1m' | '5m' | '15m' | '30m' | '1H' | '4H' | '1D' | '1W' | '1M';
+export type PresetTimeframe = '1m' | '2m' | '3m' | '5m' | '10m' | '15m' | '30m' | '1H' | '2H' | '3H' | '4H' | '1D' | '3D' | '1W' | '1M' | '3M' | '6M' | '12M';
+export type Timeframe = PresetTimeframe | (string & {});
 
 export type ChartType = 'candlestick' | 'heikin-ashi' | 'volume-weighted' | 'bar' | 'line' | 'area';
 
-export type YScaleMode = 'auto' | 'log';
+export type YScaleMode = 'auto' | 'log' | 'manual';
 
 export type ChartBrandingMode = 'none' | 'fullLogo' | 'icon';
 export type DrawingTool = 'none' | 'trendline' | 'fibRetracement' | 'brush' | 'text';
@@ -113,6 +114,7 @@ export interface SubPaneLayout {
   indicatorIds: string[];
   top: number;
   height: number;
+  yScaleMode: YScaleMode;
 }
 
 export interface ScriptPlot {

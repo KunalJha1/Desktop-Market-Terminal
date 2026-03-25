@@ -1,4 +1,5 @@
 import React, { Suspense, useState, useRef, useEffect } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { appWindow } from "@tauri-apps/api/window";
 import { checkUpdate } from "@tauri-apps/api/updater";
 import { useAuth } from "../lib/auth";
@@ -50,11 +51,18 @@ export default function Dashboard() {
       : "offline" as const;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [appVersion, setAppVersion] = useState("");
 
   useEffect(() => {
     checkUpdate()
       .then(({ shouldUpdate }) => { if (shouldUpdate) setUpdateAvailable(true); })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(""));
   }, []);
   const user = session?.user;
   const firstName =
@@ -98,24 +106,7 @@ export default function Dashboard() {
             <p className="text-[11px] font-light tracking-wide text-white/40">
               Hi, <span className="text-white/70">{firstName}</span>
             </p>
-            <button
-              onClick={() => setSettingsOpen(true)}
-              className="relative text-[11px] font-light text-white/30 transition-all duration-100 hover:text-white/80"
-            >
-              Settings
-              {updateAvailable && (
-                <span className="absolute -right-1.5 -top-0.5 h-[5px] w-[5px] rounded-full bg-red" />
-              )}
-            </button>
-          </div>
-        )}
-
-        <div className="flex items-center gap-3" data-no-drag>
-          {isMac && (
-            <>
-              <p className="text-[11px] font-light tracking-wide text-white/40">
-                Hi, <span className="text-white/70">{firstName}</span>
-              </p>
+            <div className="flex items-center gap-2">
               <button
                 onClick={() => setSettingsOpen(true)}
                 className="relative text-[11px] font-light text-white/30 transition-all duration-100 hover:text-white/80"
@@ -125,6 +116,43 @@ export default function Dashboard() {
                   <span className="absolute -right-1.5 -top-0.5 h-[5px] w-[5px] rounded-full bg-red" />
                 )}
               </button>
+              {appVersion ? (
+                <span
+                  className="font-mono text-[10px] tabular-nums text-white/25"
+                  title="App version"
+                >
+                  v{appVersion}
+                </span>
+              ) : null}
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center gap-3" data-no-drag>
+          {isMac && (
+            <>
+              <p className="text-[11px] font-light tracking-wide text-white/40">
+                Hi, <span className="text-white/70">{firstName}</span>
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSettingsOpen(true)}
+                  className="relative text-[11px] font-light text-white/30 transition-all duration-100 hover:text-white/80"
+                >
+                  Settings
+                  {updateAvailable && (
+                    <span className="absolute -right-1.5 -top-0.5 h-[5px] w-[5px] rounded-full bg-red" />
+                  )}
+                </button>
+                {appVersion ? (
+                  <span
+                    className="font-mono text-[10px] tabular-nums text-white/25"
+                    title="App version"
+                  >
+                    v{appVersion}
+                  </span>
+                ) : null}
+              </div>
             </>
           )}
           <WindowControls />

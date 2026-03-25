@@ -944,7 +944,7 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
             Manage
           </button>
           <ComponentLinkMenu linkChannel={linkChannel} onSetLinkChannel={onSetLinkChannel} />
-          <button type="button" onClick={onClose} className="rounded-sm p-0.5 text-white/30 hover:bg-white/[0.06] hover:text-red">
+          <button type="button" onClick={onClose} className="rounded-sm p-0.5 text-white/70 hover:bg-white/[0.06] hover:text-red">
             <X className="h-2.5 w-2.5" strokeWidth={1.5} />
           </button>
         </div>

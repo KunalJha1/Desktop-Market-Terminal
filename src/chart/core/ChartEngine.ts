@@ -11,7 +11,7 @@ import type {
   DrawingShape,
   DrawingSelection,
 } from '../types';
-import { COLORS, PRICE_AXIS_WIDTH, TIME_AXIS_HEIGHT, SUB_PANE_HEIGHT, SUB_PANE_SEPARATOR, FONT_MONO_SMALL, VOLUME_PANE_RATIO, DEFAULT_BARS_VISIBLE, TIMEFRAME_MS } from '../constants';
+import { COLORS, PRICE_AXIS_WIDTH, TIME_AXIS_HEIGHT, SUB_PANE_HEIGHT, SUB_PANE_SEPARATOR, FONT_MONO_SMALL, VOLUME_PANE_RATIO, DEFAULT_BARS_VISIBLE, getTimeframeMs } from '../constants';
 import { Viewport } from './Viewport';
 import { Renderer } from './Renderer';
 import { ScaleY } from './ScaleY';
@@ -82,6 +82,7 @@ export class ChartEngine {
   private liveMode = false;
   private stopperPx = 0;
   private subPaneHeightOverrides: Map<string, number> = new Map();
+  private subPaneScaleModes: Map<string, YScaleMode> = new Map();
   private brandingMode: ChartBrandingMode = 'none';
   private brandingImage: HTMLImageElement | null = null;
   private symbolBrandingSymbol = '';
@@ -570,6 +571,15 @@ export class ChartEngine {
     this.markDirty();
   }
 
+  setSubPaneScaleMode(paneId: string, mode: YScaleMode) {
+    this.subPaneScaleModes.set(paneId, mode);
+    this.markDirty();
+  }
+
+  getSubPaneScaleMode(paneId: string): YScaleMode {
+    return this.subPaneScaleModes.get(paneId) ?? 'auto';
+  }
+
   /** Set result for a single script by id. Pass null to remove. */
   setScriptResult(id: string, result: ScriptResult | null) {
     if (result) {
@@ -625,6 +635,7 @@ export class ChartEngine {
         indicatorIds: pane.indicatorIds,
         top: currentTop + SUB_PANE_SEPARATOR,
         height: h,
+        yScaleMode: this.subPaneScaleModes.get(pane.paneId) ?? 'auto',
       });
       currentTop += h + SUB_PANE_SEPARATOR;
     }
@@ -637,6 +648,7 @@ export class ChartEngine {
         indicatorIds: [key],
         top: currentTop + SUB_PANE_SEPARATOR,
         height: h,
+        yScaleMode: this.subPaneScaleModes.get(key) ?? 'auto',
       });
       currentTop += h + SUB_PANE_SEPARATOR;
     }
@@ -823,9 +835,52 @@ export class ChartEngine {
       this.renderer.line(0, pane.top, chartAreaWidth, pane.top, COLORS.border);
     }
 
+    // Last price label on y-axis (persistent, colored by day direction)
+    this.renderLastPriceLabel();
+
     // Crosshair & tooltip (with indicator labels)
     this.crosshair.render(this.renderer, this.viewport, this.scaleX, this.width, this.height);
     this.tooltip.render(this.renderer, this.viewport, this.crosshair.hit);
+  }
+
+  private renderLastPriceLabel() {
+    if (this.bars.length === 0) return;
+    const lastBar = this.bars[this.bars.length - 1];
+    const lastPrice = lastBar.close;
+
+    const pixelY = this.viewport.priceToPixelY(lastPrice);
+    // Clamp so the label stays within the chart area
+    if (pixelY < this.viewport.chartTop || pixelY > this.viewport.chartTop + this.viewport.chartHeight) return;
+
+    // Determine day direction: find first bar of the same calendar day as the last bar
+    const tf = this.scaleX.timeframe;
+    let dayOpen: number;
+    if (tf === '1D' || tf === '1W' || tf === '1M') {
+      // For daily+ timeframes, compare to the last bar's own open
+      dayOpen = lastBar.open;
+    } else {
+      const lastDate = new Date(lastBar.time);
+      const lastDay = `${lastDate.getUTCFullYear()}-${lastDate.getUTCMonth()}-${lastDate.getUTCDate()}`;
+      let firstBarOfDay = lastBar;
+      for (let i = this.bars.length - 1; i >= 0; i--) {
+        const d = new Date(this.bars[i].time);
+        const day = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+        if (day !== lastDay) break;
+        firstBarOfDay = this.bars[i];
+      }
+      dayOpen = firstBarOfDay.open;
+    }
+
+    const isUp = lastPrice >= dayOpen;
+    const boxColor = isUp ? COLORS.green : COLORS.red;
+    const priceAxisX = this.width - PRICE_AXIS_WIDTH;
+
+    // Draw a dashed line across the chart area at last price
+    this.renderer.dashedLine(this.viewport.chartLeft, pixelY, priceAxisX, pixelY, isUp ? 'rgba(0,200,83,0.35)' : 'rgba(255,61,113,0.35)', 1, [4, 4]);
+
+    // Draw the price box on the y-axis (same layout as crosshair label)
+    this.renderer.rect(priceAxisX, pixelY - 10, PRICE_AXIS_WIDTH, 20, boxColor);
+    this.renderer.text(lastPrice.toFixed(2), priceAxisX + 6, pixelY, '#FFFFFF', 'left');
   }
 
   private renderSessionHighlights() {
@@ -840,7 +895,7 @@ export class ChartEngine {
     const chartTop = this.viewport.chartTop;
     const chartHeight = this.viewport.chartHeight;
     const halfBar = this.viewport.barWidth / 2;
-    const barDurationMs = TIMEFRAME_MS[tf] ?? TIMEFRAME_MS['1m'];
+    const barDurationMs = getTimeframeMs(tf);
 
     type Session = 'pre' | 'post' | null;
     let runSession: Session = null;
@@ -1003,8 +1058,8 @@ export class ChartEngine {
       const start = Math.max(0, Math.floor(this.viewport.startIndex));
       const end = Math.min(this.bars.length, Math.ceil(this.viewport.endIndex));
 
-      const paneTop = this.viewport.chartTop + this.viewport.chartHeight * 0.67;
-      const paneHeight = this.viewport.chartHeight * 0.3;
+      const paneTop = this.viewport.chartTop + this.viewport.chartHeight * 0.82;
+      const paneHeight = this.viewport.chartHeight * 0.15;
 
       const fakePaneLayout = {
         paneId: 'main',
@@ -1484,7 +1539,7 @@ export class ChartEngine {
       .map((ind) => {
         const meta = indicatorRegistry[ind.name];
         if (!meta) return null;
-        if (ind.name === 'Technical Score') {
+        if (ind.name === 'Technical Score' || ind.name === 'RSI') {
           return { ind, meta, min: 0, max: 100 };
         }
 
@@ -1522,8 +1577,22 @@ export class ChartEngine {
     }
 
     const primary = ranges[0];
-    this.scaleY.renderSubPane(this.renderer, pane.top, pane.height, primary.min, primary.max, this.width);
+    const paneScaleMode = this.subPaneScaleModes.get(pane.paneId) ?? 'auto';
+    this.scaleY.renderSubPane(this.renderer, pane.top, pane.height, primary.min, primary.max, this.width, paneScaleMode);
     this.renderer.textSmall(ranges.map(({ meta }) => meta.shortName).join(' + '), 4, pane.top + 12, COLORS.textMuted, 'left');
+
+    const makeValueToY = (min: number, max: number) => {
+      if (paneScaleMode === 'log' && min > 0 && max > 0) {
+        const logMin = Math.log10(min);
+        const logMax = Math.log10(max);
+        const logRange = logMax - logMin || 1;
+        return (value: number) => value > 0
+          ? pane.top + ((logMax - Math.log10(value)) / logRange) * pane.height
+          : pane.top + pane.height;
+      }
+      const range = max - min || 1;
+      return (value: number) => pane.top + ((max - value) / range) * pane.height;
+    };
 
     this.renderer.clip(0, pane.top, chartAreaWidth, pane.height, () => {
       if (ranges.length === 1) {
@@ -1549,10 +1618,10 @@ export class ChartEngine {
       }
 
       for (const { ind, min, max } of ranges) {
-        const range = max - min || 1;
+        const valueToY = makeValueToY(min, max);
         this.renderIndicatorSeries(
           ind,
-          (value) => pane.top + ((max - value) / range) * pane.height,
+          valueToY,
           pane.top,
           pane.top + pane.height,
           start,

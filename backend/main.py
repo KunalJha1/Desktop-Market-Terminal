@@ -591,7 +591,7 @@ def _enrich_with_valuations(payloads: list[dict], valuation_map: dict[str, dict]
 
 
 def _enrich_with_tech_scores(conn, payloads: list[dict]) -> None:
-    """Merge cached 1d/1w technical scores into snapshot payloads in-place."""
+    """Merge cached technical scores (all timeframes) into snapshot payloads in-place."""
     symbols = [p["symbol"] for p in payloads]
     if not symbols:
         return
@@ -599,19 +599,27 @@ def _enrich_with_tech_scores(conn, payloads: list[dict]) -> None:
     try:
         rows = conn.execute(
             f"""
-            SELECT symbol, score_1d, score_1w
+            SELECT symbol, score_1m, score_5m, score_15m, score_1h, score_4h,
+                   score_1d, score_1w
             FROM technical_scores
             WHERE symbol IN ({placeholders})
             """,
             symbols,
         ).fetchall()
-        score_map = {r[0]: (r[1], r[2]) for r in rows}
+        score_map = {r[0]: r[1:8] for r in rows}
     except Exception:
         score_map = {}
+    tf_keys = ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
     for p in payloads:
-        s1d, s1w = score_map.get(p["symbol"], (None, None))
-        p["techScore1d"] = s1d
-        p["techScore1w"] = s1w
+        tup = score_map.get(p["symbol"])
+        if tup is None:
+            p["techScores"] = {k: None for k in tf_keys}
+            p["techScore1d"] = None
+            p["techScore1w"] = None
+            continue
+        p["techScores"] = {tf_keys[i]: tup[i] for i in range(7)}
+        p["techScore1d"] = tup[5]
+        p["techScore1w"] = tup[6]
 
 
 def _format_option_expiration_label(expiration_ms: int) -> str:

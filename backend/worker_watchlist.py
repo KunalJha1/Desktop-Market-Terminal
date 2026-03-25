@@ -176,6 +176,43 @@ def yahoo_to_quote(symbol: str, data: dict) -> dict:
     }
 
 
+def _is_regular_market_hours() -> bool:
+    """Return True only during NYSE regular session (09:30–16:00 ET, Mon–Fri).
+
+    Pre-market, after-hours, overnight, and weekends all return False.
+    Uses the system clock converted to US/Eastern via UTC offset (no pytz required).
+    """
+    import datetime
+
+    # ET is UTC-5 (EST) or UTC-4 (EDT).  Use the fixed offsets: EST = -5, EDT = -4.
+    # A simple heuristic: US/Eastern observes DST from second Sunday of March
+    # through first Sunday of November.
+    utc_now = datetime.datetime.now(datetime.timezone.utc)
+
+    # Determine EST/EDT offset
+    year = utc_now.year
+    # Second Sunday of March
+    march_1 = datetime.datetime(year, 3, 1, tzinfo=datetime.timezone.utc)
+    dst_start = march_1 + datetime.timedelta(days=(6 - march_1.weekday()) % 7 + 7)
+    dst_start = dst_start.replace(hour=7)  # 02:00 ET = 07:00 UTC in EST
+    # First Sunday of November
+    nov_1 = datetime.datetime(year, 11, 1, tzinfo=datetime.timezone.utc)
+    dst_end = nov_1 + datetime.timedelta(days=(6 - nov_1.weekday()) % 7)
+    dst_end = dst_end.replace(hour=6)  # 02:00 ET = 06:00 UTC in EDT
+
+    et_offset = datetime.timedelta(hours=-4) if dst_start <= utc_now < dst_end else datetime.timedelta(hours=-5)
+    et_now = utc_now + et_offset
+
+    # Weekend check
+    if et_now.weekday() >= 5:
+        return False
+
+    # Regular session: 09:30–16:00 ET
+    market_open = et_now.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = et_now.replace(hour=16, minute=0, second=0, microsecond=0)
+    return market_open <= et_now < market_close
+
+
 def _load_finnhub_api_key(settings_path: Path = SETTINGS_PATH) -> str:
     try:
         with open(settings_path, encoding="utf-8") as f:
@@ -325,7 +362,7 @@ def fetch_universe_quotes_from_yahoo(symbols: List[str]) -> List[dict]:
                     quotes.append(quote)
                 _, _, market_cap = _extract_yahoo_valuation({}, data)
                 if market_cap:
-                    upsert_quote_valuation(sym, None, None, market_cap)
+                    upsert_quote_valuation(sym, None, None, market_cap, set_valuation_ts=False)
             else:
                 logger.warning("Yahoo returned no universe payload for %s", sym)
         except Exception as exc:
@@ -337,34 +374,84 @@ def fetch_universe_quotes_from_yahoo(symbols: List[str]) -> List[dict]:
 
 def fetch_watchlist_quotes_with_fallback(symbols: List[str]) -> tuple[str, List[dict]]:
     api_key = _load_finnhub_api_key()
-    if api_key:
+    regular_hours = _is_regular_market_hours()
+
+    if regular_hours:
+        # Regular hours: TWS already handled upstream; Finnhub → Yahoo
+        if api_key:
+            try:
+                quotes = fetch_quotes_from_finnhub(
+                    symbols,
+                    api_key=api_key,
+                    sleep_s=FINNHUB_WATCHLIST_SYMBOL_SLEEP_S,
+                    label="Finnhub watchlist",
+                )
+                return "finnhub", quotes
+            except Exception as exc:
+                logger.warning("Finnhub watchlist cycle failed, falling back to Yahoo: %s", exc)
+        return "yahoo", fetch_watchlist_quotes_from_yahoo(symbols)
+    else:
+        # Pre/after-market / overnight: TWS already handled upstream; Yahoo → Finnhub
+        logger.info("[Quote fallback] Outside regular hours — preferring Yahoo over Finnhub")
         try:
-            quotes = fetch_quotes_from_finnhub(
-                symbols,
-                api_key=api_key,
-                sleep_s=FINNHUB_WATCHLIST_SYMBOL_SLEEP_S,
-                label="Finnhub watchlist",
-            )
-            return "finnhub", quotes
+            quotes = fetch_watchlist_quotes_from_yahoo(symbols)
+            if quotes:
+                return "yahoo", quotes
         except Exception as exc:
-            logger.warning("Finnhub watchlist cycle failed, falling back to Yahoo: %s", exc)
-    return "yahoo", fetch_watchlist_quotes_from_yahoo(symbols)
+            logger.warning("Yahoo watchlist cycle failed outside regular hours: %s", exc)
+        if api_key:
+            try:
+                quotes = fetch_quotes_from_finnhub(
+                    symbols,
+                    api_key=api_key,
+                    sleep_s=FINNHUB_WATCHLIST_SYMBOL_SLEEP_S,
+                    label="Finnhub watchlist (extended-hours fallback)",
+                )
+                return "finnhub", quotes
+            except Exception as exc:
+                logger.warning("Finnhub watchlist fallback also failed: %s", exc)
+        return "yahoo", []
 
 
 def fetch_universe_quotes_with_fallback(symbols: List[str]) -> tuple[str, List[dict]]:
     api_key = _load_finnhub_api_key()
-    if api_key:
+    regular_hours = _is_regular_market_hours()
+
+    if regular_hours:
+        # Regular hours: TWS already handled upstream; Finnhub → Yahoo
+        if api_key:
+            try:
+                quotes = fetch_quotes_from_finnhub(
+                    symbols,
+                    api_key=api_key,
+                    sleep_s=FINNHUB_UNIVERSE_SYMBOL_SLEEP_S,
+                    label="Finnhub universe",
+                )
+                return "finnhub", quotes
+            except Exception as exc:
+                logger.warning("Finnhub universe cycle failed, falling back to Yahoo: %s", exc)
+        return "yahoo", fetch_universe_quotes_from_yahoo(symbols)
+    else:
+        # Pre/after-market / overnight: TWS already handled upstream; Yahoo → Finnhub
+        logger.info("[UniversePrice] Outside regular hours — preferring Yahoo over Finnhub")
         try:
-            quotes = fetch_quotes_from_finnhub(
-                symbols,
-                api_key=api_key,
-                sleep_s=FINNHUB_UNIVERSE_SYMBOL_SLEEP_S,
-                label="Finnhub universe",
-            )
-            return "finnhub", quotes
+            quotes = fetch_universe_quotes_from_yahoo(symbols)
+            if quotes:
+                return "yahoo", quotes
         except Exception as exc:
-            logger.warning("Finnhub universe cycle failed, falling back to Yahoo: %s", exc)
-    return "yahoo", fetch_universe_quotes_from_yahoo(symbols)
+            logger.warning("Yahoo universe cycle failed outside regular hours: %s", exc)
+        if api_key:
+            try:
+                quotes = fetch_quotes_from_finnhub(
+                    symbols,
+                    api_key=api_key,
+                    sleep_s=FINNHUB_UNIVERSE_SYMBOL_SLEEP_S,
+                    label="Finnhub universe (extended-hours fallback)",
+                )
+                return "finnhub", quotes
+            except Exception as exc:
+                logger.warning("Finnhub universe fallback also failed: %s", exc)
+        return "yahoo", []
 
 
 def refresh_watchlist_valuations_from_yahoo(symbols: List[str]) -> None:
@@ -734,8 +821,23 @@ def upsert_quote(q: dict) -> None:
     _upsert_market_snapshot(_snapshot_from_quote(q))
 
 
-def upsert_quote_valuation(symbol: str, trailing_pe: float | None, forward_pe: float | None, market_cap: float | None = None) -> None:
+def upsert_quote_valuation(
+    symbol: str,
+    trailing_pe: float | None,
+    forward_pe: float | None,
+    market_cap: float | None = None,
+    *,
+    set_valuation_ts: bool = True,
+) -> None:
+    """Upsert valuation fields.
+
+    set_valuation_ts=False should be used for market-cap-only writes (e.g. from
+    price/universe snapshots).  Keeping it False means valuation_updated_at stays
+    NULL until the dedicated summary_detail fetch (which fetches P/E) runs, so
+    get_stale_valuation_symbols will keep scheduling that fetch.
+    """
     now_ms = int(time.time() * 1000)
+    valuation_ts = now_ms if set_valuation_ts else None
     with sync_db_session() as conn:
         conn.execute(
             """
@@ -746,9 +848,9 @@ def upsert_quote_valuation(symbol: str, trailing_pe: float | None, forward_pe: f
                 trailing_pe = COALESCE(excluded.trailing_pe, watchlist_quotes.trailing_pe),
                 forward_pe = COALESCE(excluded.forward_pe, watchlist_quotes.forward_pe),
                 market_cap = COALESCE(excluded.market_cap, watchlist_quotes.market_cap),
-                valuation_updated_at = excluded.valuation_updated_at
+                valuation_updated_at = COALESCE(excluded.valuation_updated_at, watchlist_quotes.valuation_updated_at)
             """,
-            (symbol, trailing_pe, forward_pe, market_cap, now_ms, "yahoo", now_ms),
+            (symbol, trailing_pe, forward_pe, market_cap, valuation_ts, "yahoo", now_ms),
         )
 
 
@@ -1376,10 +1478,12 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                 await asyncio.sleep(FINNHUB_WATCHLIST_POLL_S)
                 continue
             try:
-                source = "Finnhub" if _load_finnhub_api_key() else "Yahoo"
+                _reg_hrs = _is_regular_market_hours()
+                source = ("Finnhub" if _load_finnhub_api_key() else "Yahoo") if _reg_hrs else "Yahoo"
                 start_msg = (
-                    f"[Quote fallback] Starting {source} refresh for {len(symbols)} symbols; "
-                    f"next cycle in {int(FINNHUB_WATCHLIST_POLL_S)}s"
+                    f"[Quote fallback] Starting {source} refresh for {len(symbols)} symbols"
+                    f" ({'regular' if _reg_hrs else 'extended'} hours)"
+                    f"; next cycle in {int(FINNHUB_WATCHLIST_POLL_S)}s"
                 )
                 print(start_msg, flush=True)
                 logger.info(start_msg)
@@ -1592,7 +1696,7 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                             )
                             if market_cap:
                                 await asyncio.to_thread(
-                                    upsert_quote_valuation, sym, None, None, market_cap
+                                    upsert_quote_valuation, sym, None, None, market_cap, set_valuation_ts=False
                                 )
                 except Exception as exc:
                     logger.warning("[UniverseYahoo] Batch %d failed: %s", i // batch_size, exc)
@@ -1665,12 +1769,14 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                 logger.info("[UniversePrice] TWS cycle complete: %d/%d symbols updated, next cycle in %ds",
                             fetched, len(queue), int(UNIVERSE_SNAPSHOT_CYCLE_PAUSE_S))
             else:
-                source_hint = "Finnhub" if _load_finnhub_api_key() else "Yahoo"
+                _reg_hrs = _is_regular_market_hours()
+                source_hint = ("Finnhub" if _load_finnhub_api_key() else "Yahoo") if _reg_hrs else "Yahoo"
                 logger.info(
-                    "[UniversePrice] Starting %s fallback cycle: %d symbols (skipping %d watchlist)",
+                    "[UniversePrice] Starting %s fallback cycle: %d symbols (skipping %d watchlist) [%s hours]",
                     source_hint,
                     len(queue),
                     len(watchlist_set),
+                    "regular" if _reg_hrs else "extended",
                 )
                 try:
                     selected_source, quotes = await asyncio.to_thread(

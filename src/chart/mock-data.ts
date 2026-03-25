@@ -1,5 +1,5 @@
 import type { OHLCVBar, Timeframe } from './types';
-import { TIMEFRAME_MS } from './constants';
+import { getTimeframeMs } from './constants';
 
 /**
  * Generate mock OHLCV data using geometric Brownian motion.
@@ -20,7 +20,7 @@ export function generateMockData(
 
   // Starting price varies by symbol
   const basePrice = 100 + (Math.abs(seed) % 400);
-  const dt = TIMEFRAME_MS[timeframe];
+  const dt = getTimeframeMs(timeframe);
   const isIntraday = dt < 86_400_000;
 
   // GBM parameters
@@ -72,7 +72,7 @@ export function generateMockData(
 }
 
 function getStartTime(timeframe: Timeframe, barCount: number): number {
-  const dt = TIMEFRAME_MS[timeframe];
+  const dt = getTimeframeMs(timeframe);
   const now = Date.now();
   return now - barCount * dt;
 }

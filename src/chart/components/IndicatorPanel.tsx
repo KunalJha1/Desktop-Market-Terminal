@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { indicatorRegistry } from '../indicators/registry';
+import { STRATEGY_KEYS } from '../indicators/strategyKeys';
 import type { ActiveIndicator } from '../types';
 import { Search, X, Check } from 'lucide-react';
 
@@ -11,17 +12,6 @@ interface IndicatorPanelProps {
   activeIndicators?: ActiveIndicator[];
   mode?: 'indicator' | 'strategy';
 }
-
-const STRATEGY_KEYS = new Set([
-  'RSI Strategy',
-  'Golden/Death Cross',
-  'EMA 9/14 Crossover',
-  'EMA 5/20 Crossover',
-  'DailyIQ Tech Score Signal',
-  'Market Sentiment Signal',
-  'MACD Crossover',
-  'ADL Crossover',
-]);
 
 const categories = [
   { key: 'overlay' as const, label: 'Overlays' },

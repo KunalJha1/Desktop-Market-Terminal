@@ -39,7 +39,7 @@ export default function ComponentLinkMenu({
           e.stopPropagation();
           setOpen((v) => !v);
         }}
-        className="flex items-center gap-1 rounded-sm p-0.5 text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/55"
+        className="flex items-center gap-1 rounded-sm p-0.5 text-white/70 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
         style={active ? { color: active.color } : undefined}
       >
         <Link2 className="h-2.5 w-2.5" strokeWidth={1.5} />

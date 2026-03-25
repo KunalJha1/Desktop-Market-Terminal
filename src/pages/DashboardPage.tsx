@@ -245,6 +245,7 @@ export default function DashboardPage() {
             onConfigChange={(cfg) =>
               updateComponent(activeTabId, comp.id, { config: cfg })
             }
+            onSymbolSelect={(sym) => handleSymbolSelect(comp, sym)}
           />
         );
       case "mini-heatmap":
