@@ -219,7 +219,7 @@ public/      Brand assets and symbol logos
 - Python 3.12 recommended
 - Interactive Brokers TWS or IB Gateway for live broker connectivity
 - Optional: Finnhub API key
-- Supabase project credentials for desktop authentication
+- Supabase project credentials for desktop authentication (not required for .exe download)
 
 ### Install
 
