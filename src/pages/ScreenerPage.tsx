@@ -8,10 +8,15 @@ import {
 } from "react";
 import { useTws } from "../lib/tws";
 import { useWatchlist } from "../lib/watchlist";
-import { SEARCHABLE_SYMBOLS, formatMarketCap } from "../lib/market-data";
+import { SEARCHABLE_SYMBOLS, formatMarketCap, filterRankSymbolSearch } from "../lib/market-data";
 import CircularGauge from "../components/CircularGauge";
 
 import { LOGO_SYMBOLS } from "../lib/logo-symbols";
+import {
+  TA_SCORE_TF_LABELS,
+  TA_SCORE_TIMEFRAMES,
+  type TaScoreTimeframe,
+} from "../lib/ta-score-timeframes";
 
 const SymbolLogo = memo(function SymbolLogo({ symbol }: { symbol: string }) {
   const [failed, setFailed] = useState(false);
@@ -77,32 +82,54 @@ type SortKey =
   | "fpe"
   | "change"
   | "verdict"
-  | `tech_${TechTimeframe}`;
+  | `tech_${TaScoreTimeframe}`;
 
 type SortDir = "asc" | "desc";
 
 type FilterType =
   | "all"
   | "watchlist"
+  | "custom"
   | "mag7"
   | "movers"
   | "bullish"
   | "bearish";
 
-type TechTimeframe = "1d" | "1w" | "5m" | "15m" | "1h" | "4h";
+const SCREENER_CUSTOM_STORAGE_KEY = "dailyiq.screener.customSymbols";
+const CUSTOM_SYMBOL_INPUT_LIMIT = 100;
 
-const ALL_TIMEFRAMES: TechTimeframe[] = ["5m", "15m", "1h", "4h", "1d", "1w"];
-const DEFAULT_VISIBLE_TFS: TechTimeframe[] = ["1d", "1w"];
-const INTRADAY_TFS = new Set<TechTimeframe>(["5m", "15m", "1h", "4h"]);
+function loadStoredCustomSymbols(): string[] {
+  try {
+    const raw = localStorage.getItem(SCREENER_CUSTOM_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((x): x is string => typeof x === "string")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
 
-const TF_LABELS: Record<TechTimeframe, string> = {
-  "5m": "5M",
-  "15m": "15M",
-  "1h": "1H",
-  "4h": "4H",
-  "1d": "1D",
-  "1w": "1W",
-};
+function parseSymbolsFromInput(text: string, limit = CUSTOM_SYMBOL_INPUT_LIMIT): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of text.split(/[\s,;\n]+/)) {
+    const s = part.trim().toUpperCase();
+    if (!s || s.length > 12) continue;
+    if (!/^[A-Z0-9.\-]+$/.test(s)) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+const ALL_TIMEFRAMES: TaScoreTimeframe[] = [...TA_SCORE_TIMEFRAMES];
+const DEFAULT_VISIBLE_TFS: TaScoreTimeframe[] = ["5m", "15m"];
 
 const MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"];
 const VISIBLE_BATCH = 30;
@@ -194,8 +221,8 @@ const ScreenerTableRow = memo(function ScreenerTableRow({
   verdictScore,
 }: {
   row: ScreenerRow;
-  visibleTfs: TechTimeframe[];
-  getTechScoreForTf: (row: ScreenerRow, tf: TechTimeframe) => number | null;
+  visibleTfs: TaScoreTimeframe[];
+  getTechScoreForTf: (row: ScreenerRow, tf: TaScoreTimeframe) => number | null;
   verdictScore: number | null;
 }) {
   const isUp = (row.changePct ?? 0) >= 0;
@@ -204,18 +231,18 @@ const ScreenerTableRow = memo(function ScreenerTableRow({
   return (
     <tr className="border-b border-white/[0.04] transition-colors duration-[80ms] hover:bg-white/[0.03]">
       {/* Symbol */}
-      <td className="px-3 py-2">
+      <td className="w-[150px] max-w-[150px] px-3 py-2">
         <div className="flex items-center gap-2.5">
           <SymbolLogo symbol={row.symbol} />
-          <div className="min-w-0">
-            <p className="font-mono text-[12px] font-semibold leading-none text-white/90">
+          <div className="min-w-0 flex-1">
+            <p className="font-mono text-[15px] font-semibold leading-none text-white/90">
               {row.symbol}
             </p>
-            <p className="mt-0.5 truncate text-[10px] leading-none text-white/35">
+            <p className="mt-0.5 truncate text-[13px] leading-none text-white/35">
               {row.name}
             </p>
             {row.sector && (
-              <p className="mt-0.5 truncate text-[9px] leading-none text-white/20">
+              <p className="mt-0.5 truncate text-[12px] leading-none text-white/20">
                 {row.sector}
               </p>
             )}
@@ -224,27 +251,27 @@ const ScreenerTableRow = memo(function ScreenerTableRow({
       </td>
 
       {/* Market Cap */}
-      <td className="px-2 py-2 text-center font-mono text-[11px] text-white/60">
+      <td className="px-2 py-2 text-center font-mono text-[13px] text-white/60">
         {formatMarketCap(row.marketCap)}
       </td>
 
       {/* Trailing P/E */}
-      <td className="px-2 py-2 text-center font-mono text-[11px] text-white/60">
+      <td className="px-2 py-2 text-center font-mono text-[13px] text-white/60">
         {row.trailingPE != null ? row.trailingPE.toFixed(1) : "—"}
       </td>
 
       {/* Forward P/E */}
-      <td className="px-2 py-2 text-center font-mono text-[11px] text-white/60">
+      <td className="px-2 py-2 text-center font-mono text-[13px] text-white/60">
         {row.forwardPE != null ? row.forwardPE.toFixed(1) : "—"}
       </td>
 
       {/* Price / Change */}
       <td className="px-2 py-2 text-right">
-        <p className="font-mono text-[12px] font-medium text-white/90">
+        <p className="font-mono text-[15px] font-medium text-white/90">
           {row.last != null ? `$${row.last.toFixed(2)}` : "—"}
         </p>
         <p
-          className={`mt-0.5 font-mono text-[10px] ${
+          className={`mt-0.5 font-mono text-[13px] ${
             isUp ? "text-green" : "text-red"
           }`}
         >
@@ -257,7 +284,7 @@ const ScreenerTableRow = memo(function ScreenerTableRow({
       {/* 52W H/L */}
       <td className="px-2 py-2 text-center">
         {row.week52High != null || row.week52Low != null ? (
-          <div className="font-mono text-[10px] leading-relaxed text-white/50">
+          <div className="font-mono text-[12px] leading-relaxed text-white/50">
             <span className="text-white/25">H</span>{" "}
             {row.week52High != null ? `$${row.week52High.toFixed(2)}` : "—"}
             <span className="mx-1 text-white/15">|</span>
@@ -279,7 +306,7 @@ const ScreenerTableRow = memo(function ScreenerTableRow({
       {/* Verdict */}
       <td className="px-2 py-2" align="center">
         <span
-          className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold tracking-wide ${verdict.cls}`}
+          className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 font-mono text-[12px] font-semibold tracking-wide ${verdict.cls}`}
         >
           {verdict.label}
         </span>
@@ -303,13 +330,16 @@ export default function ScreenerPage() {
 
   // Filters & sorting
   const [filter, setFilter] = useState<FilterType>("all");
-  const [visibleTfs, setVisibleTfs] = useState<TechTimeframe[]>(DEFAULT_VISIBLE_TFS);
+  const [visibleTfs, setVisibleTfs] = useState<TaScoreTimeframe[]>(DEFAULT_VISIBLE_TFS);
   const [sortKey, setSortKey] = useState<SortKey>("verdict");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const searchRef = useRef<HTMLDivElement>(null);
+
+  const [customSymbols, setCustomSymbols] = useState<string[]>(loadStoredCustomSymbols);
+  const [customDraft, setCustomDraft] = useState("");
 
   // Virtual scroll
   const [visibleCount, setVisibleCount] = useState(VISIBLE_BATCH);
@@ -323,9 +353,13 @@ export default function ScreenerPage() {
 
     async function fetchTiles() {
       try {
-        const res = await fetch(
-          `http://127.0.0.1:${sidecarPort}/heatmap/sp500`,
-        );
+        const url =
+          filter === "custom"
+            ? `http://127.0.0.1:${sidecarPort}/heatmap/custom?symbols=${encodeURIComponent(
+                customSymbols.join(","),
+              )}`
+            : `http://127.0.0.1:${sidecarPort}/heatmap/sp500`;
+        const res = await fetch(url);
         if (!res.ok) return;
         const payload = await res.json();
         if (cancelled) return;
@@ -342,16 +376,35 @@ export default function ScreenerPage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [sidecarPort]);
+  }, [sidecarPort, filter, customSymbols]);
 
-  // Fetch detailed tech scores for watchlist symbols (all timeframes)
   useEffect(() => {
-    if (!sidecarPort || watchlistSymbols.length === 0) return;
+    if (!sidecarPort || filter !== "custom" || customSymbols.length === 0) return;
+    fetch(`http://127.0.0.1:${sidecarPort}/active-symbols`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbols: customSymbols }),
+    }).catch(() => {});
+  }, [sidecarPort, filter, customSymbols]);
+
+  const symbolsForScores = useMemo(() => {
+    if (filter === "custom") return customSymbols;
+    if (filter === "watchlist") return watchlistSymbols;
+    return tiles.map((tile) => tile.symbol);
+  }, [customSymbols, filter, tiles, watchlistSymbols]);
+
+  // Fetch detailed tech scores for the active screener universe
+  useEffect(() => {
+    if (!sidecarPort) return;
+    if (symbolsForScores.length === 0) {
+      setTechScoresMap(new Map());
+      return;
+    }
     let cancelled = false;
 
     async function fetchScores() {
       try {
-        const syms = watchlistSymbols.join(",");
+        const syms = symbolsForScores.join(",");
         const res = await fetch(
           `http://127.0.0.1:${sidecarPort}/technicals/scores?symbols=${syms}`,
         );
@@ -382,7 +435,7 @@ export default function ScreenerPage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [sidecarPort, watchlistSymbols]);
+  }, [sidecarPort, symbolsForScores]);
 
   // ── Click outside to close search ────────────────────────────────
 
@@ -420,18 +473,13 @@ export default function ScreenerPage() {
 
   const searchSuggestions = useMemo(() => {
     if (!searchQuery || searchQuery.length < 1) return [];
-    const q = searchQuery.toUpperCase();
-    return SEARCHABLE_SYMBOLS.filter(
-      (s) =>
-        s.symbol.includes(q) ||
-        s.name.toUpperCase().includes(q),
-    ).slice(0, 8);
+    return filterRankSymbolSearch(SEARCHABLE_SYMBOLS, searchQuery, { limit: 8 });
   }, [searchQuery]);
 
   // ── Resolve tech score for a row at a specific timeframe ─────────
 
   const getTechScoreForTf = useCallback(
-    (row: ScreenerRow, tf: TechTimeframe): number | null => {
+    (row: ScreenerRow, tf: TaScoreTimeframe): number | null => {
       const detailed = techScoresMap.get(row.symbol);
       if (detailed) {
         const val = detailed[tf as keyof TechScores];
@@ -532,7 +580,7 @@ export default function ScreenerPage() {
       }
       // tech_<tf> sort keys
       if (sortKey.startsWith("tech_")) {
-        const tf = sortKey.slice(5) as TechTimeframe;
+        const tf = sortKey.slice(5) as TaScoreTimeframe;
         va = getTechScoreForTf(a, tf) ?? -1;
         vb = getTechScoreForTf(b, tf) ?? -1;
         return (va - vb) * dir;
@@ -568,7 +616,7 @@ export default function ScreenerPage() {
     }
   };
 
-  const toggleTf = (tf: TechTimeframe) => {
+  const toggleTf = (tf: TaScoreTimeframe) => {
     setVisibleTfs((prev) => {
       if (prev.includes(tf)) {
         if (prev.length <= 1) return prev;
@@ -586,39 +634,53 @@ export default function ScreenerPage() {
     setSearchOpen(false);
   };
 
-  // Available timeframes depend on the filter
-  const availableTimeframes: TechTimeframe[] = useMemo(() => {
-    if (filter === "watchlist") return ALL_TIMEFRAMES;
-    return ["1d", "1w"];
-  }, [filter]);
-
-  // Strip intraday TFs when leaving watchlist mode
   useEffect(() => {
-    if (filter !== "watchlist") {
-      setVisibleTfs((prev) => {
-        const kept = prev.filter((tf) => !INTRADAY_TFS.has(tf));
-        return kept.length > 0 ? kept : ["1d"];
-      });
+    if (filter === "custom") {
+      setCustomDraft(customSymbols.join(", "));
     }
-  }, [filter]);
+  }, [filter, customSymbols]);
 
   // Reset visible count when filter/sort changes
   useEffect(() => {
     setVisibleCount(VISIBLE_BATCH);
-  }, [filter, sortKey, sortDir, selectedSymbol]);
+  }, [filter, sortKey, sortDir, selectedSymbol, customSymbols]);
+
+  const applyCustomUniverse = useCallback(() => {
+    const next = parseSymbolsFromInput(customDraft);
+    setCustomSymbols(next);
+    try {
+      localStorage.setItem(SCREENER_CUSTOM_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+    setSelectedSymbol(null);
+    setVisibleCount(VISIBLE_BATCH);
+  }, [customDraft]);
+
+  const clearCustomUniverse = useCallback(() => {
+    setCustomDraft("");
+    setCustomSymbols([]);
+    try {
+      localStorage.removeItem(SCREENER_CUSTOM_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+    setSelectedSymbol(null);
+    setVisibleCount(VISIBLE_BATCH);
+  }, []);
 
   // ── Render ───────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-[#0c0f14] text-white">
+    <div className="flex h-full flex-col overflow-hidden bg-base text-white">
       {/* Header bar */}
-      <div className="shrink-0 border-b border-white/[0.06] bg-[#0d0f13]">
-        <div className="flex h-9 items-center justify-between px-3">
+      <div className="shrink-0 border-b border-white/[0.06] bg-base">
+        <div className="flex h-11 items-center justify-between px-3">
           <div className="flex items-center gap-3">
-            <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-white">
+            <span className="font-mono text-[15px] font-semibold uppercase tracking-[0.18em] text-white">
               Market Screener
             </span>
-            <span className="font-mono text-[10px] text-white/50">
+            <span className="font-mono text-[13px] text-white/50">
               {loading ? "Loading..." : `${filtered.length} symbols`}
             </span>
           </div>
@@ -629,7 +691,7 @@ export default function ScreenerPage() {
               <input
                 type="text"
                 placeholder="Search symbol..."
-                className="h-6 w-44 rounded-input border border-white/[0.08] bg-white/[0.04] px-2 font-mono text-[11px] text-white/80 placeholder:text-white/20 focus:border-blue/40 focus:outline-none"
+                className="h-8 w-52 rounded-input border border-white/[0.08] bg-white/[0.04] px-3 font-mono text-[13px] text-white/80 placeholder:text-white/20 focus:border-blue/40 focus:outline-none"
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
@@ -652,7 +714,7 @@ export default function ScreenerPage() {
               {searchQuery && (
                 <button
                   onClick={clearSearch}
-                  className="ml-1 text-[10px] text-white/30 hover:text-white/60"
+                  className="ml-1 text-[13px] text-white/30 hover:text-white/60"
                 >
                   ✕
                 </button>
@@ -660,7 +722,7 @@ export default function ScreenerPage() {
             </div>
 
             {searchOpen && searchSuggestions.length > 0 && (
-              <div className="absolute right-0 top-full z-50 mt-1 w-64 overflow-hidden rounded border border-white/[0.08] bg-[#161b22] shadow-xl">
+              <div className="absolute right-0 top-full z-50 mt-1 w-64 overflow-hidden rounded border border-white/[0.08] bg-panel shadow-xl">
                 {searchSuggestions.map((s) => (
                   <button
                     key={s.symbol}
@@ -671,10 +733,10 @@ export default function ScreenerPage() {
                       setSearchOpen(false);
                     }}
                   >
-                    <span className="font-mono text-[11px] font-semibold text-white/80">
+                    <span className="font-mono text-[13px] font-semibold text-white/80">
                       {s.symbol}
                     </span>
-                    <span className="truncate text-[10px] text-white/35">
+                    <span className="truncate text-[12px] text-white/35">
                       {s.name}
                     </span>
                   </button>
@@ -692,6 +754,7 @@ export default function ScreenerPage() {
               [
                 ["all", "All"],
                 ["watchlist", "Watchlist"],
+                ["custom", "Custom"],
                 ["mag7", "MAG 7"],
                 ["movers", "Big Movers"],
                 ["bullish", "Bullish"],
@@ -704,7 +767,7 @@ export default function ScreenerPage() {
                   setFilter(key);
                   if (key === "movers") handleSort("change");
                 }}
-                className={`rounded-btn px-2 py-0.5 font-mono text-[10px] font-medium tracking-wide transition-colors ${
+                className={`rounded-btn px-3 py-1 font-mono text-[12px] font-medium tracking-wide transition-colors ${
                   filter === key
                     ? "bg-blue/20 text-blue"
                     : "text-white hover:bg-white/[0.06] hover:text-white"
@@ -719,39 +782,82 @@ export default function ScreenerPage() {
 
           {/* Tech timeframe multi-toggle */}
           <div className="flex items-center gap-1">
-            <span className="mr-1 text-[9px] uppercase tracking-[0.14em] text-white/50">
+            <span className="mr-1 text-[11px] uppercase tracking-[0.14em] text-white/50">
               Columns
             </span>
-            {availableTimeframes.map((tf) => {
+            {ALL_TIMEFRAMES.map((tf) => {
               const active = visibleTfs.includes(tf);
               return (
                 <button
                   key={tf}
                   onClick={() => toggleTf(tf)}
-                  className={`rounded-btn px-1.5 py-0.5 font-mono text-[10px] font-medium transition-colors ${
+                  className={`rounded-btn px-2.5 py-1 font-mono text-[12px] font-medium transition-colors ${
                     active
                       ? "bg-purple/20 text-purple"
                       : "text-white hover:bg-white/[0.06] hover:text-white"
                   }`}
                 >
-                  {TF_LABELS[tf]}
+                  {TA_SCORE_TF_LABELS[tf]}
                 </button>
               );
             })}
           </div>
         </div>
+
+        {filter === "custom" && (
+          <div className="flex flex-col gap-1.5 border-t border-white/[0.04] px-3 py-2">
+            <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-white/50">
+              Custom universe — comma, space, or newline (max {CUSTOM_SYMBOL_INPUT_LIMIT})
+            </span>
+            <div className="flex items-start gap-2">
+              <textarea
+                rows={2}
+                spellCheck={false}
+                className="min-h-[60px] flex-1 resize-y rounded-input border border-white/[0.08] bg-white/[0.04] px-3 py-2 font-mono text-[13px] text-white/80 placeholder:text-white/20 focus:border-blue/40 focus:outline-none"
+                placeholder="e.g. AAPL, MSFT, NVDA, SPY"
+                value={customDraft}
+                onChange={(e) => setCustomDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    applyCustomUniverse();
+                  }
+                }}
+              />
+              <div className="flex shrink-0 flex-col gap-1">
+                <button
+                  type="button"
+                  onClick={applyCustomUniverse}
+                  className="rounded-btn bg-blue/20 px-3 py-1.5 font-mono text-[12px] font-medium text-blue transition-colors hover:bg-blue/30"
+                >
+                  Apply
+                </button>
+                <button
+                  type="button"
+                  onClick={clearCustomUniverse}
+                  className="rounded-btn px-3 py-1.5 font-mono text-[12px] text-white/40 transition-colors hover:bg-white/[0.06] hover:text-white/70"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            <p className="font-mono text-[11px] text-white/25">
+              Symbols register with the data worker for quotes; rows show pending until data arrives.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Table */}
       <div className="flex-1 overflow-auto scrollbar-dark">
         <table className="w-full border-collapse">
-          <thead className="sticky top-0 z-10 bg-[#0d0f13]">
+          <thead className="sticky top-0 z-10 bg-base">
             <tr className="border-b border-white/[0.08]">
               <th
-                className="cursor-pointer px-3 py-2 text-left"
+                className="w-[150px] min-w-[150px] max-w-[150px] cursor-pointer px-3 py-2 text-left"
                 onClick={() => handleSort("symbol")}
               >
-                <span className="flex items-center font-mono text-[10px] uppercase tracking-[0.14em] text-white">
+                <span className="flex items-center font-mono text-[12px] uppercase tracking-[0.14em] text-white">
                   Symbol
                   <SortArrow active={sortKey === "symbol"} dir={sortDir} />
                 </span>
@@ -760,7 +866,7 @@ export default function ScreenerPage() {
                 className="cursor-pointer px-2 py-2 text-center"
                 onClick={() => handleSort("mcap")}
               >
-                <span className="inline-flex items-center font-mono text-[10px] uppercase tracking-[0.14em] text-white">
+                <span className="inline-flex items-center font-mono text-[12px] uppercase tracking-[0.14em] text-white">
                   Mkt Cap
                   <SortArrow active={sortKey === "mcap"} dir={sortDir} />
                 </span>
@@ -769,7 +875,7 @@ export default function ScreenerPage() {
                 className="cursor-pointer px-2 py-2 text-center"
                 onClick={() => handleSort("pe")}
               >
-                <span className="inline-flex items-center font-mono text-[10px] uppercase tracking-[0.14em] text-white">
+                <span className="inline-flex items-center font-mono text-[12px] uppercase tracking-[0.14em] text-white">
                   P/E
                   <SortArrow active={sortKey === "pe"} dir={sortDir} />
                 </span>
@@ -778,7 +884,7 @@ export default function ScreenerPage() {
                 className="cursor-pointer px-2 py-2 text-center"
                 onClick={() => handleSort("fpe")}
               >
-                <span className="inline-flex items-center font-mono text-[10px] uppercase tracking-[0.14em] text-white">
+                <span className="inline-flex items-center font-mono text-[12px] uppercase tracking-[0.14em] text-white">
                   Fwd P/E
                   <SortArrow active={sortKey === "fpe"} dir={sortDir} />
                 </span>
@@ -787,13 +893,13 @@ export default function ScreenerPage() {
                 className="cursor-pointer px-2 py-2 text-right"
                 onClick={() => handleSort("change")}
               >
-                <span className="inline-flex items-center font-mono text-[10px] uppercase tracking-[0.14em] text-white">
+                <span className="inline-flex items-center font-mono text-[12px] uppercase tracking-[0.14em] text-white">
                   Price / Chg
                   <SortArrow active={sortKey === "change"} dir={sortDir} />
                 </span>
               </th>
               <th className="px-2 py-2 text-center">
-                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-white">
+                <span className="font-mono text-[12px] uppercase tracking-[0.14em] text-white">
                   52W H / L
                 </span>
               </th>
@@ -805,8 +911,8 @@ export default function ScreenerPage() {
                   className="cursor-pointer px-1 py-2 text-center"
                   onClick={() => handleSort(`tech_${tf}`)}
                 >
-                  <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-white">
-                    {TF_LABELS[tf]}
+                  <span className="inline-flex items-center gap-1 font-mono text-[12px] uppercase tracking-[0.14em] text-white">
+                    {TA_SCORE_TF_LABELS[tf]}
                     <SortArrow active={sortKey === `tech_${tf}`} dir={sortDir} />
                   </span>
                 </th>
@@ -816,7 +922,7 @@ export default function ScreenerPage() {
                 className="cursor-pointer px-2 py-2 text-center"
                 onClick={() => handleSort("verdict")}
               >
-                <span className="inline-flex items-center font-mono text-[10px] uppercase tracking-[0.14em] text-white">
+                <span className="inline-flex items-center font-mono text-[12px] uppercase tracking-[0.14em] text-white">
                   Verdict
                   <SortArrow active={sortKey === "verdict"} dir={sortDir} />
                 </span>
@@ -845,7 +951,7 @@ export default function ScreenerPage() {
           <div className="py-3 text-center">
             <button
               onClick={() => setVisibleCount((p) => p + VISIBLE_BATCH)}
-              className="rounded-btn border border-white/[0.08] px-4 py-1 font-mono text-[10px] text-white/30 transition-colors hover:bg-white/[0.06] hover:text-white/60"
+              className="rounded-btn border border-white/[0.08] px-4 py-1.5 font-mono text-[12px] text-white/30 transition-colors hover:bg-white/[0.06] hover:text-white/60"
             >
               Load More ({filtered.length - visibleRows.length} remaining)
             </button>
@@ -854,11 +960,13 @@ export default function ScreenerPage() {
         <div ref={sentinelRef} style={{ height: 1 }} />
 
         {!loading && filtered.length === 0 && (
-          <div className="flex h-40 items-center justify-center">
-            <p className="font-mono text-[11px] text-white/20">
+          <div className="flex h-40 items-center justify-center px-4 text-center">
+            <p className="font-mono text-[13px] text-white/20">
               {selectedSymbol
                 ? `No data for ${selectedSymbol}`
-                : "No symbols match the current filter."}
+                : filter === "custom" && customSymbols.length === 0
+                  ? "Add tickers above and click Apply to run a custom screener."
+                  : "No symbols match the current filter."}
             </p>
           </div>
         )}

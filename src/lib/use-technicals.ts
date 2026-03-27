@@ -4,6 +4,22 @@ import type { Timeframe } from "../chart/types";
 
 const POLL_INTERVAL_MS = 60_000;
 
+export type TechScoreStatus =
+  | "ok"
+  | "insufficient_bars"
+  | "unsupported_timeframe"
+  | "error"
+  | null;
+
+export interface TechScoreCell {
+  score: number | null;
+  status: TechScoreStatus;
+  barCount: number | null;
+  requiredBars: number | null;
+}
+
+export type TechScoreMap = Map<string, Map<string, TechScoreCell>>;
+
 export function resolveTechnicalScoreTimeframe(
   timeframe: Timeframe,
 ): { requestTimeframe: string | null; label: string } {
@@ -33,15 +49,36 @@ export function resolveTechnicalScoreTimeframe(
   }
 }
 
+export function describeTechScoreCell(
+  timeframe: string,
+  cell: { score: number | null; status: string | null; barCount: number | null; requiredBars: number | null } | null | undefined,
+): string {
+  const prefix = `${timeframe} technical score`;
+  if (!cell) return `${prefix}: no data`;
+  if (typeof cell.score === "number") return `${prefix}: ${cell.score}`;
+  if (cell.status === "insufficient_bars") {
+    const bars = cell.barCount ?? 0;
+    const required = cell.requiredBars ?? 60;
+    return `${prefix}: not enough bars (${bars}/${required})`;
+  }
+  if (cell.status === "unsupported_timeframe") {
+    return `${prefix}: unsupported timeframe`;
+  }
+  if (cell.status === "error") {
+    return `${prefix}: unavailable`;
+  }
+  return `${prefix}: no data`;
+}
+
 /**
  * Polls `GET /technicals/scores` on the Python sidecar every 60s.
- * Returns a Map<symbol, Map<timeframe, score | null>>.
+ * Returns a Map<symbol, Map<timeframe, { score, status, ... }>>.
  */
 export function useTechScores(
   symbols: string[],
   timeframes: string[],
-): Map<string, Map<string, number | null>> {
-  const [scores, setScores] = useState<Map<string, Map<string, number | null>>>(new Map());
+): TechScoreMap {
+  const [scores, setScores] = useState<TechScoreMap>(new Map());
   const portRef = useRef<number | null>(null);
   const [portReady, setPortReady] = useState(false);
   const symbolsRef = useRef(symbols);
@@ -49,7 +86,6 @@ export function useTechScores(
   symbolsRef.current = symbols;
   timeframesRef.current = timeframes;
 
-  // Resolve sidecar port once
   useEffect(() => {
     invoke<number | null>("get_sidecar_port").then((p) => {
       portRef.current = p;
@@ -65,31 +101,46 @@ export function useTechScores(
 
     try {
       const res = await fetch(
-        `http://127.0.0.1:${port}/technicals/scores?symbols=${syms.join(",")}`,
+        `http://127.0.0.1:${port}/technicals/scores?symbols=${syms.join(",")}&timeframes=${tfs.join(",")}`,
       );
       if (!res.ok) return;
       const data = (await res.json()) as Array<Record<string, unknown>>;
 
-      const outer = new Map<string, Map<string, number | null>>();
-      // Initialize all symbols with nulls
+      const outer = new Map<string, Map<string, TechScoreCell>>();
       for (const sym of syms) {
-        const inner = new Map<string, number | null>();
-        for (const tf of tfs) inner.set(tf, null);
+        const inner = new Map<string, TechScoreCell>();
+        for (const tf of tfs) {
+          inner.set(tf, {
+            score: null,
+            status: null,
+            barCount: null,
+            requiredBars: null,
+          });
+        }
         outer.set(sym, inner);
       }
-      // Fill in actual scores
+
       for (const row of data) {
         const sym = row.symbol as string;
         const inner = outer.get(sym);
         if (!inner) continue;
         for (const tf of tfs) {
-          const val = row[tf];
-          if (typeof val === "number") inner.set(tf, val);
+          const score = typeof row[tf] === "number" ? (row[tf] as number) : null;
+          const statusValue = row[`status_${tf}`];
+          const barsValue = row[`bars_${tf}`];
+          const requiredValue = row[`required_bars_${tf}`];
+          inner.set(tf, {
+            score,
+            status: typeof statusValue === "string" ? (statusValue as TechScoreStatus) : (score !== null ? "ok" : null),
+            barCount: typeof barsValue === "number" ? barsValue : null,
+            requiredBars: typeof requiredValue === "number" ? requiredValue : null,
+          });
         }
       }
+
       setScores(outer);
     } catch {
-      // Sidecar not ready — silently return
+      // Sidecar not ready, or transient request failure.
     }
   }, []);
 
@@ -99,7 +150,6 @@ export function useTechScores(
     return () => clearInterval(id);
   }, [fetchScores]);
 
-  // Also refetch when symbols or timeframes change
   useEffect(() => {
     fetchScores();
   }, [symbols.join(","), timeframes.join(","), portReady, fetchScores]);

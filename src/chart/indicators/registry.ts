@@ -1,6 +1,33 @@
 import type { IndicatorMeta } from '../types';
 import { INDICATOR_COLORS } from '../constants';
 
+// ─── Built-in script sources (viewable / duplicatable by users) ───────────
+import smaScript from './scripts/sma.diq?raw';
+import emaScript from './scripts/ema.diq?raw';
+import emaRibbonScript from './scripts/emaRibbon.diq?raw';
+import bollingerScript from './scripts/bollinger.diq?raw';
+import vwapScript from './scripts/vwap.diq?raw';
+import envelopeScript from './scripts/envelope.diq?raw';
+import rsiScript from './scripts/rsi.diq?raw';
+import macdScript from './scripts/macd.diq?raw';
+import stochasticScript from './scripts/stochastic.diq?raw';
+import atrScript from './scripts/atr.diq?raw';
+import cciScript from './scripts/cci.diq?raw';
+import williamsRScript from './scripts/williamsR.diq?raw';
+import rocScript from './scripts/roc.diq?raw';
+import mfiScript from './scripts/mfi.diq?raw';
+import stochasticRsiScript from './scripts/stochasticRsi.diq?raw';
+import obvScript from './scripts/obv.diq?raw';
+import volumeScript from './scripts/volume.diq?raw';
+import adlScript from './scripts/adl.diq?raw';
+import supertrendScript from './scripts/supertrend.diq?raw';
+import linearRegressionScript from './scripts/linearRegression.diq?raw';
+import chopZoneScript from './scripts/chopZone.diq?raw';
+import crossoverStrategyScript from './scripts/crossoverStrategy.diq?raw';
+import ema520StrategyScript from './scripts/ema520Strategy.diq?raw';
+import rsiStrategyScript from './scripts/rsiStrategy.diq?raw';
+import macdCrossoverStrategyScript from './scripts/macdCrossoverStrategy.diq?raw';
+
 const C = INDICATOR_COLORS;
 
 export const indicatorRegistry: Record<string, IndicatorMeta> = {
@@ -13,6 +40,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'sma', label: 'SMA', color: C[0], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: smaScript,
+    isBuiltIn: true,
   },
 
   EMA: {
@@ -24,6 +53,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'ema', label: 'EMA', color: C[1], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: emaScript,
+    isBuiltIn: true,
   },
 
   'EMA Ribbon 5/20/200': {
@@ -37,6 +68,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'mid', label: 'EMA 20', color: C[4], style: 'line', lineWidth: 1.5 },
       { key: 'slow', label: 'EMA 200', color: C[6], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: emaRibbonScript,
+    isBuiltIn: true,
   },
 
   'Bollinger Bands': {
@@ -50,6 +83,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'upper', label: 'Upper', color: C[4], style: 'line', lineWidth: 1 },
       { key: 'lower', label: 'Lower', color: C[3], style: 'line', lineWidth: 1 },
     ],
+    scriptSource: bollingerScript,
+    isBuiltIn: true,
   },
 
   VWAP: {
@@ -61,6 +96,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'vwap', label: 'VWAP', color: C[4], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: vwapScript,
+    isBuiltIn: true,
   },
 
   Ichimoku: {
@@ -100,6 +137,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'upper', label: 'Upper', color: C[3], style: 'line', lineWidth: 1 },
       { key: 'lower', label: 'Lower', color: C[4], style: 'line', lineWidth: 1 },
     ],
+    scriptSource: envelopeScript,
+    isBuiltIn: true,
   },
 
   'Golden/Death Cross': {
@@ -114,6 +153,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'buy', label: 'BUY', color: C[3], style: 'markers' },
       { key: 'sell', label: 'SELL', color: C[4], style: 'markers' },
     ],
+    scriptSource: crossoverStrategyScript,
+    isBuiltIn: true,
   },
 
   'EMA 9/14 Crossover': {
@@ -128,6 +169,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'buy', label: 'BUY', color: C[3], style: 'markers' },
       { key: 'sell', label: 'SELL', color: C[4], style: 'markers' },
     ],
+    scriptSource: crossoverStrategyScript,
+    isBuiltIn: true,
   },
 
   'EMA 5/20 Crossover': {
@@ -142,6 +185,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'buy', label: 'BUY', color: C[3], style: 'markers' },
       { key: 'sell', label: 'SELL', color: C[4], style: 'markers' },
     ],
+    scriptSource: ema520StrategyScript,
+    isBuiltIn: true,
   },
 
   'DailyIQ Tech Score Signal': {
@@ -240,6 +285,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'buy', label: 'BUY', color: '#00C853', style: 'markers' },
       { key: 'sell', label: 'SELL', color: '#FF3D71', style: 'markers' },
     ],
+    scriptSource: macdCrossoverStrategyScript,
+    isBuiltIn: true,
   },
 
   'ADL Crossover': {
@@ -283,6 +330,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'buy', label: 'BUY', color: '#00C853', style: 'markers' },
       { key: 'sell', label: 'SELL', color: '#FF3D71', style: 'markers' },
     ],
+    scriptSource: rsiStrategyScript,
+    isBuiltIn: true,
   },
 
   RSI: {
@@ -299,6 +348,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'rsi', label: 'RSI', color: C[2], style: 'line', lineWidth: 1.5 },
       { key: 'ma', label: 'RSI MA', color: '#FF3D71', style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: rsiScript,
+    isBuiltIn: true,
   },
 
   MACD: {
@@ -312,6 +363,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'signal', label: 'Signal', color: '#FF3D71', style: 'line', lineWidth: 1.5 },
       { key: 'histogram', label: 'Histogram', color: C[3], style: 'histogram', lineWidth: 1 },
     ],
+    scriptSource: macdScript,
+    isBuiltIn: true,
   },
 
   Stochastic: {
@@ -324,6 +377,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'k', label: '%K', color: C[0], style: 'line', lineWidth: 1.5 },
       { key: 'd', label: '%D', color: C[6], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: stochasticScript,
+    isBuiltIn: true,
   },
 
   ATR: {
@@ -335,6 +390,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'atr', label: 'ATR', color: C[5], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: atrScript,
+    isBuiltIn: true,
   },
 
   CCI: {
@@ -346,6 +403,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'cci', label: 'CCI', color: C[2], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: cciScript,
+    isBuiltIn: true,
   },
 
   'Williams %R': {
@@ -357,6 +416,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'wr', label: '%R', color: C[7], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: williamsRScript,
+    isBuiltIn: true,
   },
 
   ROC: {
@@ -368,6 +429,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'roc', label: 'ROC', color: C[6], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: rocScript,
+    isBuiltIn: true,
   },
 
   MFI: {
@@ -379,6 +442,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'mfi', label: 'MFI', color: C[1], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: mfiScript,
+    isBuiltIn: true,
   },
 
   'Stochastic RSI': {
@@ -395,6 +460,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'stochRsi', label: 'Stoch RSI', color: C[6], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: stochasticRsiScript,
+    isBuiltIn: true,
   },
 
   'Bull Bear Power': {
@@ -427,6 +494,31 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'supertrend', label: 'Supertrend', color: C[3], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: supertrendScript,
+    isBuiltIn: true,
+  },
+
+  'Chop Zone': {
+    name: 'Chop Zone',
+    shortName: 'CZ',
+    category: 'oscillator',
+    defaultParams: { period: 30 },
+    paramLabels: { period: 'Length' },
+    paneRange: { min: 0, max: 1 },
+    hidePaneScaleControls: true,
+    outputs: [
+      { key: 'turquoise', label: 'Strong Bull', color: '#26C6DA', style: 'histogram', lineWidth: 1 },
+      { key: 'darkGreen', label: 'Bull', color: '#43A047', style: 'histogram', lineWidth: 1 },
+      { key: 'paleGreen', label: 'Mild Bull', color: '#A5D6A7', style: 'histogram', lineWidth: 1 },
+      { key: 'lime', label: 'Weak Bull', color: '#009688', style: 'histogram', lineWidth: 1 },
+      { key: 'darkRed', label: 'Strong Bear', color: '#D50000', style: 'histogram', lineWidth: 1 },
+      { key: 'red', label: 'Bear', color: '#E91E63', style: 'histogram', lineWidth: 1 },
+      { key: 'orange', label: 'Mild Bear', color: '#FF6D00', style: 'histogram', lineWidth: 1 },
+      { key: 'lightOrange', label: 'Weak Bear', color: '#FFB74D', style: 'histogram', lineWidth: 1 },
+      { key: 'yellow', label: 'Neutral', color: '#FDD835', style: 'histogram', lineWidth: 1 },
+    ],
+    scriptSource: chopZoneScript,
+    isBuiltIn: true,
   },
 
   'Linear Regression': {
@@ -443,6 +535,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'linearRegression', label: 'LinReg', color: C[7], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: linearRegressionScript,
+    isBuiltIn: true,
   },
 
   'Market Structure': {
@@ -517,6 +611,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'volume', label: 'Volume', color: C[5], style: 'histogram' },
     ],
+    scriptSource: volumeScript,
+    isBuiltIn: true,
   },
 
   ADL: {
@@ -529,6 +625,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'adl', label: 'ADL', color: '#00C853', style: 'line', lineWidth: 1.5 },
       { key: 'sma', label: 'ADL SMA', color: '#FF3D71', style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: adlScript,
+    isBuiltIn: true,
   },
 
   OBV: {
@@ -540,6 +638,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'obv', label: 'OBV', color: C[5], style: 'line', lineWidth: 1.5 },
     ],
+    scriptSource: obvScript,
+    isBuiltIn: true,
   },
 
   'Volume Profile': {

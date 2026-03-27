@@ -142,6 +142,78 @@ export interface SymbolEntry {
   name: string;
   sector: string;
   industry: string;
+  /** S&P 500 index weight from tickers.json — cap-weight proxy for ranking */
+  indexWeight?: number;
+}
+
+export interface SymbolSearchOptions {
+  limit?: number;
+  /** When true, sector/industry substring matches rank after symbol and name */
+  includeSectorIndustry?: boolean;
+  excludeSymbol?: string;
+}
+
+function symbolSearchMatchTier(entry: SymbolEntry, q: string, includeSectorIndustry: boolean): number | null {
+  const sym = entry.symbol.toLowerCase();
+  const nm = entry.name.toLowerCase();
+  if (sym === q) return 0;
+  if (sym.startsWith(q)) return 1;
+  if (sym.includes(q)) return 2;
+  if (nm.startsWith(q)) return 3;
+  if (nm.includes(q)) return 4;
+  if (includeSectorIndustry) {
+    const sec = entry.sector.toLowerCase();
+    const ind = entry.industry.toLowerCase();
+    if (sec.includes(q) || ind.includes(q)) return 5;
+  }
+  return null;
+}
+
+/**
+ * Filter symbol entries by query.
+ * Ranking order:
+ * 1. exact symbol
+ * 2. symbol prefix
+ * 3. symbol substring
+ * 4. name prefix
+ * 5. name substring
+ * 6. optional sector/industry matches
+ *
+ * Within a tier, larger index weight ranks first as a market-cap proxy.
+ */
+export function filterRankSymbolSearch(
+  entries: readonly SymbolEntry[],
+  rawQuery: string,
+  options: SymbolSearchOptions = {},
+): SymbolEntry[] {
+  const q = rawQuery.trim().toLowerCase();
+  if (!q) return [];
+
+  const limit = options.limit ?? 12;
+  const includeSectorIndustry = options.includeSectorIndustry ?? false;
+  const exclude = options.excludeSymbol;
+
+  const weight = (s: SymbolEntry) => s.indexWeight ?? 0;
+
+  const matched: SymbolEntry[] = [];
+  for (const s of entries) {
+    if (exclude && s.symbol === exclude) continue;
+    const tier = symbolSearchMatchTier(s, q, includeSectorIndustry);
+    if (tier === null) continue;
+    matched.push(s);
+  }
+
+  matched.sort((a, b) => {
+    const ta = symbolSearchMatchTier(a, q, includeSectorIndustry)!;
+    const tb = symbolSearchMatchTier(b, q, includeSectorIndustry)!;
+    if (ta !== tb) return ta - tb;
+    const wa = weight(a);
+    const wb = weight(b);
+    if (wb !== wa) return wb - wa;
+    return a.symbol.localeCompare(b.symbol);
+  });
+
+  return matched.slice(0, limit);
 }
 
 export const ALL_SYMBOLS: SymbolEntry[] = [
@@ -153,7 +225,7 @@ export const ALL_SYMBOLS: SymbolEntry[] = [
   { symbol: "GOOG", name: "Alphabet Inc. CL C", sector: "Communication Services", industry: "Internet Content" },
   { symbol: "META", name: "Meta Platforms Inc.", sector: "Communication Services", industry: "Internet Content" },
   { symbol: "TSLA", name: "Tesla Inc.", sector: "Consumer Cyclical", industry: "Auto Manufacturers" },
-  { symbol: "BRK.B", name: "Berkshire Hathaway B", sector: "Financial Services", industry: "Insurance" },
+  { symbol: "BRK B", name: "Berkshire Hathaway B", sector: "Financial Services", industry: "Insurance" },
   { symbol: "UNH", name: "UnitedHealth Group", sector: "Healthcare", industry: "Healthcare Plans" },
   { symbol: "LLY", name: "Eli Lilly & Co.", sector: "Healthcare", industry: "Drug Manufacturers" },
   { symbol: "JPM", name: "JPMorgan Chase & Co.", sector: "Financial Services", industry: "Banks" },
@@ -231,6 +303,13 @@ export const ALL_SYMBOLS: SymbolEntry[] = [
  * ALL_SYMBOLS entries take priority for duplicates.
  */
 export const SEARCHABLE_SYMBOLS: SymbolEntry[] = (() => {
+  const weightBySymbol = new Map(
+    tickersJson.companies.map((c) => [c.symbol, typeof c.sp500_weight === "number" ? c.sp500_weight : 0]),
+  );
+  const withWeight = (e: SymbolEntry): SymbolEntry => ({
+    ...e,
+    indexWeight: weightBySymbol.get(e.symbol) ?? e.indexWeight ?? 0,
+  });
   const seen = new Set(ALL_SYMBOLS.map((s) => s.symbol));
   const fromTickers: SymbolEntry[] = tickersJson.companies
     .filter((c) => !seen.has(c.symbol))
@@ -239,8 +318,9 @@ export const SEARCHABLE_SYMBOLS: SymbolEntry[] = (() => {
       name: c.name,
       sector: c.sector || "",
       industry: c.industry || "",
+      indexWeight: typeof c.sp500_weight === "number" ? c.sp500_weight : 0,
     }));
-  return [...ALL_SYMBOLS, ...fromTickers];
+  return [...ALL_SYMBOLS.map(withWeight), ...fromTickers];
 })();
 
 /** Fast lookup by symbol */

@@ -1,0 +1,6 @@
+//@version=1
+indicator("Rate of Change", overlay=false)
+length = input.int(10, "Length")
+roc = 100 * (close - close[length]) / close[length]
+plot(roc, "ROC", color=#F59E0B)
+hline(0, color=#484F58, style=dashed)

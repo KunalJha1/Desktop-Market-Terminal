@@ -4,10 +4,10 @@ import { X, GripVertical, Settings } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
 import { getChannelById } from "../lib/link-channels";
 import { linkBus } from "../lib/link-bus";
-import { getSymbolName, SEARCHABLE_SYMBOLS, getEtfInfo } from "../lib/market-data";
+import { getSymbolName, SEARCHABLE_SYMBOLS, getEtfInfo, filterRankSymbolSearch } from "../lib/market-data";
 import type { Quote, EtfHolding } from "../lib/market-data";
 import { useWatchlistData, type SymbolStatus } from "../lib/use-market-data";
-import { useTechScores } from "../lib/use-technicals";
+import { describeTechScoreCell, useTechScores } from "../lib/use-technicals";
 import { useIndicatorValues } from "../lib/use-indicators";
 import { useWatchlist } from "../lib/watchlist";
 import {
@@ -1259,7 +1259,7 @@ export default function WatchlistCard({
                     return (
                       <div
                         key={colId}
-                        className={`relative min-w-0 select-none truncate px-1.5 text-[9px] font-medium uppercase tracking-wider cursor-grab transition-colors duration-75 ${
+                        className={`relative min-w-0 select-none truncate px-1.5 text-[10px] font-medium uppercase tracking-wider cursor-grab transition-colors duration-75 ${
                           sortCol === col.key ? "text-white" : "text-white hover:text-white"
                         } ${borderClass} ${isDragging ? "opacity-40" : ""}`}
                         style={{ textAlign: col.align }}
@@ -1285,7 +1285,7 @@ export default function WatchlistCard({
                         {editingHeaderKey === col.key ? (
                           <input
                             autoFocus
-                            className="w-full bg-transparent text-[9px] font-medium uppercase tracking-wider text-white/70 outline-none"
+                            className="w-full bg-transparent text-[10px] font-medium uppercase tracking-wider text-white/70 outline-none"
                             value={editingHeaderValue}
                             onChange={(e) => setEditingHeaderValue(e.target.value)}
                             onBlur={() => {
@@ -1310,7 +1310,7 @@ export default function WatchlistCard({
                           columnLabels[col.key] ?? col.label
                         )}
                         {editingHeaderKey !== col.key && sortCol === col.key && (
-                          <span className="ml-0.5 text-[8px] text-white/50">
+                          <span className="ml-0.5 text-[9px] text-white/50">
                             {sortDir === "asc" ? "\u25B2" : "\u25BC"}
                           </span>
                         )}
@@ -1329,7 +1329,7 @@ export default function WatchlistCard({
                     return (
                       <div
                         key={colId}
-                        className={`relative min-w-0 select-none truncate px-1.5 text-[9px] font-medium uppercase tracking-wider text-white cursor-grab transition-colors duration-75 hover:text-white ${borderClass} ${isDragging ? "opacity-40" : ""}`}
+                        className={`relative min-w-0 select-none truncate px-1.5 text-[10px] font-medium uppercase tracking-wider text-white cursor-grab transition-colors duration-75 hover:text-white ${borderClass} ${isDragging ? "opacity-40" : ""}`}
                         style={{
                           textAlign: "right",
                           color: headerTints.custom?.[col.id],
@@ -1365,7 +1365,7 @@ export default function WatchlistCard({
                     return (
                       <div
                         key={colId}
-                        className={`relative min-w-0 select-none truncate px-1 text-center text-[9px] font-medium uppercase tracking-wider text-white cursor-grab ${borderClass} ${isDragging ? "opacity-40" : ""}`}
+                        className={`relative min-w-0 select-none truncate px-1 text-center text-[10px] font-medium uppercase tracking-wider text-white cursor-grab ${borderClass} ${isDragging ? "opacity-40" : ""}`}
                         style={{
                           color: headerTints.ta?.[tf],
                           backgroundColor: headerTints.ta?.[tf] ? `${headerTints.ta[tf]}14` : undefined,
@@ -1743,7 +1743,7 @@ interface WatchlistRowProps {
   customColumns: CustomColumnDef[];
   customValues: Record<string, number | string | null>;
   taTimeframes: string[];
-  taScores: Record<string, number | null>;
+  taScores: Record<string, { score: number | null; status: string | null; barCount: number | null; requiredBars: number | null }>;
   gridTemplateColumns: string;
   showGrip: boolean;
   reserveGripSpace: boolean;
@@ -1772,7 +1772,7 @@ interface WatchlistPaneRowsProps {
   customColumns: CustomColumnDef[];
   customColValues: Record<string, Record<string, number | string | null>>;
   taTimeframes: string[];
-  techScores: Map<string, Map<string, number | null>>;
+  techScores: Map<string, Map<string, { score: number | null; status: string | null; barCount: number | null; requiredBars: number | null }>>;
   gridTemplateColumns: string;
   showGrip: boolean;
   insertBeforeIdx: number | null;
@@ -1847,7 +1847,11 @@ function WatchlistPaneRows({
               customValues={sym ? customColValues[sym] ?? {} : {}}
               taTimeframes={taTimeframes}
               taScores={
-                sym ? (Object.fromEntries(techScores.get(sym) ?? new Map()) as Record<string, number | null>) : {}
+                sym
+                  ? (Object.fromEntries(
+                      techScores.get(sym) ?? new Map(),
+                    ) as Record<string, { score: number | null; status: string | null; barCount: number | null; requiredBars: number | null }>)
+                  : {}
               }
               gridTemplateColumns={gridTemplateColumns}
               showGrip={showGrip && !!sym}
@@ -1913,16 +1917,11 @@ function WatchlistRow({
     }
   }, [forceEdit, symbol, onForceEditConsumed]);
 
-  // Filter suggestions — search symbol, name, sector, and industry
-  const q = editValue.toLowerCase();
   const suggestions = editValue
-    ? SEARCHABLE_SYMBOLS.filter(
-        (s) =>
-          s.symbol.toLowerCase().includes(q) ||
-          s.name.toLowerCase().includes(q) ||
-          s.sector.toLowerCase().includes(q) ||
-          s.industry.toLowerCase().includes(q),
-      ).slice(0, 8)
+    ? filterRankSymbolSearch(SEARCHABLE_SYMBOLS, editValue, {
+        limit: 8,
+        includeSectorIndustry: true,
+      })
     : [];
 
   // Reset highlight when suggestions change
@@ -2041,7 +2040,7 @@ function WatchlistRow({
                 }, 150);
               }}
               placeholder="Type symbol..."
-              className="w-full bg-transparent font-mono text-[10px] text-white/70 placeholder:text-white/15 focus:outline-none"
+              className="w-full bg-transparent font-mono text-[12px] text-white/70 placeholder:text-white/15 focus:outline-none"
             />
             {showSuggestions && suggestions.length > 0 && (
               <div
@@ -2064,19 +2063,19 @@ function WatchlistRow({
                         : "hover:bg-white/[0.06]"
                     }`}
                   >
-                    <span className={`w-12 shrink-0 font-mono text-[10px] font-medium ${
+                    <span className={`w-12 shrink-0 font-mono text-[11px] font-medium ${
                       i === highlightIdx ? "text-white/90" : "text-white/70"
                     }`}>
                       {s.symbol}
                     </span>
                     <span className="flex min-w-0 flex-1 flex-col">
-                      <span className={`truncate text-[9px] ${
+                      <span className={`truncate text-[10px] ${
                         i === highlightIdx ? "text-white/50" : "text-white/30"
                       }`}>
                         {s.name}
                       </span>
                       {s.sector && (
-                        <span className={`truncate text-[8px] ${
+                        <span className={`truncate text-[9px] ${
                           i === highlightIdx ? "text-white/30" : "text-white/15"
                         }`}>
                           {s.sector}{s.industry ? ` · ${s.industry}` : ""}
@@ -2099,7 +2098,7 @@ function WatchlistRow({
             }}
             className="flex h-full flex-1 items-center px-1.5"
           >
-            <span className="text-[10px] text-white/10">+</span>
+            <span className="text-[12px] text-white/10">+</span>
           </button>
         )}
       </div>
@@ -2148,7 +2147,7 @@ function WatchlistRow({
               }, 150);
             }}
             placeholder={symbol}
-            className="w-full bg-transparent font-mono text-[10px] text-white/70 placeholder:text-white/25 focus:outline-none"
+            className="w-full bg-transparent font-mono text-[12px] text-white/70 placeholder:text-white/25 focus:outline-none"
           />
           {showSuggestions && suggestions.length > 0 && (
             <div
@@ -2171,19 +2170,19 @@ function WatchlistRow({
                         : "hover:bg-white/[0.06]"
                     }`}
                   >
-                    <span className={`w-12 shrink-0 font-mono text-[10px] font-medium ${
+                    <span className={`w-12 shrink-0 font-mono text-[11px] font-medium ${
                       i === highlightIdx ? "text-white/90" : "text-white/70"
                     }`}>
                       {s.symbol}
                     </span>
                     <span className="flex min-w-0 flex-1 flex-col">
-                      <span className={`truncate text-[9px] ${
+                      <span className={`truncate text-[10px] ${
                         i === highlightIdx ? "text-white/50" : "text-white/30"
                       }`}>
                         {s.name}
                       </span>
                       {s.sector && (
-                        <span className={`truncate text-[8px] ${
+                        <span className={`truncate text-[9px] ${
                           i === highlightIdx ? "text-white/30" : "text-white/15"
                         }`}>
                           {s.sector}{s.industry ? ` · ${s.industry}` : ""}
@@ -2257,7 +2256,7 @@ function WatchlistRow({
             <div
               key={colId}
               ref={symbolCellRef}
-              className={`min-w-0 truncate px-1.5 font-mono text-[10px] font-medium ${borderClass} ${isError ? "text-red/80" : "text-white/80"}`}
+              className={`min-w-0 truncate px-1.5 font-mono text-[12px] font-medium ${borderClass} ${isError ? "text-red/80" : "text-white/80"}`}
               onMouseEnter={() => setHovered(true)}
               onMouseLeave={() => setHovered(false)}
             >
@@ -2267,21 +2266,21 @@ function WatchlistRow({
         }
         if (colId === "b:last") {
           return (
-            <div key={colId} className={`min-w-0 truncate px-1.5 text-right font-mono text-[10px] ${borderClass} ${isError ? "text-red/40" : "text-white/70"}`}>
+            <div key={colId} className={`min-w-0 truncate px-1.5 text-right font-mono text-[11px] ${borderClass} ${isError ? "text-red/40" : "text-white/70"}`}>
               {quote ? quote.last.toFixed(2) : isError ? "ERR" : "—"}
             </div>
           );
         }
         if (colId === "b:change") {
           return (
-            <div key={colId} className={`min-w-0 truncate px-1.5 text-right font-mono text-[10px] font-medium ${borderClass} ${isError ? "text-red/40" : quote ? changeColor(quote.change) : "text-white/30"}`}>
+            <div key={colId} className={`min-w-0 truncate px-1.5 text-right font-mono text-[11px] font-medium ${borderClass} ${isError ? "text-red/40" : quote ? changeColor(quote.change) : "text-white/30"}`}>
               {quote ? `${quote.change >= 0 ? "+" : ""}${quote.change.toFixed(2)}` : isError ? "—" : "—"}
             </div>
           );
         }
         if (colId === "b:changePct") {
           return (
-            <div key={colId} className={`min-w-0 truncate px-1.5 text-right font-mono text-[10px] font-medium ${borderClass} ${isError ? "text-red/40" : quote ? changeColor(quote.changePct) : "text-white/30"}`}>
+            <div key={colId} className={`min-w-0 truncate px-1.5 text-right font-mono text-[11px] font-medium ${borderClass} ${isError ? "text-red/40" : quote ? changeColor(quote.changePct) : "text-white/30"}`}>
               {quote ? `${quote.changePct >= 0 ? "+" : ""}${quote.changePct.toFixed(2)}%` : "—"}
             </div>
           );
@@ -2303,19 +2302,20 @@ function WatchlistRow({
             colorClass = (val as number) > 50 ? "text-green font-medium" : (val as number) < 50 ? "text-red font-medium" : "text-white/50";
           }
           return (
-            <div key={colId} className={`min-w-0 truncate px-1.5 font-mono text-[10px] ${isCrossover ? "text-center" : "text-right"} ${colorClass} ${borderClass}`}>
+            <div key={colId} className={`min-w-0 truncate px-1.5 font-mono text-[11px] ${isCrossover ? "text-center" : "text-right"} ${colorClass} ${borderClass}`}>
               {displayValue}
             </div>
           );
         }
         if (colId.startsWith("ta:")) {
           const tf = colId.slice(3);
-          const score = taScores[tf] ?? null;
+          const cell = taScores[tf] ?? null;
+          const score = cell?.score ?? null;
           return (
             <div
               key={colId}
-              className={`min-w-0 truncate px-1 text-center font-mono text-[10px] font-medium ${borderClass} ${score === null ? "text-white/15" : score > 60 ? "text-green" : score < 40 ? "text-red" : "text-white/40"}`}
-              title={`${tf} technical score: ${score ?? "no data"}`}
+              className={`min-w-0 truncate px-1 text-center font-mono text-[11px] font-medium ${borderClass} ${score === null ? "text-white/15" : score > 60 ? "text-green" : score < 40 ? "text-red" : "text-white/40"}`}
+              title={describeTechScoreCell(tf, cell)}
             >
               {score === null ? "—" : score}
             </div>
@@ -2336,17 +2336,17 @@ function WatchlistRow({
               transform: "translateY(-100%)",
             }}
           >
-            <p className={`font-mono text-[11px] font-semibold ${isError ? "text-red" : "text-white/90"}`}>
+            <p className={`font-mono text-[12px] font-semibold ${isError ? "text-red" : "text-white/90"}`}>
               {symbol}
             </p>
-            <p className="text-[9px] text-white/40">{name}</p>
+            <p className="text-[10px] text-white/40">{name}</p>
             {isError && (
-              <p className="mt-0.5 text-[8px] text-red/60">
+              <p className="mt-0.5 text-[9px] text-red/60">
                 Symbol not recognized — remove or replace
               </p>
             )}
             {!quote && !isError && (
-              <p className="mt-0.5 text-[8px] text-white/20">
+              <p className="mt-0.5 text-[9px] text-white/20">
                 Waiting for TWS data
               </p>
             )}

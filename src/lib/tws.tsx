@@ -81,6 +81,7 @@ export function TwsProvider({ children }: { children: ReactNode }) {
     accountId: "",
     clientId: 0,
     autoProbe: true,
+    intradayBackfillYears: 2,
     finnhubApiKey: "",
     playbookMemory: "",
     playbookMemoryEnabled: false,
@@ -133,8 +134,23 @@ export function TwsProvider({ children }: { children: ReactNode }) {
   const refreshSidecarPort = useCallback(async () => {
     try {
       const p = await invoke<number | null>("get_sidecar_port");
-      setSidecarPort(p ?? null);
-      setSidecarStatus(p ? "connected" : "disconnected");
+      if (!p) {
+        setSidecarPort(null);
+        setSidecarStatus("disconnected");
+        return;
+      }
+      // Verify the sidecar process is actually responding, not just that
+      // the port number is stored in Rust state (process may have crashed).
+      const res = await fetch(`http://127.0.0.1:${p}/health`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (res.ok) {
+        setSidecarPort(p);
+        setSidecarStatus("connected");
+      } else {
+        setSidecarPort(null);
+        setSidecarStatus("disconnected");
+      }
     } catch {
       setSidecarPort(null);
       setSidecarStatus("disconnected");

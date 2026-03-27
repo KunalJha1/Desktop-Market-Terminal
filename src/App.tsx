@@ -8,12 +8,14 @@ import SignIn from "./pages/auth/SignIn";
 import SignUp from "./pages/auth/SignUp";
 import Terms from "./pages/auth/Terms";
 import Dashboard from "./pages/Dashboard";
+import DetachedWindow from "./pages/DetachedWindow";
 import { LayoutProvider, useLayout } from "./lib/layout";
 import { TwsProvider } from "./lib/tws";
 import { TabProvider, useTabs } from "./lib/tabs";
 import { appWindow } from "@tauri-apps/api/window";
 import { WatchlistProvider, useWatchlist } from "./lib/watchlist";
 import { isTauriRuntime } from "./lib/platform";
+import { isDetachedWindow } from "./lib/detached";
 
 function SplashScreen({ label }: { label: string }) {
   return (
@@ -61,6 +63,19 @@ function CloseGuard() {
 
 function AppRoutes() {
   const { session, loading, authError } = useAuth();
+
+  // Detached tab windows skip the full layout/tab infrastructure
+  if (isDetachedWindow()) {
+    if (loading) return <SplashScreen label="Loading" />;
+    if (!session) return <SplashScreen label="Session expired — reopen from main window" />;
+    return (
+      <WatchlistProvider>
+        <TwsProvider>
+          <DetachedWindow />
+        </TwsProvider>
+      </WatchlistProvider>
+    );
+  }
 
   if (loading) return <SplashScreen label="Starting app" />;
 

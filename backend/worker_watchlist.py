@@ -21,14 +21,16 @@ from yahooquery import Ticker as YahooTicker
 
 from db_utils import sync_db_session
 from historical import (
-    BACKGROUND_INTRADAY_DURATION,
-    DEFAULT_DAILY_DURATION,
+    _ib_bar_size_setting,
     enqueue_historical_priority,
     get_historical_bars,
     invalidate_yahoo_cache,
     pop_historical_priority_requests,
     save_realtime_bar,
     save_realtime_bar_1m,
+    save_realtime_bar_5m,
+    save_realtime_bar_15m,
+    target_duration_for_bar_size,
 )
 from ibkr_utils import (
     IbkrClientIdManager,
@@ -48,10 +50,7 @@ logging.getLogger("ib_insync.client").setLevel(logging.CRITICAL)
 WATCHLIST_REFRESH_S = 2.0
 YAHOO_POLL_S = 600.0
 YAHOO_SYMBOL_SLEEP_S = 3.0
-YAHOO_VALUATION_CHECK_S = 300.0
 YAHOO_VALUATION_SYMBOL_SLEEP_S = 60.0
-YAHOO_VALUATION_MAX_AGE_S = 86400.0
-YAHOO_VALUATION_FAST_RETRY_S = 10.0   # Retry interval when market_cap still NULL for some symbols
 FINNHUB_WATCHLIST_POLL_S = 600.0
 FINNHUB_WATCHLIST_SYMBOL_SLEEP_S = 1.5
 FINNHUB_UNIVERSE_SYMBOL_SLEEP_S = 4.0
@@ -454,13 +453,17 @@ def fetch_universe_quotes_with_fallback(symbols: List[str]) -> tuple[str, List[d
         return "yahoo", []
 
 
-def refresh_watchlist_valuations_from_yahoo(symbols: List[str]) -> None:
+def refresh_watchlist_valuations_from_yahoo(
+    symbols: List[str],
+    log: logging.Logger | None = None,
+) -> None:
     """Fetch Yahoo valuation fields one symbol at a time with a long pause."""
+    _log = log if log is not None else logger
     total = len(symbols)
     for idx, sym in enumerate(symbols, start=1):
         msg = f"[Valuation loop] symbol {idx}/{total}: {sym}"
         print(msg, flush=True)
-        logger.info(msg)
+        _log.info(msg)
         try:
             ticker = YahooTicker(sym, asynchronous=False)
             summary_data = ticker.summary_detail
@@ -473,11 +476,11 @@ def refresh_watchlist_valuations_from_yahoo(symbols: List[str]) -> None:
             )
             upsert_quote_valuation(sym, trailing_pe, forward_pe, market_cap)
             cap_str = f"${market_cap/1e9:.2f}B" if market_cap else "N/A"
-            logger.info(
+            _log.info(
                 f"[Valuation] {sym}: P/E={trailing_pe}, Fwd P/E={forward_pe}, MktCap={cap_str}"
             )
         except Exception as exc:
-            logger.warning("Yahoo valuation fetch failed for %s: %s", sym, exc)
+            _log.warning("Yahoo valuation fetch failed for %s: %s", sym, exc)
         if idx < total:
             time.sleep(YAHOO_VALUATION_SYMBOL_SLEEP_S)
 
@@ -498,15 +501,21 @@ def _extract_yahoo_valuation(
 
 
 def load_enabled_symbols() -> list[str]:
+    symbols, _ = load_enabled_symbols_with_etfs()
+    return symbols
+
+
+def load_enabled_symbols_with_etfs() -> tuple[list[str], set[str]]:
     try:
         with open(TICKERS_PATH, encoding="utf-8") as f:
             data = json.load(f)
     except Exception as exc:
         logger.warning(f"Failed to load tickers.json: {exc}")
-        return []
+        return [], set()
 
     seen: set[str] = set()
     symbols: list[str] = []
+    etf_symbols: set[str] = set()
     for company in data.get("companies", []):
         if not company.get("enabled", True):
             continue
@@ -515,7 +524,9 @@ def load_enabled_symbols() -> list[str]:
             continue
         seen.add(symbol)
         symbols.append(symbol)
-    return symbols
+        if str(company.get("sector") or "").strip().upper() == "ETF":
+            etf_symbols.add(symbol)
+    return symbols, etf_symbols
 
 
 def _upsert_market_snapshot(snapshot: dict) -> None:
@@ -833,8 +844,7 @@ def upsert_quote_valuation(
 
     set_valuation_ts=False should be used for market-cap-only writes (e.g. from
     price/universe snapshots).  Keeping it False means valuation_updated_at stays
-    NULL until the dedicated summary_detail fetch (which fetches P/E) runs, so
-    get_stale_valuation_symbols will keep scheduling that fetch.
+    NULL until the dedicated valuation worker performs a full summary_detail fetch.
     """
     now_ms = int(time.time() * 1000)
     valuation_ts = now_ms if set_valuation_ts else None
@@ -852,28 +862,6 @@ def upsert_quote_valuation(
             """,
             (symbol, trailing_pe, forward_pe, market_cap, valuation_ts, "yahoo", now_ms),
         )
-
-
-def get_stale_valuation_symbols(symbols: List[str], max_age_s: float) -> List[str]:
-    if not symbols:
-        return []
-    cutoff_ms = int(time.time() * 1000 - (max_age_s * 1000))
-    placeholders = ", ".join("?" * len(symbols))
-    with sync_db_session() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT symbol
-            FROM watchlist_quotes
-            WHERE symbol IN ({placeholders})
-              AND (
-                  valuation_updated_at IS NULL
-                  OR valuation_updated_at < ?
-                  OR market_cap IS NULL
-              )
-            """,
-            (*symbols, cutoff_ms),
-        ).fetchall()
-    return [row[0] for row in rows]
 
 
 def count_null_market_cap_symbols(symbols: List[str]) -> int:
@@ -1040,9 +1028,23 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
     symbol_to_shard: Dict[str, int] = {}  # which shard owns each symbol's quote subscription
     watchlist: List[str] = []
     active_symbols: List[str] = []
-    universe_symbols: List[str] = load_enabled_symbols()
+    universe_symbols, universe_etf_symbols = load_enabled_symbols_with_etfs()
     rt_bars: Dict[str, object] = {}
     current_1m: Dict[str, dict] = {}
+    current_5m: Dict[str, dict] = {}
+    current_15m: Dict[str, dict] = {}
+    # Synthetic bar building from quote ticks (off-hours fallback)
+    last_rt_bar_time: Dict[str, float] = {}   # symbol -> time.time() of last on_rt_bar
+    synthetic_1m: Dict[str, dict] = {}         # symbol -> current accumulating 1m bar
+    synthetic_5m: Dict[str, dict] = {}         # symbol -> current accumulating 5m bar
+    synthetic_15m: Dict[str, dict] = {}        # symbol -> current accumulating 15m bar
+    SYNTHETIC_RT_STALE_S = 30.0                # seconds without RT bar before synthetic kicks in
+    # Dedicated IB connection for the active chart symbol (unthrottled)
+    chart_ib: IB = IB()
+    chart_ib_client_id: int = 0
+    chart_ib_connected: bool = False
+    chart_symbol: str | None = None   # symbol currently on the dedicated chart client
+    chart_ticker: Ticker | None = None
     symbol_states: Dict[str, str] = {}
     subscription_queue: deque[tuple[str, str, str]] = deque()
     queued_quote_symbols: set[str] = set()
@@ -1056,6 +1058,9 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
 
     def _quote_symbols() -> List[str]:
         return list(dict.fromkeys(watchlist + active_symbols))
+
+    def _valuation_symbols() -> List[str]:
+        return [sym for sym in _quote_symbols() if sym not in universe_etf_symbols]
 
     def _quote_symbol_set() -> set[str]:
         return set(_quote_symbols())
@@ -1116,6 +1121,12 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
         existing = rt_bars.pop(sym, None)
         queued_realtime_symbols.discard(sym)
         current_1m.pop(sym, None)
+        current_5m.pop(sym, None)
+        current_15m.pop(sym, None)
+        last_rt_bar_time.pop(sym, None)
+        synthetic_1m.pop(sym, None)
+        synthetic_5m.pop(sym, None)
+        synthetic_15m.pop(sym, None)
         if existing and _primary_ib().isConnected():
             try:
                 _primary_ib().cancelRealTimeBars(existing)
@@ -1134,6 +1145,27 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
         def on_rt_bar(bars_list, hasNewBar, s=sym):
             if not hasNewBar:
                 return
+            last_rt_bar_time[s] = time.time()
+
+            def _roll_bar(bucket_ms: int, store: Dict[str, dict], source_bar: dict) -> dict:
+                agg = store.get(s)
+                if not agg or agg.get("time") != bucket_ms:
+                    agg = {
+                        "time": bucket_ms,
+                        "open": float(source_bar["open"]),
+                        "high": float(source_bar["high"]),
+                        "low": float(source_bar["low"]),
+                        "close": float(source_bar["close"]),
+                        "volume": float(source_bar["volume"]),
+                    }
+                    store[s] = agg
+                else:
+                    agg["high"] = max(float(agg["high"]), float(source_bar["high"]))
+                    agg["low"] = min(float(agg["low"]), float(source_bar["low"]))
+                    agg["close"] = float(source_bar["close"])
+                    agg["volume"] = float(agg["volume"]) + float(source_bar["volume"])
+                return agg
+
             b = bars_list[-1]
             ts_ms = int(b.time.timestamp() * 1000)
             bar_5s = {
@@ -1147,26 +1179,44 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
             asyncio.create_task(asyncio.to_thread(save_realtime_bar, s, bar_5s))
 
             minute_start = ts_ms - (ts_ms % 60_000)
-            agg = current_1m.get(s)
-            if not agg or agg.get("time") != minute_start:
-                agg = {
-                    "time": minute_start,
-                    "open": float(b.open_),
-                    "high": float(b.high),
-                    "low": float(b.low),
-                    "close": float(b.close),
-                    "volume": float(b.volume),
-                }
-                current_1m[s] = agg
-            else:
-                agg["high"] = max(agg["high"], float(b.high))
-                agg["low"] = min(agg["low"], float(b.low))
-                agg["close"] = float(b.close)
-                agg["volume"] = float(agg["volume"]) + float(b.volume)
-            bar_1m = agg
+            bar_1m = _roll_bar(minute_start, current_1m, bar_5s)
             asyncio.create_task(asyncio.to_thread(save_realtime_bar_1m, s, bar_1m))
 
+            five_min_start = ts_ms - (ts_ms % 300_000)
+            bar_5m = _roll_bar(five_min_start, current_5m, bar_5s)
+            asyncio.create_task(asyncio.to_thread(save_realtime_bar_5m, s, bar_5m))
+
+            fifteen_min_start = ts_ms - (ts_ms % 900_000)
+            bar_15m = _roll_bar(fifteen_min_start, current_15m, bar_5s)
+            asyncio.create_task(asyncio.to_thread(save_realtime_bar_15m, s, bar_15m))
+
         bars.updateEvent += on_rt_bar
+
+    def _build_synthetic_bar_from_quote(symbol: str, quote: dict, bucket_ms: int, store: Dict[str, dict]) -> dict | None:
+        """Accumulate a quote tick into a synthetic OHLC bar for the given time bucket.
+
+        Uses 'last' price (real trades) with 'mid' as fallback for continuous updates.
+        Volume is always 0 since we can't derive per-bar volume from cumulative quote volume.
+        """
+        price = quote.get("last") or quote.get("mid")
+        if price is None:
+            return store.get(symbol)
+        agg = store.get(symbol)
+        if not agg or agg.get("time") != bucket_ms:
+            agg = {
+                "time": bucket_ms,
+                "open": float(price),
+                "high": float(price),
+                "low": float(price),
+                "close": float(price),
+                "volume": 0.0,
+            }
+            store[symbol] = agg
+        else:
+            agg["high"] = max(agg["high"], float(price))
+            agg["low"] = min(agg["low"], float(price))
+            agg["close"] = float(price)
+        return agg
 
     def subscribe_quote(sym: str) -> None:
         shard_idx = _shard_for_symbol(sym)
@@ -1187,6 +1237,66 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
         set_symbol_state(sym, STATE_SUBSCRIBED, "subscription active; waiting for first valid quote")
         set_symbol_state(sym, STATE_WAITING, "subscription active; waiting for first valid quote")
         logger.info("Watchlist subscribed %s (shard %d)", sym, shard_idx)
+
+    def cancel_chart_subscription() -> None:
+        nonlocal chart_symbol, chart_ticker
+        if chart_ticker is not None and chart_ib.isConnected():
+            try:
+                chart_ib.cancelMktData(chart_ticker.contract)
+            except Exception:
+                pass
+        chart_ticker = None
+        chart_symbol = None
+
+    def subscribe_chart_symbol(sym: str) -> None:
+        nonlocal chart_symbol, chart_ticker
+        cancel_chart_subscription()
+        if not chart_ib_connected or not chart_ib.isConnected():
+            logger.debug("Chart client not connected; skipping chart subscription for %s", sym)
+            return
+        contract = Stock(sym, "SMART", "USD")
+        ticker = chart_ib.reqMktData(contract, genericTickList="", snapshot=False)
+        ticker.updateEvent += lambda t, s=sym: asyncio.create_task(on_chart_tick(s, t))
+        chart_ticker = ticker
+        chart_symbol = sym
+        logger.info("Chart client subscribed %s (unthrottled)", sym)
+
+    async def on_chart_tick(symbol: str, ticker: Ticker):
+        """Unthrottled tick handler for the active chart symbol.
+
+        Runs on the dedicated chart IB client. Updates the shared quote store and
+        builds synthetic bars at full tick resolution (no 3s throttle).
+        """
+        q = ticker_to_quote(symbol, ticker)
+        if q is None:
+            return
+        if q["bid"] is None or q["ask"] is None:
+            hist_bid, hist_ask = await asyncio.to_thread(read_latest_bid_ask, symbol)
+            if q["bid"] is None and hist_bid is not None:
+                q["bid"] = hist_bid
+            if q["ask"] is None and hist_ask is not None:
+                q["ask"] = hist_ask
+            if q["bid"] is not None and q["ask"] is not None:
+                q["mid"] = round((q["bid"] + q["ask"]) / 2, 4)
+                q["spread"] = round(q["ask"] - q["bid"], 4)
+        asyncio.create_task(asyncio.to_thread(upsert_quote, q))
+
+        now = time.time()
+        last_rt = last_rt_bar_time.get(symbol, 0)
+        if (now - last_rt) > SYNTHETIC_RT_STALE_S:
+            ts_ms = int(now * 1000)
+            m_start = ts_ms - (ts_ms % 60_000)
+            bar_1m = _build_synthetic_bar_from_quote(symbol, q, m_start, synthetic_1m)
+            if bar_1m:
+                asyncio.create_task(asyncio.to_thread(save_realtime_bar_1m, symbol, bar_1m, True))
+            fm_start = ts_ms - (ts_ms % 300_000)
+            bar_5m = _build_synthetic_bar_from_quote(symbol, q, fm_start, synthetic_5m)
+            if bar_5m:
+                asyncio.create_task(asyncio.to_thread(save_realtime_bar_5m, symbol, bar_5m, True))
+            qm_start = ts_ms - (ts_ms % 900_000)
+            bar_15m = _build_synthetic_bar_from_quote(symbol, q, qm_start, synthetic_15m)
+            if bar_15m:
+                asyncio.create_task(asyncio.to_thread(save_realtime_bar_15m, symbol, bar_15m, True))
 
     async def on_tick(symbol: str, ticker: Ticker):
         now = time.time()
@@ -1220,6 +1330,42 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
             q["volume"],
         )
         asyncio.create_task(asyncio.to_thread(upsert_quote, q))
+
+        # Build synthetic bars from quote ticks when realtime bars aren't flowing.
+        # Activates during off-hours (reqRealTimeBars unavailable) or if RT bars stall.
+        # Only for active_symbols (symbols the user has open in a chart view).
+        if symbol in active_symbols:
+            last_rt = last_rt_bar_time.get(symbol, 0)
+            if (now - last_rt) > SYNTHETIC_RT_STALE_S:
+                was_synthetic = symbol in synthetic_1m
+                ts_ms = int(now * 1000)
+
+                m_start = ts_ms - (ts_ms % 60_000)
+                bar_1m = _build_synthetic_bar_from_quote(symbol, q, m_start, synthetic_1m)
+                if bar_1m:
+                    asyncio.create_task(asyncio.to_thread(save_realtime_bar_1m, symbol, bar_1m, True))
+
+                fm_start = ts_ms - (ts_ms % 300_000)
+                bar_5m = _build_synthetic_bar_from_quote(symbol, q, fm_start, synthetic_5m)
+                if bar_5m:
+                    asyncio.create_task(asyncio.to_thread(save_realtime_bar_5m, symbol, bar_5m, True))
+
+                qm_start = ts_ms - (ts_ms % 900_000)
+                bar_15m = _build_synthetic_bar_from_quote(symbol, q, qm_start, synthetic_15m)
+                if bar_15m:
+                    asyncio.create_task(asyncio.to_thread(save_realtime_bar_15m, symbol, bar_15m, True))
+
+                if not was_synthetic:
+                    logger.info(
+                        "Synthetic bars activated for %s (no RT bars for %.0fs)",
+                        symbol, now - last_rt,
+                    )
+            else:
+                if symbol in synthetic_1m:
+                    logger.info("Synthetic bars deactivated for %s (RT bars resumed)", symbol)
+                    synthetic_1m.pop(symbol, None)
+                    synthetic_5m.pop(symbol, None)
+                    synthetic_15m.pop(symbol, None)
 
     async def subscription_loop():
         backoff_streak = 0
@@ -1421,15 +1567,22 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                     for sym in quote_added:
                         set_symbol_state(sym, STATE_QUEUED, "active symbol loaded before IB connection")
 
+                # Keep the dedicated chart client pointed at the first active symbol.
+                # The first entry in active_symbols is the chart the user currently has open.
+                desired_chart_sym = active_symbols[0] if active_symbols else None
+                if desired_chart_sym != chart_symbol:
+                    subscribe_chart_symbol(desired_chart_sym) if desired_chart_sym else cancel_chart_subscription()
+
             await asyncio.sleep(ACTIVE_REFRESH_S)
 
     async def refresh_universe_symbols():
-        nonlocal universe_symbols
+        nonlocal universe_symbols, universe_etf_symbols
         while True:
             try:
-                current = load_enabled_symbols()
-                if current and current != universe_symbols:
+                current, current_etfs = load_enabled_symbols_with_etfs()
+                if current and (current != universe_symbols or current_etfs != universe_etf_symbols):
                     universe_symbols = current
+                    universe_etf_symbols = current_etfs
                     logger.info("Universe refresh: %s enabled symbols", len(universe_symbols))
             except Exception as exc:
                 logger.warning(f"Universe refresh failed: {exc}")
@@ -1503,34 +1656,6 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
             elapsed = time.monotonic() - cycle_started
             await asyncio.sleep(max(0.0, FINNHUB_WATCHLIST_POLL_S - elapsed))
 
-    async def yahoo_valuation_loop():
-        while True:
-            symbols = _quote_symbols()
-            if not symbols:
-                await asyncio.sleep(YAHOO_VALUATION_CHECK_S)
-                continue
-            stale_symbols = await asyncio.to_thread(
-                get_stale_valuation_symbols, symbols, YAHOO_VALUATION_MAX_AGE_S
-            )
-            if not stale_symbols:
-                logger.info(f"[Valuation] All {len(symbols)} quote symbols up-to-date, next check in {YAHOO_VALUATION_CHECK_S}s")
-                await asyncio.sleep(YAHOO_VALUATION_CHECK_S)
-                continue
-            loop_msg = (
-                f"[Valuation loop] Starting Yahoo valuation refresh for {len(stale_symbols)} symbols: "
-                f"{','.join(stale_symbols[:10])}{'...' if len(stale_symbols) > 10 else ''}"
-            )
-            print(loop_msg, flush=True)
-            logger.info(loop_msg)
-            await asyncio.to_thread(refresh_watchlist_valuations_from_yahoo, stale_symbols)
-            null_count = await asyncio.to_thread(count_null_market_cap_symbols, symbols)
-            if null_count > 0:
-                logger.info(f"[Valuation] {null_count}/{len(symbols)} quote symbols still missing market_cap, retrying in {YAHOO_VALUATION_FAST_RETRY_S}s")
-                await asyncio.sleep(YAHOO_VALUATION_FAST_RETRY_S)
-            else:
-                logger.info(f"[Valuation] All quote symbols market caps filled, next check in {YAHOO_VALUATION_CHECK_S}s")
-                await asyncio.sleep(YAHOO_VALUATION_CHECK_S)
-
     async def backfill_loop():
         last_backfill: Dict[str, float] = {}
         backfill_cursor = 0
@@ -1544,7 +1669,7 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
             )
             for request in urgent_requests:
                 sym = request["symbol"]
-                request_bar_size = "1 day" if request["bar_size"] == "1d" else "1 min"
+                request_bar_size = _ib_bar_size_setting(request["bar_size"])
                 request_what = request["what_to_show"]
                 request_duration = request["duration"]
                 try:
@@ -1593,13 +1718,19 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                     continue
                 try:
                     await asyncio.to_thread(invalidate_yahoo_cache, [sym])
-                    await get_historical_bars(
-                        symbol=sym,
-                        ib=ib,
-                        tws_connected=tws_connected,
-                        duration=BACKGROUND_INTRADAY_DURATION,
-                        bar_size="1 min",
-                    )
+                    for backfill_bar_size in ("1 min", "5 mins", "15 mins", "1 day"):
+                        await get_historical_bars(
+                            symbol=sym,
+                            ib=ib,
+                            tws_connected=tws_connected,
+                            duration=target_duration_for_bar_size(backfill_bar_size),
+                            bar_size=backfill_bar_size,
+                        )
+                        if backfill_bar_size != "1 day":
+                            if tws_connected:
+                                await asyncio.sleep(TWS_HISTORICAL_REQUEST_SLEEP_S)
+                            else:
+                                await asyncio.sleep(YAHOO_HISTORICAL_REQUEST_SLEEP_S)
                     if tws_connected:
                         await asyncio.sleep(TWS_HISTORICAL_REQUEST_SLEEP_S)
                         await get_historical_bars(
@@ -1622,17 +1753,11 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                         await asyncio.sleep(TWS_HISTORICAL_REQUEST_SLEEP_S)
                     else:
                         await asyncio.sleep(YAHOO_HISTORICAL_REQUEST_SLEEP_S)
-                    await get_historical_bars(
-                        symbol=sym,
-                        ib=ib,
-                        tws_connected=tws_connected,
-                        duration=DEFAULT_DAILY_DURATION,
-                        bar_size="1 day",
-                    )
                     last_backfill[sym] = now
                     await asyncio.to_thread(refresh_snapshot_from_db, sym)
                 except Exception as exc:
-                    logger.warning(f"Backfill failed for {sym}: {exc}")
+                    import traceback
+                    logger.warning(f"Backfill failed for {sym}: {exc}\n{traceback.format_exc()}")
                 if not tws_connected:
                     await asyncio.sleep(YAHOO_HISTORICAL_SYMBOL_SLEEP_S)
 
@@ -1654,65 +1779,6 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                     await asyncio.to_thread(refresh_snapshot_from_db, sym)
                 except Exception as exc:
                     logger.debug(f"Snapshot refresh failed for {sym}: {exc}")
-
-    async def universe_yahoo_loop():
-        """Fetch Yahoo prices and market caps for all non-watchlist universe symbols.
-
-        Runs every UNIVERSE_YAHOO_INTERVAL_S (1 hour by default). This ensures the
-        heatmap has price data even for symbols that TWS snapshots fail on, and
-        populates market_cap in watchlist_quotes so the heatmap can size by market cap.
-        """
-        await asyncio.sleep(30)  # Let primary loops settle first
-        while True:
-            watchlist_set = set(watchlist)
-            queue = [sym for sym in universe_symbols if sym not in watchlist_set]
-            if not queue:
-                await asyncio.sleep(UNIVERSE_YAHOO_INTERVAL_S)
-                continue
-
-            logger.info("[UniverseYahoo] Fetching Yahoo price+marketcap for %d non-watchlist symbols", len(queue))
-            batch_size = 50
-            fetched = 0
-            for i in range(0, len(queue), batch_size):
-                batch = queue[i:i + batch_size]
-                try:
-                    t = YahooTicker(batch, asynchronous=True)
-                    price_data = t.price
-                    summary_data = t.summary_detail
-                    if isinstance(price_data, dict):
-                        for sym in batch:
-                            data = price_data.get(sym)
-                            if not isinstance(data, dict):
-                                continue
-                            q = yahoo_to_quote(sym, data)
-                            if q.get("last"):
-                                snapshot = _snapshot_from_quote(q)
-                                await asyncio.to_thread(_upsert_market_snapshot, snapshot)
-                                fetched += 1
-                            # Market cap from summary_detail or price
-                            sd = summary_data.get(sym) if isinstance(summary_data, dict) else None
-                            _, _, market_cap = _extract_yahoo_valuation(
-                                sd if isinstance(sd, dict) else {}, data
-                            )
-                            if market_cap:
-                                await asyncio.to_thread(
-                                    upsert_quote_valuation, sym, None, None, market_cap, set_valuation_ts=False
-                                )
-                except Exception as exc:
-                    logger.warning("[UniverseYahoo] Batch %d failed: %s", i // batch_size, exc)
-                if i + batch_size < len(queue):
-                    await asyncio.sleep(1.5)
-
-            logger.info("[UniverseYahoo] Done: %d/%d symbols with prices", fetched, len(queue))
-            null_count = await asyncio.to_thread(count_null_market_cap_symbols, queue)
-            if null_count > 0:
-                logger.info("[UniverseYahoo] %d/%d symbols still missing market_cap, retrying in %ds",
-                            null_count, len(queue), int(UNIVERSE_YAHOO_FAST_RETRY_S))
-                await asyncio.sleep(UNIVERSE_YAHOO_FAST_RETRY_S)
-            else:
-                logger.info("[UniverseYahoo] All market caps filled, next run in %ds",
-                            int(UNIVERSE_YAHOO_INTERVAL_S))
-                await asyncio.sleep(UNIVERSE_YAHOO_INTERVAL_S)
 
     async def universe_price_loop():
         """Slowly pull snapshot quotes for the full ticker universe (for heatmap).
@@ -1811,6 +1877,12 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                             symbol_to_shard.clear()
                             rt_bars.clear()
                             current_1m.clear()
+                            current_5m.clear()
+                            current_15m.clear()
+                            last_rt_bar_time.clear()
+                            synthetic_1m.clear()
+                            synthetic_5m.clear()
+                            synthetic_15m.clear()
                             queued_quote_symbols.clear()
                             queued_realtime_symbols.clear()
                             subscription_queue.clear()
@@ -1830,6 +1902,22 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                         logger.info("Shard %d reconnected (clientId=%d)", i, new_id)
                     else:
                         logger.debug("Shard %d not connected, will retry in 10s", i)
+            # Reconnect the dedicated chart client if disconnected
+            if not chart_ib.isConnected():
+                nonlocal chart_ib_client_id, chart_ib_connected  # noqa: SIM117
+                ok, new_cid = await connect_ib_with_manager(
+                    chart_ib, host, ports, chart_ib_client_id or (shard_client_ids[-1] + 10), client_id_mgr
+                )
+                if ok:
+                    chart_ib_client_id = new_cid
+                    chart_ib_connected = True
+                    chart_ib.reqMarketDataType(1)
+                    logger.info("Chart client connected (clientId=%d)", new_cid)
+                    if active_symbols:
+                        subscribe_chart_symbol(active_symbols[0])
+                else:
+                    chart_ib_connected = False
+                    logger.debug("Chart client not connected, will retry in 10s")
             await asyncio.sleep(10.0)
 
     try:
@@ -1840,6 +1928,19 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
         if ok:
             shard_client_ids[0] = new_id
 
+        # Connect dedicated chart client (uses a client ID just above the primary)
+        chart_ok, chart_cid = await connect_ib_with_manager(
+            chart_ib, host, ports, client_id + 50, client_id_mgr
+        )
+        chart_ib_client_id = chart_cid
+        if chart_ok:
+            chart_ib_connected = True
+            chart_ib.reqMarketDataType(1)
+            logger.info("Chart client connected (clientId=%d)", chart_cid)
+        else:
+            chart_ib_connected = False
+            logger.warning("Chart client failed to connect; will retry via reconnect_loop")
+
         await asyncio.gather(
             subscription_loop(),
             refresh_watchlist(),
@@ -1847,14 +1948,17 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
             refresh_universe_symbols(),
             status_summary_loop(),
             yahoo_loop(),
-            yahoo_valuation_loop(),
             backfill_loop(),
             snapshot_loop(),
             universe_price_loop(),
-            universe_yahoo_loop(),
             reconnect_loop(),
         )
     finally:
+        cancel_chart_subscription()
+        if chart_ib.isConnected():
+            chart_ib.disconnect()
+        if chart_ib_client_id:
+            client_id_mgr.release(chart_ib_client_id)
         for i, ib in enumerate(ib_shards):
             if ib.isConnected():
                 ib.disconnect()

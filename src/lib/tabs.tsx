@@ -44,6 +44,8 @@ interface TabContextValue {
   setActiveTab: (id: string) => void;
   addTab: (type: TabType) => void;
   closeTab: (id: string) => void;
+  /** Remove a tab and return it. If it's the last tab, a default replacement is added. */
+  detachTab: (id: string) => Tab | null;
   renameTab: (id: string, title: string) => void;
   duplicateTab: (id: string) => void;
   reorderTabs: (fromIndex: number, toIndex: number) => void;
@@ -64,6 +66,7 @@ const TabContext = createContext<TabContextValue>({
   setActiveTab: () => {},
   addTab: () => {},
   closeTab: () => {},
+  detachTab: () => null,
   renameTab: () => {},
   duplicateTab: () => {},
   reorderTabs: () => {},
@@ -150,6 +153,31 @@ export function TabProvider({ children }: { children: ReactNode }) {
     [activeTabId],
   );
 
+  const detachTab = useCallback(
+    (id: string): Tab | null => {
+      let detached: Tab | null = null;
+      setTabs((prev) => {
+        const idx = prev.findIndex((t) => t.id === id);
+        if (idx === -1) return prev;
+        detached = prev[idx];
+        const next = prev.filter((t) => t.id !== id);
+        // If we just removed the last tab, add a replacement so the main window stays usable
+        if (next.length === 0) {
+          const replacement = makeTab("chart");
+          setActiveTabId(replacement.id);
+          return [replacement];
+        }
+        if (id === activeTabId) {
+          const newActive = next[Math.min(idx, next.length - 1)];
+          setActiveTabId(newActive.id);
+        }
+        return next;
+      });
+      return detached;
+    },
+    [activeTabId],
+  );
+
   const renameTab = useCallback((id: string, title: string) => {
     const trimmed = title.trim();
     if (!trimmed) return;
@@ -196,6 +224,7 @@ export function TabProvider({ children }: { children: ReactNode }) {
         setActiveTab,
         addTab,
         closeTab,
+        detachTab,
         renameTab,
         duplicateTab,
         reorderTabs,

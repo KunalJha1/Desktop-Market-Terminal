@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import type { Timeframe, ChartType } from '../types';
 import type { ActiveIndicator } from '../types';
-import { TIMEFRAMES, CHART_TYPES, parseCustomTimeframe } from '../constants';
+import { TIMEFRAMES, CHART_TYPES } from '../constants';
 import {
   ChevronDown,
   BarChart3,
@@ -15,7 +15,7 @@ import {
   ZoomOut,
   RotateCcw,
 } from 'lucide-react';
-import { SEARCHABLE_SYMBOLS } from '../../lib/market-data';
+import { SEARCHABLE_SYMBOLS, filterRankSymbolSearch } from '../../lib/market-data';
 import ComponentLinkMenu from '../../components/ComponentLinkMenu';
 import IndicatorPanel from './IndicatorPanel';
 
@@ -76,8 +76,6 @@ export default function ChartToolbar({
 }: ChartToolbarProps) {
   const [symbolInput, setSymbolInput] = useState(symbol);
   const [chartTypeOpen, setChartTypeOpen] = useState(false);
-  const [customTfInput, setCustomTfInput] = useState('');
-  const [customTfError, setCustomTfError] = useState('');
   const [symbolDropdownOpen, setSymbolDropdownOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(-1);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -96,17 +94,13 @@ export default function ChartToolbar({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Filter suggestions
-  const sq = symbolInput.toLowerCase();
-  const symbolSuggestions = symbolInput && symbolInput !== symbol
-    ? SEARCHABLE_SYMBOLS.filter(
-        (s) =>
-          s.symbol.toLowerCase().includes(sq) ||
-          s.name.toLowerCase().includes(sq) ||
-          s.sector.toLowerCase().includes(sq) ||
-          s.industry.toLowerCase().includes(sq),
-      ).slice(0, 8)
-    : [];
+  const symbolSuggestions =
+    symbolInput && symbolInput !== symbol
+      ? filterRankSymbolSearch(SEARCHABLE_SYMBOLS, symbolInput, {
+          limit: 8,
+          includeSectorIndustry: true,
+        })
+      : [];
 
   // Sync symbolInput when symbol changes externally (e.g. via link bus)
   useEffect(() => {
@@ -237,47 +231,12 @@ export default function ChartToolbar({
 
       {/* Timeframes */}
       <div className="flex items-center gap-0.5 mx-1">
-        {/* Custom timeframe input */}
-        <input
-          type="text"
-          value={customTfInput}
-          onChange={(e) => { setCustomTfInput(e.target.value); setCustomTfError(''); }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              const val = customTfInput.trim();
-              if (!val) return;
-              const parsed = parseCustomTimeframe(val);
-              if (!parsed.valid) {
-                setCustomTfError(parsed.error ?? 'Invalid format');
-              } else {
-                setCustomTfError('');
-                onTimeframeChange(parsed.label as typeof timeframe);
-              }
-            } else if (e.key === 'Escape') {
-              setCustomTfInput('');
-              setCustomTfError('');
-            }
-          }}
-          onBlur={() => {
-            if (customTfInput.trim() === '') setCustomTfError('');
-          }}
-          placeholder="e.g. 2H"
-          title={customTfError || undefined}
-          className="font-mono text-[10px] bg-transparent outline-none w-[44px] px-1 py-0.5 rounded-sm transition-colors duration-120
-                     placeholder:text-text-muted text-text-primary"
-          style={{
-            border: customTfError ? '1px solid #FF3D71' : '1px solid transparent',
-            color: customTfError ? '#FF3D71' : undefined,
-          }}
-          spellCheck={false}
-        />
-        <div className="w-px h-3 bg-white/[0.08] mx-0.5" />
         {TIMEFRAMES.map((tf) => (
           <button
             key={tf.value}
-            onClick={() => { onTimeframeChange(tf.value); setCustomTfInput(''); setCustomTfError(''); }}
+            onClick={() => onTimeframeChange(tf.value)}
             className={`px-1.5 py-0.5 text-[10px] font-mono rounded-btn transition-colors duration-120
-              ${timeframe === tf.value && customTfInput === ''
+              ${timeframe === tf.value
                 ? 'text-[#3B82F6] bg-[#3B82F6]/10'
                 : 'text-text-primary hover:text-white hover:bg-hover'
               }`}

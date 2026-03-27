@@ -1,14 +1,25 @@
-/** Cached technical score horizons (matches `technical_scores` / sidecar). */
-export type HeatmapTechTimeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1d" | "1w";
+import {
+  TA_SCORE_TF_LABELS,
+  TA_SCORE_TIMEFRAMES,
+  type TaScoreTimeframe,
+} from "./ta-score-timeframes";
 
-export const HEATMAP_TECH_TIMEFRAMES: { key: HeatmapTechTimeframe; label: string }[] = [
-  { key: "1m", label: "1m" },
-  { key: "5m", label: "5m" },
-  { key: "15m", label: "15m" },
-  { key: "1h", label: "1H" },
-  { key: "4h", label: "4H" },
-  { key: "1d", label: "1D" },
-  { key: "1w", label: "1W" },
+/** Alias for heatmap UI — same horizons as watchlist TA score columns. */
+export type HeatmapTechTimeframe = TaScoreTimeframe;
+
+export type HeatmapMetricMode = "change" | `tech-${TaScoreTimeframe}`;
+
+export const HEATMAP_TECH_TIMEFRAMES: { key: HeatmapTechTimeframe; label: string }[] =
+  TA_SCORE_TIMEFRAMES.map((key) => ({ key, label: TA_SCORE_TF_LABELS[key] }));
+
+export const HEATMAP_METRIC_OPTIONS: { value: HeatmapMetricMode; label: string }[] = [
+  { value: "change", label: "Change" },
+  { value: "tech-5m", label: "Tech Score 5M" },
+  { value: "tech-15m", label: "Tech Score 15M" },
+  { value: "tech-1h", label: "Tech Score 1H" },
+  { value: "tech-4h", label: "Tech Score 4H" },
+  { value: "tech-1d", label: "Tech Score 1D" },
+  { value: "tech-1w", label: "Tech Score 1W" },
 ];
 
 export interface HeatmapTile {
@@ -52,6 +63,42 @@ export interface SectorBound extends Rect {
   totalMarketCap: number;
   count: number;
   headerHeight: number;
+}
+
+export function resolveHeatmapTechScore(
+  tile: HeatmapTile,
+  key: HeatmapTechTimeframe,
+): number | null {
+  return (
+    tile.techScores?.[key] ??
+    (key === "1d" ? tile.techScore1d : key === "1w" ? tile.techScore1w : null)
+  );
+}
+
+export function getTileMetricValue(
+  tile: HeatmapTile,
+  mode: HeatmapMetricMode,
+): number | null {
+  if (mode === "change") return tile.changePct;
+  if (mode.startsWith("tech-")) {
+    const tf = mode.slice(5) as TaScoreTimeframe;
+    return resolveHeatmapTechScore(tile, tf);
+  }
+  return null;
+}
+
+export function getTileMetricColor(tile: HeatmapTile, mode: HeatmapMetricMode): string {
+  const value = getTileMetricValue(tile, mode);
+  if (mode === "change") return tileColor(value, tile.status);
+  return technicalTileColor(value, tile.status);
+}
+
+export function formatTileMetricValue(
+  value: number | null,
+  mode: HeatmapMetricMode,
+): string {
+  if (mode === "change") return formatPct(value);
+  return formatTechnicalScore(value);
 }
 
 export function squarify(
@@ -137,9 +184,27 @@ export function tileColor(changePct: number | null, status?: string | null): str
   return "#981b31";
 }
 
+export function technicalTileColor(score: number | null, status?: string | null): string {
+  if (status === "pending" && score == null) return "#3a4350";
+  if (score == null) return "#3a4350";
+
+  if (score >= 85) return "#0b7a36";
+  if (score >= 70) return "#138a40";
+  if (score >= 55) return "#1fa34f";
+  if (score >= 45) return "#4b5563";
+  if (score >= 30) return "#c43d53";
+  if (score >= 15) return "#b52e43";
+  return "#981b31";
+}
+
 export function formatPct(changePct: number | null): string {
   if (changePct == null) return "\u2014";
   return `${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}%`;
+}
+
+export function formatTechnicalScore(score: number | null): string {
+  if (score == null) return "\u2014";
+  return `${Math.round(score)}`;
 }
 
 export function formatPrice(last: number | null): string {

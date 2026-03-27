@@ -1,0 +1,13 @@
+//@version=1
+indicator("Chop Zone", overlay=false)
+length = input.int(30, "Length")
+czAngle = ta.chopzone(length)
+plot(czAngle >= 5 ? 1 : na, "Strong Bull", color=#26C6DA, style=histogram)
+plot(czAngle < 5 and czAngle >= 3.57 ? 1 : na, "Bull", color=#43A047, style=histogram)
+plot(czAngle < 3.57 and czAngle >= 2.14 ? 1 : na, "Mild Bull", color=#A5D6A7, style=histogram)
+plot(czAngle < 2.14 and czAngle >= 0.71 ? 1 : na, "Weak Bull", color=#009688, style=histogram)
+plot(czAngle <= -5 ? 1 : na, "Strong Bear", color=#D50000, style=histogram)
+plot(czAngle > -5 and czAngle <= -3.57 ? 1 : na, "Bear", color=#E91E63, style=histogram)
+plot(czAngle > -3.57 and czAngle <= -2.14 ? 1 : na, "Mild Bear", color=#FF6D00, style=histogram)
+plot(czAngle > -2.14 and czAngle <= -0.71 ? 1 : na, "Weak Bear", color=#FFB74D, style=histogram)
+plot(czAngle < 0.71 and czAngle > -0.71 ? 1 : na, "Neutral", color=#FDD835, style=histogram)

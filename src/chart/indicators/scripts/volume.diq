@@ -1,0 +1,6 @@
+//@version=1
+indicator("Volume", overlay=false)
+plot(volume, "Volume", color=#1A56DB, style=histogram)
+maLen = input.int(20, "MA Length")
+volMa = ta.sma(volume, maLen)
+plot(volMa, "Vol MA", color=#F59E0B)

@@ -215,7 +215,7 @@ fn spawn_tab_window(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    let url = tauri::WindowUrl::App(format!("index.html?detached={}", label).into());
+    let url = tauri::WindowUrl::App("index.html".into());
     let builder = tauri::WindowBuilder::new(&app_handle, &label, url)
         .title(&title)
         .inner_size(width, height)
@@ -242,22 +242,47 @@ enum ManagedChild {
 }
 
 impl ManagedChild {
+    /// Returns true if the process has already exited.
+    /// Only works for System children; Sidecar children always return false.
+    fn has_exited(&mut self) -> bool {
+        match self {
+            ManagedChild::System(child) => child.try_wait().ok().flatten().is_some(),
+            ManagedChild::Sidecar(_) => false,
+        }
+    }
+
+    /// Kill the entire process tree rooted at `pid`.
+    /// On Windows, uses `taskkill /F /T` (blocking) to terminate all descendants.
+    /// On Unix, sends SIGKILL to the process group via `kill -- -<pid>`.
+    fn kill_tree(pid: u32) {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = Command::new("taskkill")
+                .args(&["/F", "/T", "/PID", &pid.to_string()])
+                .output(); // .output() blocks until taskkill exits
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // Negative PID targets the process group. Only works if the child
+            // was spawned as a group leader (setsid / setpgid), otherwise falls
+            // back to killing just the direct process — still an improvement.
+            let _ = Command::new("kill")
+                .args(&["--", &format!("-{}", pid)])
+                .output();
+        }
+    }
+
     fn kill(self) {
         match self {
             ManagedChild::System(mut child) => {
-                // On Windows, child.kill() only terminates the direct process.
-                // Use taskkill /F /T to kill the entire process tree (uvicorn workers, etc.)
-                #[cfg(target_os = "windows")]
-                {
-                    let pid = child.id();
-                    let _ = Command::new("taskkill")
-                        .args(&["/F", "/T", "/PID", &pid.to_string()])
-                        .spawn();
-                }
+                let pid = child.id();
+                Self::kill_tree(pid);
                 let _ = child.kill();
                 let _ = child.wait();
             }
             ManagedChild::Sidecar(child) => {
+                let pid = child.pid();
+                Self::kill_tree(pid);
                 let _ = child.kill();
             }
         }
@@ -267,6 +292,7 @@ impl ManagedChild {
 struct SidecarState {
     child: Mutex<Option<ManagedChild>>,
     worker_child: Mutex<Option<ManagedChild>>,
+    valuation_worker_child: Mutex<Option<ManagedChild>>,
     port: Mutex<Option<u16>>,
 }
 
@@ -312,6 +338,28 @@ fn find_worker_script() -> Option<PathBuf> {
         }
     }
     let cwd_candidate = PathBuf::from("backend/worker_watchlist.py");
+    if cwd_candidate.exists() {
+        return Some(cwd_candidate);
+    }
+    None
+}
+
+fn find_valuation_worker_script() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|p| p.to_path_buf());
+        for _ in 0..5 {
+            if let Some(ref d) = dir {
+                let candidate = d.join("backend").join("worker_valuations.py");
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+                dir = d.parent().map(|p| p.to_path_buf());
+            } else {
+                break;
+            }
+        }
+    }
+    let cwd_candidate = PathBuf::from("backend/worker_valuations.py");
     if cwd_candidate.exists() {
         return Some(cwd_candidate);
     }
@@ -480,6 +528,21 @@ fn do_spawn_worker(app_handle: &AppHandle, state: &SidecarState) -> Result<(), S
     Ok(())
 }
 
+fn do_spawn_valuation_worker(app_handle: &AppHandle, state: &SidecarState) -> Result<(), String> {
+    if state.valuation_worker_child.lock().unwrap().is_some() {
+        return Ok(());
+    }
+
+    let child = if let Some(script_path) = find_valuation_worker_script() {
+        spawn_dev_python(app_handle, &script_path, &[])? 
+    } else {
+        spawn_bundled_sidecar(app_handle, "dailyiq-valuation-worker", &[])? 
+    };
+
+    *state.valuation_worker_child.lock().unwrap() = Some(child);
+    Ok(())
+}
+
 #[tauri::command]
 fn spawn_sidecar(app_handle: tauri::AppHandle, state: tauri::State<'_, SidecarState>) -> Result<u16, String> {
     do_spawn_sidecar(&app_handle, &state)
@@ -500,6 +563,9 @@ fn kill_sidecar(state: tauri::State<'_, SidecarState>) {
     if let Some(child) = state.worker_child.lock().unwrap().take() {
         child.kill();
     }
+    if let Some(child) = state.valuation_worker_child.lock().unwrap().take() {
+        child.kill();
+    }
     *state.port.lock().unwrap() = None;
 }
 
@@ -508,6 +574,7 @@ fn main() {
         .manage(SidecarState {
             child: Mutex::new(None),
             worker_child: Mutex::new(None),
+            valuation_worker_child: Mutex::new(None),
             port: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
@@ -538,6 +605,39 @@ fn main() {
                 if let Err(e) = do_spawn_worker(&handle, &state) {
                     eprintln!("Worker auto-start failed (will retry on demand): {}", e);
                 }
+                if let Err(e) = do_spawn_valuation_worker(&handle, &state) {
+                    eprintln!("Valuation worker auto-start failed (will retry on demand): {}", e);
+                }
+            });
+
+            // Watchdog: detect sidecar process death and auto-restart it.
+            let watchdog_handle = app.handle();
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_secs(5));
+                    let state: tauri::State<SidecarState> = watchdog_handle.state();
+
+                    // Check if the child process has exited without us killing it.
+                    let has_exited = {
+                        let mut guard = state.child.lock().unwrap();
+                        match guard.as_mut() {
+                            Some(child) => child.has_exited(),
+                            None => false,
+                        }
+                    };
+
+                    if has_exited {
+                        eprintln!("Watchdog: sidecar process exited unexpectedly, restarting...");
+                        // Take the dead child out and clear the stale port.
+                        { let _ = state.child.lock().unwrap().take(); }
+                        *state.port.lock().unwrap() = None;
+
+                        match do_spawn_sidecar(&watchdog_handle, &state) {
+                            Ok(port) => println!("Watchdog: sidecar restarted on port {}", port),
+                            Err(e) => eprintln!("Watchdog: sidecar restart failed: {}", e),
+                        }
+                    }
+                }
             });
 
             Ok(())
@@ -553,6 +653,7 @@ fn main() {
                     // fires too late — the runtime may already be partially torn down.
                     api.prevent_close();
                     let window = event.window().clone();
+                    let app_handle = window.app_handle();
                     let state: tauri::State<SidecarState> = window.state();
                     if let Some(child) = state.child.lock().unwrap().take() {
                         child.kill();
@@ -560,7 +661,16 @@ fn main() {
                     if let Some(worker) = state.worker_child.lock().unwrap().take() {
                         worker.kill();
                     }
+                    if let Some(worker) = state.valuation_worker_child.lock().unwrap().take() {
+                        worker.kill();
+                    }
                     *state.port.lock().unwrap() = None;
+                    // Close any detached tab windows so they don't linger as orphan processes.
+                    for (lbl, win) in app_handle.windows() {
+                        if lbl != "main" {
+                            let _ = win.close();
+                        }
+                    }
                     let _ = window.close();
                 }
             }

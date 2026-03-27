@@ -5,7 +5,6 @@ import asyncio
 from collections import defaultdict
 import json
 import logging
-import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -20,7 +19,10 @@ from pydantic import BaseModel
 
 from db_utils import run_db, sync_db_session
 from historical import (
+    DEFAULT_DAILY_DURATION,
     DEFAULT_INTRADAY_DURATION,
+    _normalize_bar_size,
+    target_duration_for_bar_size,
     URGENT_HISTORICAL_WAIT_S,
     enqueue_historical_priority,
     get_historical_bars,
@@ -28,7 +30,7 @@ from historical import (
     read_bars_window,
     seed_duration_for_bar_size,
 )
-from ibkr_utils import IbkrClientIdManager, is_client_id_in_use_error
+from connection_pool import ConnectionPool, probe_tws_port
 from runtime_paths import data_dir, resource_path
 
 logging.basicConfig(
@@ -143,24 +145,156 @@ def _validate_finnhub_key(api_key: str) -> tuple[bool, str]:
 
 
 PORTFOLIO_CACHE_TTL_S = 60.0
-_portfolio_cache_lock = threading.Lock()
+_portfolio_cache_lock: asyncio.Lock | None = None
 _portfolio_cache: dict | None = None
 _portfolio_cache_time: float = 0.0
 _portfolio_last_good: dict | None = None
 
 
-def read_live_portfolio_snapshot_cached(force: bool = False) -> dict:
+async def _ensure_pool_configured(pool: ConnectionPool) -> bool:
+    """Probe TWS ports and configure the pool if not yet set up. Returns True if configured."""
+    if pool._host is not None:
+        return True
+    port = await probe_tws_port(DEFAULT_TWS_HOST, DEFAULT_TWS_PORTS)
+    if port is None:
+        return False
+    pool.set_tws_address(DEFAULT_TWS_HOST, port)
+    return True
+
+
+async def read_live_portfolio_snapshot_async(pool: ConnectionPool) -> dict:
+    if not await _ensure_pool_configured(pool):
+        return {
+            "connected": False,
+            "host": DEFAULT_TWS_HOST,
+            "port": None,
+            "accounts": [],
+            "positions": [],
+            "cashBalances": [],
+            "updatedAt": _now_ms(),
+            "error": "TWS not reachable",
+        }
+
+    try:
+        ib = await pool.get_or_create(PORTFOLIO_ROLE)
+    except Exception as exc:
+        return {
+            "connected": False,
+            "host": DEFAULT_TWS_HOST,
+            "port": None,
+            "accounts": [],
+            "positions": [],
+            "cashBalances": [],
+            "updatedAt": _now_ms(),
+            "error": str(exc),
+        }
+
+    try:
+        positions = []
+        for item in ib.reqPositions():
+            contract = item.contract
+            symbol = (getattr(contract, "localSymbol", None) or contract.symbol or "").upper()
+            position = float(item.position or 0)
+            multiplier = float(getattr(contract, "multiplier", None) or 1)
+            raw_avg_cost = float(item.avgCost or 0)
+            average_cost = raw_avg_cost / multiplier if multiplier else raw_avg_cost
+            cost_basis = average_cost * position
+            account_code = item.account
+
+            positions.append({
+                "accountId": _ibkr_account_ref(account_code),
+                "account": account_code,
+                "accountCode": account_code,
+                "source": "ibkr",
+                "editable": False,
+                "symbol": symbol,
+                "name": getattr(contract, "description", None) or contract.symbol,
+                "currency": contract.currency,
+                "exchange": contract.exchange,
+                "primaryExchange": getattr(contract, "primaryExchange", None),
+                "secType": contract.secType,
+                "quantity": position,
+                "avgCost": average_cost,
+                "costBasis": cost_basis,
+                "currentPrice": None,
+                "marketValue": None,
+                "unrealizedPnl": None,
+                "realizedPnl": None,
+            })
+
+        positions.sort(key=lambda row: (str(row["account"]), str(row["symbol"])))
+
+        cash_balances = []
+        try:
+            seen_cash: set[tuple[str, str]] = set()
+            for av in ib.accountSummary():
+                if av.tag == "CashBalance" and av.currency not in ("BASE", ""):
+                    key = (av.account, av.currency)
+                    if key not in seen_cash:
+                        seen_cash.add(key)
+                        balance = float(av.value or 0)
+                        if balance != 0:
+                            cash_balances.append({
+                                "id": f"{_ibkr_account_ref(av.account)}:{av.currency}",
+                                "accountId": _ibkr_account_ref(av.account),
+                                "account": av.account,
+                                "accountCode": av.account,
+                                "source": "ibkr",
+                                "editable": False,
+                                "currency": av.currency,
+                                "balance": balance,
+                            })
+        except Exception:
+            pass
+
+        account_codes = sorted({row["accountCode"] for row in positions} | {cash["accountCode"] for cash in cash_balances})
+        accounts = [
+            {
+                "id": _ibkr_account_ref(account_code),
+                "name": account_code,
+                "source": "ibkr",
+                "editable": False,
+                "accountCode": account_code,
+            }
+            for account_code in account_codes
+        ]
+
+        return {
+            "connected": True,
+            "host": pool._host,
+            "port": pool._port,
+            "accounts": accounts,
+            "positions": positions,
+            "cashBalances": cash_balances,
+            "updatedAt": _now_ms(),
+            "clientId": pool.get_client_id(PORTFOLIO_ROLE),
+        }
+    except Exception as exc:
+        # If the connection dropped mid-fetch, the pool will auto-reconnect in background
+        return {
+            "connected": False,
+            "host": DEFAULT_TWS_HOST,
+            "port": None,
+            "accounts": [],
+            "positions": [],
+            "cashBalances": [],
+            "updatedAt": _now_ms(),
+            "error": str(exc),
+        }
+
+
+async def read_live_portfolio_snapshot_cached_async(pool: ConnectionPool, force: bool = False) -> dict:
     global _portfolio_cache, _portfolio_cache_time, _portfolio_last_good
 
     now = time.monotonic()
     if not force:
-        with _portfolio_cache_lock:
+        async with _portfolio_cache_lock:
             if _portfolio_cache is not None and (now - _portfolio_cache_time) < PORTFOLIO_CACHE_TTL_S:
                 return _portfolio_cache
 
-    result = read_live_portfolio_snapshot()
+    result = await read_live_portfolio_snapshot_async(pool)
 
-    with _portfolio_cache_lock:
+    async with _portfolio_cache_lock:
         if result.get("connected"):
             _portfolio_last_good = result
             _portfolio_cache = result
@@ -180,136 +314,9 @@ def read_live_portfolio_snapshot_cached(force: bool = False) -> dict:
     return _portfolio_cache
 
 
-def read_live_portfolio_snapshot() -> dict:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    from ib_insync import IB
-
-    ib = IB()
-    manager = IbkrClientIdManager(start=DEFAULT_TWS_CLIENT_ID)
-    last_error: str | None = None
-    leased_client_id: int | None = None
-
-    try:
-        leased_client_id = manager.acquire(PORTFOLIO_ROLE, preferred_id=DEFAULT_TWS_CLIENT_ID)
-        for tws_port in DEFAULT_TWS_PORTS:
-            try:
-                ib.connect(
-                    DEFAULT_TWS_HOST,
-                    tws_port,
-                    clientId=leased_client_id,
-                    readonly=True,
-                    timeout=4,
-                )
-
-                positions = []
-                for item in ib.reqPositions():
-                    contract = item.contract
-                    symbol = (getattr(contract, "localSymbol", None) or contract.symbol or "").upper()
-                    position = float(item.position or 0)
-                    multiplier = float(getattr(contract, "multiplier", None) or 1)
-                    raw_avg_cost = float(item.avgCost or 0)
-                    average_cost = raw_avg_cost / multiplier if multiplier else raw_avg_cost
-                    cost_basis = average_cost * position
-                    account_code = item.account
-
-                    positions.append({
-                        "accountId": _ibkr_account_ref(account_code),
-                        "account": account_code,
-                        "accountCode": account_code,
-                        "source": "ibkr",
-                        "editable": False,
-                        "symbol": symbol,
-                        "name": getattr(contract, "description", None) or contract.symbol,
-                        "currency": contract.currency,
-                        "exchange": contract.exchange,
-                        "primaryExchange": getattr(contract, "primaryExchange", None),
-                        "secType": contract.secType,
-                        "quantity": position,
-                        "avgCost": average_cost,
-                        "costBasis": cost_basis,
-                        "currentPrice": None,
-                        "marketValue": None,
-                        "unrealizedPnl": None,
-                        "realizedPnl": None,
-                    })
-
-                positions.sort(key=lambda row: (str(row["account"]), str(row["symbol"])))
-
-                cash_balances = []
-                try:
-                    seen_cash: set[tuple[str, str]] = set()
-                    for av in ib.accountSummary():
-                        if av.tag == "CashBalance" and av.currency not in ("BASE", ""):
-                            key = (av.account, av.currency)
-                            if key not in seen_cash:
-                                seen_cash.add(key)
-                                balance = float(av.value or 0)
-                                if balance != 0:
-                                    cash_balances.append({
-                                        "id": f"{_ibkr_account_ref(av.account)}:{av.currency}",
-                                        "accountId": _ibkr_account_ref(av.account),
-                                        "account": av.account,
-                                        "accountCode": av.account,
-                                        "source": "ibkr",
-                                        "editable": False,
-                                        "currency": av.currency,
-                                        "balance": balance,
-                                    })
-                except Exception:
-                    pass
-
-                account_codes = sorted({row["accountCode"] for row in positions} | {cash["accountCode"] for cash in cash_balances})
-                accounts = [
-                    {
-                        "id": _ibkr_account_ref(account_code),
-                        "name": account_code,
-                        "source": "ibkr",
-                        "editable": False,
-                        "accountCode": account_code,
-                    }
-                    for account_code in account_codes
-                ]
-
-                return {
-                    "connected": True,
-                    "host": DEFAULT_TWS_HOST,
-                    "port": tws_port,
-                    "accounts": accounts,
-                    "positions": positions,
-                    "cashBalances": cash_balances,
-                    "updatedAt": _now_ms(),
-                    "clientId": leased_client_id,
-                }
-            except Exception as exc:
-                last_error = str(exc)
-                if is_client_id_in_use_error(exc) and leased_client_id is not None:
-                    manager.mark_rejected(leased_client_id)
-                    leased_client_id = manager.acquire(
-                        PORTFOLIO_ROLE,
-                        preferred_id=leased_client_id + 1,
-                    )
-            finally:
-                if ib.isConnected():
-                    ib.disconnect()
-    finally:
-        try:
-            pending = asyncio.all_tasks(loop)
-            for task in pending:
-                task.cancel()
-            if pending:
-                loop.run_until_complete(
-                    asyncio.gather(*pending, return_exceptions=True)
-                )
-        except Exception:
-            pass
-        asyncio.set_event_loop(None)
-        loop.close()
-        if leased_client_id is not None:
-            manager.release(leased_client_id)
-
-    return {
+def build_unified_portfolio_snapshot() -> dict:
+    """Sync shim for background workers (options_collector, etc.) — reads from in-memory cache only, no IB connection."""
+    live = _portfolio_cache or {
         "connected": False,
         "host": DEFAULT_TWS_HOST,
         "port": None,
@@ -317,7 +324,32 @@ def read_live_portfolio_snapshot() -> dict:
         "positions": [],
         "cashBalances": [],
         "updatedAt": _now_ms(),
-        "error": last_error,
+    }
+    manual = read_manual_portfolio_state()
+    accounts = [*live.get("accounts", []), *manual["accounts"]]
+    groups = manual["groups"]
+    accounts_by_ref = {account["id"]: account for account in accounts}
+    for account in accounts:
+        account["groupIds"] = []
+        account["groupNames"] = []
+    for group in groups:
+        group_account_refs = [ref for ref in group.get("accountRefs", []) if ref in accounts_by_ref]
+        group["accountIds"] = group_account_refs
+        group["accountNames"] = [accounts_by_ref[ref]["name"] for ref in group_account_refs]
+        for account_ref in group_account_refs:
+            acct = accounts_by_ref[account_ref]
+            acct["groupIds"].append(group["id"])
+            acct["groupNames"].append(group["name"])
+    return {
+        "connected": live.get("connected", False),
+        "host": live.get("host", DEFAULT_TWS_HOST),
+        "port": live.get("port"),
+        "accounts": sorted(accounts, key=lambda a: (a["source"], a["name"].lower(), a["id"])),
+        "groups": sorted(groups, key=lambda g: g["name"].lower()),
+        "positions": [*live.get("positions", []), *manual["positions"]],
+        "cashBalances": [*live.get("cashBalances", []), *manual["cashBalances"]],
+        "updatedAt": max(live.get("updatedAt", 0), _now_ms()),
+        "error": live.get("error"),
     }
 
 
@@ -439,9 +471,9 @@ def read_manual_portfolio_state() -> dict:
     }
 
 
-def build_unified_portfolio_snapshot(force: bool = False) -> dict:
-    live = read_live_portfolio_snapshot_cached(force=force)
-    manual = read_manual_portfolio_state()
+async def build_unified_portfolio_snapshot_async(pool: ConnectionPool, force: bool = False) -> dict:
+    live = await read_live_portfolio_snapshot_cached_async(pool, force=force)
+    manual = await run_db(read_manual_portfolio_state)
     accounts = [*live.get("accounts", []), *manual["accounts"]]
     groups = manual["groups"]
     accounts_by_ref = {account["id"]: account for account in accounts}
@@ -538,6 +570,69 @@ def _load_ticker_metadata() -> dict[str, dict]:
             "enabled": bool(company.get("enabled", True)),
         }
     return out
+
+
+CUSTOM_HEATMAP_MAX_SYMBOLS = 100
+
+
+def _parse_heatmap_symbol_query(raw: str, limit: int = CUSTOM_HEATMAP_MAX_SYMBOLS) -> list[str]:
+    """Parse comma/newline-separated symbols for custom heatmap/screener (uppercase, deduped, order preserved)."""
+    if not raw or not str(raw).strip():
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in str(raw).replace("\n", ",").split(","):
+        s = part.strip().upper()
+        if not s or len(s) > 12:
+            continue
+        if not all(c.isalnum() or c in ".-" for c in s):
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _heatmap_pending_tile(
+    sym: str,
+    metadata: dict | None = None,
+    week52_high: float | None = None,
+    week52_low: float | None = None,
+) -> dict:
+    """Tile row when there is no market_snapshots row yet (worker will fill after /active-symbols)."""
+    meta = metadata or {}
+    return {
+        "symbol": sym,
+        "name": meta.get("name") or sym,
+        "sector": meta.get("sector") or "",
+        "industry": meta.get("industry") or "",
+        "theme": meta.get("theme") or "#1f2937",
+        "groups": meta.get("groups") or [],
+        "sp500Weight": float(meta.get("sp500Weight") or 0),
+        "last": None,
+        "open": None,
+        "high": None,
+        "low": None,
+        "prevClose": None,
+        "change": None,
+        "changePct": None,
+        "volume": None,
+        "bid": None,
+        "ask": None,
+        "mid": None,
+        "spread": None,
+        "source": None,
+        "status": "pending",
+        "quoteUpdatedAt": None,
+        "intradayUpdatedAt": None,
+        "dailyUpdatedAt": None,
+        "updatedAt": None,
+        "week52High": week52_high,
+        "week52Low": week52_low,
+    }
 
 
 def _snapshot_row_to_payload(
@@ -920,7 +1015,13 @@ def create_app() -> FastAPI:
     ticker_metadata = _load_ticker_metadata()
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI):
+    async def lifespan(_app: FastAPI):
+        global _portfolio_cache_lock
+        # Create asyncio primitives inside the running event loop to avoid
+        # "Future attached to a different loop" errors on Windows (ProactorEventLoop).
+        _portfolio_cache_lock = asyncio.Lock()
+        pool = ConnectionPool()
+
         scorer.set_symbols(await run_db(read_watchlist_symbols))
         sp500_symbols = [
             sym for sym, meta in ticker_metadata.items()
@@ -929,9 +1030,24 @@ def create_app() -> FastAPI:
         scorer.set_universe(sp500_symbols)
         scorer.start()
         options_worker.start()
+
+        # Pre-warm persistent IB connection for portfolio reads
+        port = await probe_tws_port(DEFAULT_TWS_HOST, DEFAULT_TWS_PORTS)
+        if port is not None:
+            pool.set_tws_address(DEFAULT_TWS_HOST, port)
+            try:
+                await pool.get_or_create(PORTFOLIO_ROLE)
+                logger.info(f"Persistent IB connection established on port {port}")
+            except Exception:
+                logger.warning("TWS not available at startup; portfolio connection will be attempted on first request")
+        else:
+            logger.warning("TWS not reachable at startup; portfolio connection will be attempted on first request")
+
+        _app.state.pool = pool
         try:
             yield
         finally:
+            await pool.disconnect_all()
             scorer.stop()
             options_worker.stop()
 
@@ -1006,11 +1122,11 @@ def create_app() -> FastAPI:
 
     @app.get("/portfolio/positions")
     async def get_portfolio_positions():
-        return await asyncio.to_thread(read_live_portfolio_snapshot)
+        return await read_live_portfolio_snapshot_async(app.state.pool)
 
     @app.get("/portfolio")
     async def get_portfolio(force: bool = False):
-        return await asyncio.to_thread(build_unified_portfolio_snapshot, force)
+        return await build_unified_portfolio_snapshot_async(app.state.pool, force)
 
     @app.get("/portfolio/manual")
     async def get_manual_portfolio():
@@ -1575,6 +1691,51 @@ def create_app() -> FastAPI:
             "tiles": tiles,
         }
 
+    @app.get("/heatmap/custom")
+    async def get_custom_heatmap(symbols: str = ""):
+        sym_list = _parse_heatmap_symbol_query(symbols)
+
+        def _read():
+            if not sym_list:
+                return []
+            placeholders = ", ".join("?" * len(sym_list))
+            with sync_db_session() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT symbol, last, open, high, low, prev_close, change, change_pct,
+                           volume, bid, ask, mid, spread, source, status,
+                           quote_updated_at, intraday_updated_at, daily_updated_at, updated_at
+                    FROM market_snapshots
+                    WHERE symbol IN ({placeholders})
+                    """,
+                    sym_list,
+                ).fetchall()
+                row_map = {row[0]: row for row in rows}
+                w52_map = _fetch_week52(conn, sym_list)
+                tiles: list[dict] = []
+                for sym in sym_list:
+                    meta = ticker_metadata.get(sym)
+                    wh, wl = w52_map.get(sym, (None, None))
+                    if sym in row_map:
+                        tiles.append(
+                            _snapshot_row_to_payload(row_map[sym], meta, wh, wl),
+                        )
+                    else:
+                        tiles.append(_heatmap_pending_tile(sym, meta, wh, wl))
+                val_map = _fetch_valuation_map(conn, [t["symbol"] for t in tiles])
+                _enrich_with_valuations(tiles, val_map)
+                _enrich_with_tech_scores(conn, tiles)
+                return tiles
+
+        tiles = await run_db(_read)
+        return {
+            "asOf": int(time.time() * 1000),
+            "universe": "custom",
+            "requested": len(sym_list),
+            "count": len(tiles),
+            "tiles": tiles,
+        }
+
     @app.get("/options/summary")
     async def get_options_summary(symbol: str = ""):
         return await run_db(read_options_summary, symbol)
@@ -1611,12 +1772,13 @@ def create_app() -> FastAPI:
         return {"registered": len(sym_list)}
 
     @app.get("/technicals/scores")
-    async def get_technical_scores(symbols: str = ""):
+    async def get_technical_scores(symbols: str = "", timeframes: str = ""):
         if not symbols:
             return []
         sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-        from score_worker import read_scores
-        return await run_db(read_scores, sym_list)
+        tf_list = [tf.strip().lower() for tf in timeframes.split(",") if tf.strip()]
+        from score_worker import read_scores_for_timeframes
+        return await run_db(read_scores_for_timeframes, sym_list, tf_list)
 
     @app.get("/technicals/indicators")
     async def get_technical_indicators(symbols: str = "", indicators: str = "[]"):
@@ -1653,8 +1815,8 @@ def create_app() -> FastAPI:
         Otherwise falls back to the full fetch+cache flow.
         """
         symbol = symbol.upper()
-        db_bar_size = "1d" if bar_size in ("1 day", "1d") else "1m"
-        requested_duration = duration if duration else (DEFAULT_INTRADAY_DURATION if db_bar_size == "1m" else "30 Y")
+        db_bar_size = _normalize_bar_size(bar_size)
+        requested_duration = duration if duration else target_duration_for_bar_size(db_bar_size)
         # Mark symbol as active so the worker can prioritize TWS backfill + realtime bars.
         def _touch_active():
             with sync_db_session() as conn:
@@ -1742,7 +1904,7 @@ def create_app() -> FastAPI:
             requested_duration,
         )
         if cached["count"] > 0:
-            if not cached["is_fresh"]:
+            if not cached["is_fresh"] or not cached.get("has_full_coverage", False):
                 await run_db(
                     enqueue_historical_priority,
                     symbol,

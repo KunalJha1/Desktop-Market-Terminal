@@ -8,6 +8,9 @@ import {
 import { X, Plus } from "lucide-react";
 import { useTabs, tabPresets, type TabType } from "../lib/tabs";
 import TabContextMenu from "./TabContextMenu";
+import { invoke } from "@tauri-apps/api/tauri";
+import { isTauriRuntime } from "../lib/platform";
+import { writeDetachedTabInfo } from "../lib/detached";
 
 export default function TabBar() {
   const {
@@ -16,6 +19,7 @@ export default function TabBar() {
     setActiveTab,
     addTab,
     closeTab,
+    detachTab,
     renameTab,
     duplicateTab,
     reorderTabs,
@@ -33,6 +37,7 @@ export default function TabBar() {
     active: boolean;
   } | null>(null);
   const suppressClickRef = useRef(false);
+  const tearingOffRef = useRef(false);
 
   // Context menu state
   const [menu, setMenu] = useState<{
@@ -116,10 +121,41 @@ export default function TabBar() {
     return nearest.index;
   }, [tabs]);
 
+  const triggerTearOff = useCallback(async (tabIndex: number, screenX: number, screenY: number) => {
+    if (tearingOffRef.current) return;
+    tearingOffRef.current = true;
+
+    const tab = tabs[tabIndex];
+    if (!tab) { tearingOffRef.current = false; return; }
+
+    const label = `detached-${tab.id}`;
+    writeDetachedTabInfo(label, { tabId: tab.id, tabType: tab.type, title: tab.title });
+
+    // Spawn new window so its title bar lands under the cursor
+    const width = 1200;
+    const height = 800;
+    try {
+      await invoke("spawn_tab_window", {
+        label,
+        title: tab.title,
+        x: screenX - 200,
+        y: screenY - 16,
+        width,
+        height,
+      });
+    } catch (err) {
+      console.error("spawn_tab_window failed", err);
+    }
+
+    detachTab(tab.id);
+    tearingOffRef.current = false;
+  }, [tabs, detachTab]);
+
   useEffect(() => {
     const handlePointerMove = (e: PointerEvent) => {
       const drag = pointerDragRef.current;
       if (!drag || e.pointerId !== drag.pointerId) return;
+      if (tearingOffRef.current) return;
 
       const deltaX = e.clientX - drag.startX;
       const deltaY = e.clientY - drag.startY;
@@ -130,6 +166,17 @@ export default function TabBar() {
         suppressClickRef.current = true;
         setDragIndex(drag.index);
         setDragOverIndex(drag.index);
+      }
+
+      // Tear-off: dragging a tab >80px downward away from the tab bar pops it out.
+      // deltaY is positive when dragging down. The tab bar is ~32px tall so 80px
+      // below the drag start puts the cursor clearly into the page content area.
+      if (isTauriRuntime() && deltaY > 80) {
+        pointerDragRef.current = null;
+        resetDragState();
+        window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+        triggerTearOff(drag.index, e.screenX, e.screenY);
+        return;
       }
 
       const hoveredIndex = getTabIndexFromPoint(e.clientX, e.clientY);
@@ -162,7 +209,7 @@ export default function TabBar() {
       window.removeEventListener("pointerup", handlePointerEnd);
       window.removeEventListener("pointercancel", handlePointerEnd);
     };
-  }, [dragIndex, dragOverIndex, getTabIndexFromPoint, reorderTabs, resetDragState]);
+  }, [dragIndex, dragOverIndex, getTabIndexFromPoint, reorderTabs, resetDragState, triggerTearOff]);
 
   const handlePointerDown = useCallback(
     (e: ReactPointerEvent<HTMLDivElement>, index: number) => {
@@ -177,6 +224,7 @@ export default function TabBar() {
         index,
         active: false,
       };
+
     },
     [renamingId],
   );

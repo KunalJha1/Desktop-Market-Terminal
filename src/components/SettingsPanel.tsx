@@ -89,6 +89,7 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
   }, [open, updateAvailable, updateStatus, handleCheckUpdate]);
 
   const [finnhubDraft, setFinnhubDraft] = useState("");
+  const [intradayBackfillYearsDraft, setIntradayBackfillYearsDraft] = useState("2");
   const [playbookMemoryDraft, setPlaybookMemoryDraft] = useState("");
   const [playbookMemoryEnabledDraft, setPlaybookMemoryEnabledDraft] = useState(false);
   const [finnhubSaveMessage, setFinnhubSaveMessage] = useState("");
@@ -108,6 +109,7 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
   useEffect(() => {
     if (!open) return;
     setFinnhubDraft(settings.finnhubApiKey);
+    setIntradayBackfillYearsDraft(String(settings.intradayBackfillYears));
     setPlaybookMemoryDraft(settings.playbookMemory);
     setPlaybookMemoryEnabledDraft(settings.playbookMemoryEnabled);
     setFinnhubSaveMessage("");
@@ -116,6 +118,7 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
   }, [
     open,
     settings.finnhubApiKey,
+    settings.intradayBackfillYears,
     settings.playbookMemory,
     settings.playbookMemoryEnabled,
   ]);
@@ -136,6 +139,17 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
         ? "Probing ports..."
         : "Disconnected";
   const finnhubTesting = finnhubStatus === "testing";
+  const intradayBackfillYears = Number.parseInt(intradayBackfillYearsDraft, 10);
+  const intradayBackfillYearsValid =
+    Number.isFinite(intradayBackfillYears) &&
+    intradayBackfillYears >= 1 &&
+    intradayBackfillYears <= 30;
+  const intradayBackfillYearsNormalized = intradayBackfillYearsValid
+    ? intradayBackfillYears
+    : settings.intradayBackfillYears;
+  const intradayBackfillDirty =
+    intradayBackfillYearsNormalized !== settings.intradayBackfillYears ||
+    intradayBackfillYearsDraft.trim() !== String(settings.intradayBackfillYears);
   const playbookHasText = playbookMemoryDraft.trim().length > 0;
   const playbookDirty =
     playbookMemoryDraft !== settings.playbookMemory ||
@@ -152,6 +166,11 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
       setFinnhubSaveState("error");
       setFinnhubSaveMessage(result.message);
     }
+  }
+
+  function handleIntradayBackfillSave() {
+    updateSettings({ intradayBackfillYears: intradayBackfillYearsNormalized });
+    setIntradayBackfillYearsDraft(String(intradayBackfillYearsNormalized));
   }
 
   function handlePlaybookSave() {
@@ -342,6 +361,45 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
                 {finnhubSaveMessage}
               </p>
             ) : null}
+          </section>
+
+          <section className="mt-6 border-t border-white/[0.06] pt-6">
+            <div className="mb-3">
+              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-white/30">
+                Historical Backfill
+              </h3>
+              <p className="mt-1 max-w-[320px] text-[10px] leading-4 text-white/35">
+                Controls how far the background worker tries to archive 1-minute bars from TWS. Intraday charts still load a smaller live window first.
+              </p>
+            </div>
+
+            <label className="mb-1 block text-[10px] text-white/30">
+              1-Minute Backfill Horizon (Years)
+            </label>
+            <div className="flex items-center gap-3">
+              <input
+                type="number"
+                min={1}
+                max={30}
+                step={1}
+                value={intradayBackfillYearsDraft}
+                onChange={(e) => setIntradayBackfillYearsDraft(e.target.value)}
+                className="w-24 rounded border border-white/[0.08] bg-base px-2 py-1 font-mono text-[11px] text-white/60 outline-none transition-colors duration-75 placeholder:text-white/15 focus:border-blue/40"
+              />
+              <button
+                type="button"
+                onClick={handleIntradayBackfillSave}
+                disabled={!intradayBackfillYearsValid || !intradayBackfillDirty}
+                className="rounded-md border border-white/[0.08] bg-base px-3 py-1 text-[11px] text-white/50 transition-colors duration-120 hover:bg-white/[0.04] hover:text-white/70 disabled:opacity-40"
+              >
+                Save
+              </button>
+            </div>
+            <p className={`mt-2 text-[10px] leading-4 ${intradayBackfillYearsValid ? "text-white/28" : "text-red/70"}`}>
+              {intradayBackfillYearsValid
+                ? `Default is 2 years. Maximum is 30 years. Current saved value: ${settings.intradayBackfillYears}Y.`
+                : "Enter a whole number between 1 and 30."}
+            </p>
           </section>
 
           <section className="mt-6 border-t border-white/[0.06] pt-6">

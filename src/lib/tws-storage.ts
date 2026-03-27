@@ -13,6 +13,7 @@ export interface TwsSettings {
   accountId: string;
   clientId: number;
   autoProbe: boolean;
+  intradayBackfillYears: number;
   finnhubApiKey: string;
   playbookMemory: string;
   playbookMemoryEnabled: boolean;
@@ -24,6 +25,17 @@ function randomClientId(): number {
   return Math.floor(Math.random() * 9000) + 1000;
 }
 
+function normalizeIntradayBackfillYears(value: unknown): number {
+  const years =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseInt(value, 10)
+        : Number.NaN;
+  if (!Number.isFinite(years)) return 2;
+  return Math.max(1, Math.min(30, Math.trunc(years)));
+}
+
 function defaultSettings(): TwsSettings {
   return {
     tradingMode: "account",
@@ -31,6 +43,7 @@ function defaultSettings(): TwsSettings {
     accountId: "",
     clientId: randomClientId(),
     autoProbe: true,
+    intradayBackfillYears: 2,
     finnhubApiKey: "",
     playbookMemory: "",
     playbookMemoryEnabled: false,
@@ -58,6 +71,7 @@ export async function loadTwsSettings(): Promise<TwsSettings> {
           ? parsed.clientId
           : randomClientId(),
       autoProbe: typeof parsed.autoProbe === "boolean" ? parsed.autoProbe : true,
+      intradayBackfillYears: normalizeIntradayBackfillYears(parsed.intradayBackfillYears),
       finnhubApiKey:
         typeof parsed.finnhubApiKey === "string" ? parsed.finnhubApiKey : "",
       playbookMemory:

@@ -1,3 +1,5 @@
+import { appWindow } from "@tauri-apps/api/window";
+import { isTauriRuntime } from "./platform";
 import type { TabType } from "./tabs";
 
 export interface DetachedTabInfo {
@@ -8,10 +10,11 @@ export interface DetachedTabInfo {
 
 const KEY_PREFIX = "detached-tab:";
 
-/** Returns the detached window label if this window was opened as a detached tab, or null */
+/** Returns the detached window label if this window is a detached tab, or null */
 export function getDetachedLabel(): string | null {
-  const params = new URLSearchParams(window.location.search);
-  return params.get("detached");
+  if (!isTauriRuntime()) return null;
+  const label = appWindow.label;
+  return label.startsWith("detached-") ? label : null;
 }
 
 /** Returns true if this window is a detached tab window */

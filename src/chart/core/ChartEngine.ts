@@ -11,7 +11,7 @@ import type {
   DrawingShape,
   DrawingSelection,
 } from '../types';
-import { COLORS, PRICE_AXIS_WIDTH, TIME_AXIS_HEIGHT, SUB_PANE_HEIGHT, SUB_PANE_SEPARATOR, FONT_MONO_SMALL, VOLUME_PANE_RATIO, DEFAULT_BARS_VISIBLE, getTimeframeMs } from '../constants';
+import { COLORS, PRICE_AXIS_CONTROL_HEIGHT, PRICE_AXIS_WIDTH, TIME_AXIS_HEIGHT, SUB_PANE_HEIGHT, SUB_PANE_SEPARATOR, FONT_MONO_SMALL, VOLUME_PANE_RATIO, DEFAULT_BARS_VISIBLE, getTimeframeMs } from '../constants';
 import { Viewport } from './Viewport';
 import { Renderer } from './Renderer';
 import { ScaleY } from './ScaleY';
@@ -28,7 +28,7 @@ import { PanZoom } from '../interaction/PanZoom';
 import { Crosshair } from '../interaction/Crosshair';
 import { Tooltip } from '../interaction/Tooltip';
 import { indicatorRegistry } from '../indicators/registry';
-import { computeIndicator } from '../indicators/compute';
+import { computeIndicator, recomputeIndicatorTail } from '../indicators/compute';
 import { detectActiveFvgZones } from '../indicators/shared/ictSmc';
 import type { ScriptResult } from '../types';
 import type { Timeframe } from '../types';
@@ -46,6 +46,32 @@ const BRANDING_ASSETS: Record<Exclude<ChartBrandingMode, 'none'>, { src: string;
 
 const brandingImageCache = new Map<string, HTMLImageElement>();
 const brandingImageFailures = new Set<string>();
+
+/** Single formatter for session tinting — avoid constructing Intl.DateTimeFormat per bar per frame. */
+const CHART_ET_DATE_FORMAT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
+function etDatePartsFromMs(tsMs: number): { year: number; month: number; day: number; hour: number; minute: number } {
+  const parts = CHART_ET_DATE_FORMAT.formatToParts(new Date(tsMs));
+  const getPart = (type: Intl.DateTimeFormatPartTypes) => {
+    const value = parts.find((part) => part.type === type)?.value ?? '0';
+    return parseInt(value, 10);
+  };
+  return {
+    year: getPart('year'),
+    month: getPart('month'),
+    day: getPart('day'),
+    hour: getPart('hour'),
+    minute: getPart('minute'),
+  };
+}
 
 export class ChartEngine {
   private canvas: HTMLCanvasElement;
@@ -111,6 +137,7 @@ export class ChartEngine {
   private _onDrawingHoverChange: ((hoveredId: string | null) => void) | null = null;
   private lastNotifiedViewportStart: number | null = null;
   private lastNotifiedViewportEnd: number | null = null;
+  private pendingMouseEvent: MouseEvent | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -148,7 +175,7 @@ export class ChartEngine {
     this.bars = bars;
     this.viewport.setRightOffsetBars(this.computeRightOffsetBars());
     this.viewport.setTotalBars(bars.length);
-    this.recomputeIndicators();
+    this.recomputeIndicators(false);
     if (wasNearEnd && bars.length > prevLength) {
       this.viewport.scrollToEnd();
     }
@@ -159,7 +186,7 @@ export class ChartEngine {
    * Incremental tail update: replaces bars from changeOffset onward.
    * Skips onViewportChange to avoid triggering pan-fetch cascades.
    */
-  updateTail(bars: OHLCVBar[], _changeOffset: number) {
+  updateTail(bars: OHLCVBar[], changeOffset: number) {
     const prevLength = this.bars.length;
     const wasNearEnd = this.liveMode && this.viewport.isNearEnd(2);
     this.bars = bars;
@@ -169,7 +196,7 @@ export class ChartEngine {
       this.viewport.setTotalBars(bars.length);
     }
 
-    this.recomputeIndicators();
+    this.recomputeIndicators(true, changeOffset);
 
     if (wasNearEnd && bars.length > prevLength) {
       this.viewport.scrollToEnd();
@@ -667,6 +694,7 @@ export class ChartEngine {
     this.canvas.style.height = height + 'px';
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     this.panZoom.setCanvasWidth(width);
+    this.panZoom.setCanvasHeight(height);
     this.markDirty();
   }
 
@@ -675,48 +703,86 @@ export class ChartEngine {
   private computeLayout(): ChartLayout {
     const assignedPanes = this.getAssignedSubPanes();
     const scriptPanes = this.getScriptSubPanes();
+    const COLLAPSED_HEIGHT = 28;
 
-    const assignedPaneHeights = assignedPanes.map(pane =>
-      (this.subPaneHeightOverrides.get(pane.paneId) ?? SUB_PANE_HEIGHT) + SUB_PANE_SEPARATOR
-    );
+    const getEffectiveHeight = (paneId: string): number => {
+      if (this.collapsedPanes.has(paneId)) return COLLAPSED_HEIGHT;
+      if (this.maximizedPaneId !== null && this.maximizedPaneId !== paneId) return COLLAPSED_HEIGHT;
+      return this.subPaneHeightOverrides.get(paneId) ?? SUB_PANE_HEIGHT;
+    };
+
+    const allPaneIds = [
+      ...assignedPanes.map(p => p.paneId),
+      ...scriptPanes.map(id => `__script_${id}__`),
+    ];
+    const nonMaximizedHeight = allPaneIds.reduce((sum, id) => {
+      if (this.maximizedPaneId && id === this.maximizedPaneId) return sum;
+      const h = getEffectiveHeight(id);
+      return sum + (h > 0 ? h + SUB_PANE_SEPARATOR : 0);
+    }, 0);
+
+    const assignedPaneHeights = assignedPanes.map(pane => {
+      const h = getEffectiveHeight(pane.paneId);
+      return (h > 0 ? h + SUB_PANE_SEPARATOR : 0);
+    });
     const scriptHeights = scriptPanes.map(id => {
       const key = `__script_${id}__`;
-      return (this.subPaneHeightOverrides.get(key) ?? SUB_PANE_HEIGHT) + SUB_PANE_SEPARATOR;
+      const h = getEffectiveHeight(key);
+      return (h > 0 ? h + SUB_PANE_SEPARATOR : 0);
     });
     const totalSubPaneHeight = [...assignedPaneHeights, ...scriptHeights].reduce((a, b) => a + b, 0);
-    const mainHeight = this.height - TIME_AXIS_HEIGHT - totalSubPaneHeight;
+    const mainHeight = this.maximizedPaneId
+      ? 0
+      : this.height - TIME_AXIS_HEIGHT - totalSubPaneHeight;
 
     const subPanes: SubPaneLayout[] = [];
     let currentTop = mainHeight;
 
     for (const pane of assignedPanes) {
-      const h = this.subPaneHeightOverrides.get(pane.paneId) ?? SUB_PANE_HEIGHT;
+      const panePresentation = this.getSubPanePresentation(pane.indicatorIds);
+      const isCollapsed = this.collapsedPanes.has(pane.paneId);
+      const isMaximized = this.maximizedPaneId === pane.paneId;
+      const isCompressed = this.maximizedPaneId !== null && !isMaximized;
+      const h = isCompressed ? COLLAPSED_HEIGHT : isCollapsed ? COLLAPSED_HEIGHT : (this.subPaneHeightOverrides.get(pane.paneId) ?? SUB_PANE_HEIGHT);
+      const maxH = isMaximized ? Math.max(COLLAPSED_HEIGHT, this.height - TIME_AXIS_HEIGHT - nonMaximizedHeight - mainHeight) : h;
+
       subPanes.push({
         paneId: pane.paneId,
         indicatorIds: pane.indicatorIds,
         top: currentTop + SUB_PANE_SEPARATOR,
-        height: h,
+        height: maxH,
         yScaleMode: this.subPaneScaleModes.get(pane.paneId) ?? 'auto',
+        showScaleControls: panePresentation.showScaleControls,
+        collapsed: isCollapsed,
+        maximized: isMaximized,
       });
-      currentTop += h + SUB_PANE_SEPARATOR;
+      currentTop += maxH + SUB_PANE_SEPARATOR;
     }
 
     for (const scriptId of scriptPanes) {
       const key = `__script_${scriptId}__`;
-      const h = this.subPaneHeightOverrides.get(key) ?? SUB_PANE_HEIGHT;
+      const isCollapsed = this.collapsedPanes.has(key);
+      const isMaximized = this.maximizedPaneId === key;
+      const isCompressed = this.maximizedPaneId !== null && !isMaximized;
+      const h = isCompressed ? COLLAPSED_HEIGHT : isCollapsed ? COLLAPSED_HEIGHT : (this.subPaneHeightOverrides.get(key) ?? SUB_PANE_HEIGHT);
+      const maxH = isMaximized ? Math.max(COLLAPSED_HEIGHT, this.height - TIME_AXIS_HEIGHT - nonMaximizedHeight - mainHeight) : h;
+
       subPanes.push({
         paneId: key,
         indicatorIds: [key],
         top: currentTop + SUB_PANE_SEPARATOR,
-        height: h,
+        height: maxH,
         yScaleMode: this.subPaneScaleModes.get(key) ?? 'auto',
+        showScaleControls: true,
+        collapsed: isCollapsed,
+        maximized: isMaximized,
       });
-      currentTop += h + SUB_PANE_SEPARATOR;
+      currentTop += maxH + SUB_PANE_SEPARATOR;
     }
 
     return {
       mainTop: 0,
-      mainHeight,
+      mainHeight: Math.max(0, mainHeight),
       subPanes,
       priceAxisWidth: PRICE_AXIS_WIDTH,
       timeAxisHeight: TIME_AXIS_HEIGHT,
@@ -744,6 +810,28 @@ export class ChartEngine {
     }));
   }
 
+  private getSubPanePresentation(indicatorIds: string[]): {
+    min?: number;
+    max?: number;
+    showScaleControls: boolean;
+  } {
+    if (indicatorIds.length !== 1) {
+      return { showScaleControls: true };
+    }
+
+    const indicator = this.activeIndicators.find((entry) => entry.id === indicatorIds[0]);
+    if (!indicator) {
+      return { showScaleControls: true };
+    }
+
+    const meta = indicatorRegistry[indicator.name];
+    return {
+      min: meta?.paneRange?.min,
+      max: meta?.paneRange?.max,
+      showScaleControls: !meta?.hidePaneScaleControls,
+    };
+  }
+
   private getScriptSubPanes(): string[] {
     const ids: string[] = [];
     for (const [id, result] of this.scriptResults) {
@@ -765,9 +853,18 @@ export class ChartEngine {
 
   // --- Indicators ---
 
-  private recomputeIndicators() {
+  private recomputeIndicators(tailOnly = false, changeOffset = 0) {
     for (const ind of this.activeIndicators) {
-      this.computeSingleIndicator(ind);
+      if (
+        tailOnly &&
+        changeOffset > 0 &&
+        changeOffset < this.bars.length &&
+        ind.data?.length
+      ) {
+        ind.data = recomputeIndicatorTail(ind.name, this.bars, ind.params, changeOffset, ind.data);
+      } else {
+        this.computeSingleIndicator(ind);
+      }
     }
   }
 
@@ -780,6 +877,11 @@ export class ChartEngine {
   private markDirty() {
     this.dirty = true;
     this.notifyViewportChange();
+  }
+
+  // Lightweight dirty flag for crosshair-only updates — skips viewport change notification
+  private markCrosshairDirty() {
+    this.dirty = true;
   }
 
   private notifyViewportChange() {
@@ -796,6 +898,11 @@ export class ChartEngine {
   private startRenderLoop() {
     const loop = () => {
       if (this.destroyed) return;
+      // Coalesce all mousemove events that arrived since the last frame into one
+      if (this.pendingMouseEvent) {
+        this.processMouseMove(this.pendingMouseEvent);
+        this.pendingMouseEvent = null;
+      }
       if (this.dirty) {
         this.dirty = false;
         this.render();
@@ -832,6 +939,8 @@ export class ChartEngine {
 
       // Pre/post-market session background tints (intraday only)
       this.renderSessionHighlights();
+      // Purple tint behind off-hours synthetic bars built from quote ticks
+      this.renderSyntheticHighlights();
 
       // Main-chart volume overlays render behind price action
       this.renderMainVolumeOverlays();
@@ -897,11 +1006,17 @@ export class ChartEngine {
     }
 
     // Last price label on y-axis (persistent, colored by day direction)
+    this.renderVisibleRangeExtremeMarkers();
     this.renderLastPriceLabel();
 
     // Crosshair & tooltip (with indicator labels)
     this.crosshair.render(this.renderer, this.viewport, this.scaleX, this.width, this.height);
     this.tooltip.render(this.renderer, this.viewport, this.crosshair.hit);
+
+    // Sub-pane headers always render last so nothing can overlap them.
+    for (const pane of layout.subPanes) {
+      this.renderSubPaneHeaderOverlay(pane, chartAreaWidth);
+    }
   }
 
   private renderLastPriceLabel() {
@@ -910,8 +1025,9 @@ export class ChartEngine {
     const lastPrice = lastBar.close;
 
     const pixelY = this.viewport.priceToPixelY(lastPrice);
-    // Clamp so the label stays within the chart area
     if (pixelY < this.viewport.chartTop || pixelY > this.viewport.chartTop + this.viewport.chartHeight) return;
+    const labelY = this.clampMainAxisLabelY(pixelY);
+    if (labelY == null) return;
 
     // Determine day direction: find first bar of the same calendar day as the last bar
     const tf = this.scaleX.timeframe;
@@ -940,8 +1056,129 @@ export class ChartEngine {
     this.renderer.dashedLine(this.viewport.chartLeft, pixelY, priceAxisX, pixelY, isUp ? 'rgba(0,200,83,0.35)' : 'rgba(255,61,113,0.35)', 1, [4, 4]);
 
     // Draw the price box on the y-axis (same layout as crosshair label)
-    this.renderer.rect(priceAxisX, pixelY - 10, PRICE_AXIS_WIDTH, 20, boxColor);
-    this.renderer.text(lastPrice.toFixed(2), priceAxisX + 6, pixelY, '#FFFFFF', 'left');
+    this.renderer.rect(priceAxisX, labelY - 10, PRICE_AXIS_WIDTH, 20, boxColor);
+    this.renderer.text(this.formatAxisPrice(lastPrice), priceAxisX + 6, labelY, '#FFFFFF', 'left');
+  }
+
+  private renderVisibleRangeExtremeMarkers() {
+    const extremes = this.getVisibleRangeExtremes();
+    if (!extremes) return;
+
+    const priceAxisX = this.width - PRICE_AXIS_WIDTH;
+    const highPixelY = this.viewport.priceToPixelY(extremes.high.price);
+    const lowPixelY = this.viewport.priceToPixelY(extremes.low.price);
+    if (
+      highPixelY < this.viewport.chartTop ||
+      highPixelY > this.viewport.chartTop + this.viewport.chartHeight ||
+      lowPixelY < this.viewport.chartTop ||
+      lowPixelY > this.viewport.chartTop + this.viewport.chartHeight
+    ) {
+      return;
+    }
+
+    const highBaseLabelY = this.clampMainAxisLabelY(highPixelY);
+    const lowBaseLabelY = this.clampMainAxisLabelY(lowPixelY);
+    if (highBaseLabelY == null || lowBaseLabelY == null) return;
+
+    const minGap = 22;
+    let highLabelY = highBaseLabelY;
+    let lowLabelY = lowBaseLabelY;
+    if (Math.abs(highLabelY - lowLabelY) < minGap) {
+      const midpoint = (highLabelY + lowLabelY) / 2;
+      highLabelY = this.clampMainAxisLabelY(midpoint - minGap / 2) ?? highLabelY;
+      lowLabelY = this.clampMainAxisLabelY(midpoint + minGap / 2) ?? lowLabelY;
+      if (Math.abs(highLabelY - lowLabelY) < minGap) {
+        highLabelY = this.clampMainAxisLabelY(highLabelY - minGap / 2) ?? highLabelY;
+        lowLabelY = this.clampMainAxisLabelY(highLabelY + minGap) ?? lowLabelY;
+      }
+    }
+
+    this.renderVisibleExtremeMarker({
+      price: extremes.high.price,
+      barIndex: extremes.high.index,
+      pixelY: highPixelY,
+      labelY: highLabelY,
+      lineColor: 'rgba(245,158,11,0.78)',
+      boxColor: '#31230F',
+      textColor: '#FCD34D',
+      priceAxisX,
+    });
+    this.renderVisibleExtremeMarker({
+      price: extremes.low.price,
+      barIndex: extremes.low.index,
+      pixelY: lowPixelY,
+      labelY: lowLabelY,
+      lineColor: 'rgba(96,165,250,0.78)',
+      boxColor: '#10263A',
+      textColor: '#BFDBFE',
+      priceAxisX,
+    });
+  }
+
+  private renderVisibleExtremeMarker(params: {
+    price: number;
+    barIndex: number;
+    pixelY: number;
+    labelY: number;
+    lineColor: string;
+    boxColor: string;
+    textColor: string;
+    priceAxisX: number;
+  }) {
+    const { price, barIndex, pixelY, labelY, lineColor, boxColor, textColor, priceAxisX } = params;
+    const startX = Math.max(this.viewport.chartLeft, Math.min(priceAxisX, this.viewport.barToPixelX(barIndex)));
+
+    this.renderer.dashedLine(startX, pixelY, priceAxisX, pixelY, lineColor, 1, [1, 3]);
+    this.renderer.rect(priceAxisX, labelY - 10, PRICE_AXIS_WIDTH, 20, boxColor);
+    this.renderer.textSmall(this.formatAxisPrice(price), priceAxisX + 6, labelY, textColor, 'left');
+  }
+
+  private getVisibleRangeExtremes(): { high: { price: number; index: number }; low: { price: number; index: number } } | null {
+    if (this.bars.length === 0) return null;
+
+    const start = Math.max(0, Math.floor(this.viewport.startIndex));
+    const end = Math.min(this.bars.length, Math.ceil(this.viewport.startIndex + this.viewport.barsVisible));
+    if (start >= end) return null;
+
+    let highPrice = -Infinity;
+    let lowPrice = Infinity;
+    let highIndex = -1;
+    let lowIndex = -1;
+
+    for (let i = start; i < end; i++) {
+      const bar = this.bars[i];
+      if (!bar) continue;
+
+      if (Number.isFinite(bar.high) && bar.high > highPrice) {
+        highPrice = bar.high;
+        highIndex = i;
+      }
+      if (Number.isFinite(bar.low) && bar.low < lowPrice) {
+        lowPrice = bar.low;
+        lowIndex = i;
+      }
+    }
+
+    if (!Number.isFinite(highPrice) || !Number.isFinite(lowPrice) || highIndex < 0 || lowIndex < 0) {
+      return null;
+    }
+
+    return {
+      high: { price: highPrice, index: highIndex },
+      low: { price: lowPrice, index: lowIndex },
+    };
+  }
+
+  private clampMainAxisLabelY(pixelY: number): number | null {
+    const labelMinY = this.viewport.chartTop + 10;
+    const labelMaxY = this.viewport.chartTop + this.viewport.chartHeight - PRICE_AXIS_CONTROL_HEIGHT - 10;
+    if (labelMaxY <= labelMinY) return null;
+    return Math.min(Math.max(pixelY, labelMinY), labelMaxY);
+  }
+
+  private formatAxisPrice(price: number): string {
+    if (price >= 10000) return price.toFixed(0);
+    return price.toFixed(2);
   }
 
   private renderSessionHighlights() {
@@ -971,13 +1208,7 @@ export class ChartEngine {
 
     for (let i = start; i < end; i++) {
       const bar = this.bars[i];
-      let minuteOfDay = -1;
-      let session = this.getExtendedSessionForBar(bar.time, barDurationMs);
-      if (minuteOfDay >= 240 && minuteOfDay < 570) {
-        session = 'pre';   // 04:00–09:29 ET
-      } else if (minuteOfDay >= 960 && minuteOfDay < 1200) {
-        session = 'post';  // 16:00–19:59 ET
-      }
+      const session = this.getExtendedSessionForBar(bar.time, barDurationMs);
 
       const cx = this.viewport.barToPixelX(i);
 
@@ -996,9 +1227,47 @@ export class ChartEngine {
     }
   }
 
+  private renderSyntheticHighlights() {
+    if (this.bars.length === 0) return;
+    const start = Math.max(0, Math.floor(this.viewport.startIndex));
+    const end = Math.min(this.bars.length, Math.ceil(this.viewport.endIndex));
+    if (start >= end) return;
+
+    const chartTop = this.viewport.chartTop;
+    const chartHeight = this.viewport.chartHeight;
+    const halfBar = this.viewport.barWidth / 2;
+
+    let runLeft = 0;
+    let inRun = false;
+
+    const flush = (rightX: number) => {
+      if (!inRun) return;
+      this.renderer.rect(runLeft, chartTop, rightX - runLeft, chartHeight, COLORS.syntheticBar);
+      inRun = false;
+    };
+
+    for (let i = start; i < end; i++) {
+      const bar = this.bars[i];
+      const cx = this.viewport.barToPixelX(i);
+      if (bar.synthetic) {
+        if (!inRun) {
+          runLeft = cx - halfBar;
+          inRun = true;
+        }
+      } else {
+        flush(cx - halfBar);
+      }
+    }
+
+    if (inRun) {
+      const lastCx = this.viewport.barToPixelX(end - 1);
+      flush(lastCx + halfBar);
+    }
+  }
+
   private getExtendedSessionForBar(startTimeMs: number, durationMs: number): 'pre' | 'post' | null {
-    const startEt = this.getEtDateParts(startTimeMs);
-    const endEt = this.getEtDateParts(Math.max(startTimeMs, startTimeMs + Math.max(1, durationMs) - 1));
+    const startEt = etDatePartsFromMs(startTimeMs);
+    const endEt = etDatePartsFromMs(Math.max(startTimeMs, startTimeMs + Math.max(1, durationMs) - 1));
     if (startEt.year !== endEt.year || startEt.month !== endEt.month || startEt.day !== endEt.day) {
       return null;
     }
@@ -1008,29 +1277,6 @@ export class ChartEngine {
     if (startMinute < 570 && endMinuteExclusive > 240) return 'pre';
     if (startMinute < 1200 && endMinuteExclusive > 960) return 'post';
     return null;
-  }
-
-  private getEtDateParts(tsMs: number): { year: number; month: number; day: number; hour: number; minute: number } {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).formatToParts(new Date(tsMs));
-    const getPart = (type: Intl.DateTimeFormatPartTypes) => {
-      const value = parts.find((part) => part.type === type)?.value ?? '0';
-      return parseInt(value, 10);
-    };
-    return {
-      year: getPart('year'),
-      month: getPart('month'),
-      day: getPart('day'),
-      hour: getPart('hour'),
-      minute: getPart('minute'),
-    };
   }
 
   private renderMainVolumeOverlays() {
@@ -1127,6 +1373,10 @@ export class ChartEngine {
         indicatorIds: [ind.id],
         top: paneTop,
         height: paneHeight,
+        yScaleMode: 'auto',
+        showScaleControls: true,
+        collapsed: false,
+        maximized: false,
       } as SubPaneLayout;
 
       this.renderer.clip(0, paneTop, this.width, paneHeight, () => {
@@ -1582,7 +1832,6 @@ export class ChartEngine {
     if (indicators.length === 0) return;
 
     const volumeIndicators = indicators.filter((indicator) => indicator.name === 'Volume');
-    const nonVolumeIndicators = indicators.filter((indicator) => indicator.name !== 'Volume');
 
     if (volumeIndicators.length > 0) {
       this.renderer.clip(0, pane.top, chartAreaWidth, pane.height, () => {
@@ -1596,12 +1845,220 @@ export class ChartEngine {
       });
     }
 
-    const ranges = nonVolumeIndicators
+    const ranges = this.getSubPaneRanges(pane, start, end);
+
+    if (ranges.length === 0) return;
+
+    const panePresentation = this.getSubPanePresentation(pane.indicatorIds);
+    const primary = ranges[0];
+    const primaryMin = panePresentation.min ?? primary.min;
+    const primaryMax = panePresentation.max ?? primary.max;
+    const paneScaleMode = this.subPaneScaleModes.get(pane.paneId) ?? 'auto';
+    this.scaleY.renderSubPane(
+      this.renderer,
+      pane.top,
+      pane.height,
+      primaryMin,
+      primaryMax,
+      this.width,
+      paneScaleMode,
+      pane.height > 24,
+      pane.showScaleControls && pane.height > 24,
+    );
+
+    const makeValueToY = (min: number, max: number) => {
+      if (paneScaleMode === 'log' && min > 0 && max > 0) {
+        const logMin = Math.log10(min);
+        const logMax = Math.log10(max);
+        const logRange = logMax - logMin || 1;
+        return (value: number) => value > 0
+          ? pane.top + ((logMax - Math.log10(value)) / logRange) * pane.height
+          : pane.top + pane.height;
+      }
+      const range = max - min || 1;
+      return (value: number) => pane.top + ((max - value) / range) * pane.height;
+    };
+
+    this.renderer.clip(0, pane.top, chartAreaWidth, pane.height, () => {
+      if (ranges.length === 1) {
+        const [{ ind, meta, min, max }] = ranges;
+        const effectiveMin = panePresentation.min ?? min;
+        const effectiveMax = panePresentation.max ?? max;
+        const range = effectiveMax - effectiveMin || 1;
+        const isTechnicalScore = ind.name === 'Technical Score';
+
+        if (isTechnicalScore) {
+          for (const level of [30, 50, 70]) {
+            const y = pane.top + ((effectiveMax - level) / (effectiveMax - effectiveMin)) * pane.height;
+            this.renderer.dashedLine(0, y, chartAreaWidth, y, level === 50 ? COLORS.textMuted : COLORS.border, 1, [4, 4]);
+          }
+        } else if (meta.guideLines?.length) {
+          for (const guideLine of meta.guideLines) {
+            const y = pane.top + ((effectiveMax - guideLine.value) / range) * pane.height;
+            if (guideLine.style === 'solid') {
+              this.renderer.line(0, y, chartAreaWidth, y, guideLine.color ?? COLORS.border, 1);
+            } else {
+              this.renderer.dashedLine(0, y, chartAreaWidth, y, guideLine.color ?? COLORS.border, 1, [4, 4]);
+            }
+          }
+        }
+      }
+
+      for (const { ind, min, max } of ranges) {
+        const effectiveMin = panePresentation.min ?? min;
+        const effectiveMax = panePresentation.max ?? max;
+        const valueToY = makeValueToY(effectiveMin, effectiveMax);
+        this.renderIndicatorSeries(
+          ind,
+          valueToY,
+          pane.top,
+          pane.top + pane.height,
+          start,
+          end,
+          pane,
+          effectiveMin,
+          effectiveMax,
+        );
+      }
+    });
+
+  }
+
+  private renderSubPaneHeaderOverlay(pane: SubPaneLayout, chartAreaWidth: number) {
+    if (pane.paneId.startsWith('__script_')) return;
+
+    const start = Math.max(0, Math.floor(this.viewport.startIndex));
+    const end = Math.min(this.bars.length, Math.ceil(this.viewport.endIndex));
+    const ranges = this.getSubPaneRanges(pane, start, end);
+    if (ranges.length === 0) return;
+
+    this.renderSubPaneHeader(pane, ranges, start, end, chartAreaWidth);
+  }
+
+  private renderSubPaneHeader(
+    pane: SubPaneLayout,
+    ranges: Array<{ ind: ActiveIndicator; meta: typeof indicatorRegistry[string]; min: number; max: number }>,
+    start: number,
+    end: number,
+    chartAreaWidth: number,
+  ) {
+    if (pane.height <= 18 || ranges.length === 0) return;
+
+    const hoverIndex = this.crosshair.hit?.inChart ? this.crosshair.hit.barIndex : null;
+    const fallbackIndex = Math.max(start, end - 1);
+    const barIndex = Math.max(0, Math.min(this.bars.length - 1, hoverIndex ?? fallbackIndex));
+
+    const lines = ranges
+      .map(({ ind, meta }) => {
+        const segments: Array<{ text: string; color: string }> = [
+          { text: meta.shortName, color: COLORS.textPrimary },
+        ];
+
+        for (let outputIndex = 0; outputIndex < meta.outputs.length; outputIndex += 1) {
+          const output = meta.outputs[outputIndex];
+          const series = ind.data[outputIndex];
+          if (!output || !series || barIndex >= series.length) continue;
+          const value = series[barIndex];
+          if (!Number.isFinite(value)) continue;
+          const valueColor = ind.name === 'Technical Score' && output.key === 'score'
+            ? this.technicalScoreStrokeColor(value)
+            : (ind.colors?.[output.key] ?? output.color);
+
+          const prefix = output.label ? ` ${output.label} ` : ' ';
+          segments.push({ text: prefix, color: COLORS.textMuted });
+          segments.push({
+            text: this.formatIndicatorValue(value),
+            color: valueColor,
+          });
+        }
+
+        return segments;
+      })
+      .filter((segments) => segments.length > 0);
+
+    if (lines.length === 0) return;
+
+    this.ctx.save();
+    this.ctx.font = FONT_MONO_SMALL;
+
+    const lineHeight = 12;
+    const contentWidth = Math.max(
+      ...lines.map((segments) =>
+        segments.reduce((sum, segment) => sum + this.ctx.measureText(segment.text).width, 0),
+      ),
+    );
+    const contentHeight = lines.length * lineHeight;
+    const boxX = 4;
+    const boxY = pane.top + 4;
+    const boxWidth = Math.min(chartAreaWidth - 8, Math.ceil(contentWidth) + 12);
+    const boxHeight = Math.min(pane.height - 8, contentHeight + 8);
+    const boxFill = '#000000';
+
+    this.ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
+    this.ctx.shadowBlur = 10;
+    this.ctx.shadowOffsetY = 3;
+    this.renderer.rect(boxX, boxY, boxWidth, boxHeight, boxFill);
+    this.ctx.restore();
+
+    this.renderer.rectStroke(boxX, boxY, boxWidth, boxHeight, 'rgba(255,255,255,0.08)');
+
+    let lineY = boxY + (boxHeight - contentHeight) / 2 + lineHeight / 2;
+    for (const segments of lines) {
+      let textX = boxX + 6;
+      for (const segment of segments) {
+        this.renderer.textSmall(segment.text, textX, lineY, segment.color, 'left');
+        textX += this.ctx.measureText(segment.text).width;
+      }
+      lineY += lineHeight;
+      if (lineY > boxY + boxHeight - 4) break;
+    }
+  }
+
+  private formatIndicatorValue(value: number): string {
+    const abs = Math.abs(value);
+    if (abs >= 10000) return value.toFixed(0);
+    if (abs >= 100) return value.toFixed(2);
+    if (abs >= 1) return value.toFixed(2);
+    if (abs >= 0.01) return value.toFixed(4);
+    return value.toFixed(6);
+  }
+
+  private getSubPaneRanges(
+    pane: SubPaneLayout,
+    start: number,
+    end: number,
+  ): Array<{ ind: ActiveIndicator; meta: typeof indicatorRegistry[string]; min: number; max: number }> {
+    const indicators = pane.indicatorIds
+      .map((indicatorId) => this.activeIndicators.find((indicator) => indicator.id === indicatorId))
+      .filter((indicator): indicator is ActiveIndicator => !!indicator);
+    const nonVolumeIndicators = indicators.filter((indicator) => indicator.name !== 'Volume');
+
+    return nonVolumeIndicators
       .map((ind) => {
         const meta = indicatorRegistry[ind.name];
         if (!meta) return null;
         if (ind.name === 'Technical Score' || ind.name === 'RSI') {
           return { ind, meta, min: 0, max: 100 };
+        }
+        if (ind.name === 'Volume Profile') {
+          const prices = ind.data[0] ?? [];
+          let min = Infinity;
+          let max = -Infinity;
+          for (let i = 0; i < prices.length; i++) {
+            if (!isNaN(prices[i])) {
+              if (prices[i] < min) min = prices[i];
+              if (prices[i] > max) max = prices[i];
+            }
+          }
+          if (!isFinite(min) || !isFinite(max)) {
+            min = 0;
+            max = 100;
+          } else {
+            const pad = (max - min) * 0.05 || 1;
+            min -= pad;
+            max += pad;
+          }
+          return { ind, meta, min, max };
         }
 
         let min = Infinity;
@@ -1629,80 +2086,6 @@ export class ChartEngine {
         return { ind, meta, min, max };
       })
       .filter((entry): entry is { ind: ActiveIndicator; meta: typeof indicatorRegistry[string]; min: number; max: number } => !!entry);
-
-    if (ranges.length === 0) {
-      if (volumeIndicators.length > 0) {
-        this.renderer.textSmall('Vol', 4, pane.top + 12, COLORS.textMuted, 'left');
-      }
-      return;
-    }
-
-    const primary = ranges[0];
-    const paneScaleMode = this.subPaneScaleModes.get(pane.paneId) ?? 'auto';
-    this.scaleY.renderSubPane(this.renderer, pane.top, pane.height, primary.min, primary.max, this.width, paneScaleMode);
-    this.renderer.textSmall(ranges.map(({ meta }) => meta.shortName).join(' + '), 4, pane.top + 12, COLORS.textMuted, 'left');
-
-    const makeValueToY = (min: number, max: number) => {
-      if (paneScaleMode === 'log' && min > 0 && max > 0) {
-        const logMin = Math.log10(min);
-        const logMax = Math.log10(max);
-        const logRange = logMax - logMin || 1;
-        return (value: number) => value > 0
-          ? pane.top + ((logMax - Math.log10(value)) / logRange) * pane.height
-          : pane.top + pane.height;
-      }
-      const range = max - min || 1;
-      return (value: number) => pane.top + ((max - value) / range) * pane.height;
-    };
-
-    this.renderer.clip(0, pane.top, chartAreaWidth, pane.height, () => {
-      if (ranges.length === 1) {
-        const [{ ind, meta, min, max }] = ranges;
-        const range = max - min || 1;
-        const isTechnicalScore = ind.name === 'Technical Score';
-
-        if (isTechnicalScore) {
-          for (const level of [30, 50, 70]) {
-            const y = pane.top + ((max - level) / (max - min)) * pane.height;
-            this.renderer.dashedLine(0, y, chartAreaWidth, y, level === 50 ? COLORS.textMuted : COLORS.border, 1, [4, 4]);
-          }
-        } else if (meta.guideLines?.length) {
-          for (const guideLine of meta.guideLines) {
-            const y = pane.top + ((max - guideLine.value) / range) * pane.height;
-            if (guideLine.style === 'solid') {
-              this.renderer.line(0, y, chartAreaWidth, y, guideLine.color ?? COLORS.border, 1);
-            } else {
-              this.renderer.dashedLine(0, y, chartAreaWidth, y, guideLine.color ?? COLORS.border, 1, [4, 4]);
-            }
-          }
-        }
-      }
-
-      for (const { ind, min, max } of ranges) {
-        const valueToY = makeValueToY(min, max);
-        this.renderIndicatorSeries(
-          ind,
-          valueToY,
-          pane.top,
-          pane.top + pane.height,
-          start,
-          end,
-          pane,
-          min,
-          max,
-        );
-      }
-    });
-
-    ranges.forEach(({ ind: _ind, meta, min, max }, index) => {
-      this.renderer.textSmall(
-        `${meta.shortName} ${min.toFixed(1)}-${max.toFixed(1)}`,
-        chartAreaWidth - 8,
-        pane.top + 12 + index * 12,
-        COLORS.textPrimary,
-        'right',
-      );
-    });
   }
 
   private renderIndicatorSeries(
@@ -1718,6 +2101,11 @@ export class ChartEngine {
   ) {
     const meta = indicatorRegistry[ind.name];
     if (!meta) return;
+
+    if (ind.name === 'Volume Profile') {
+      this.renderVolumeProfile(ind, toY, clipTop, clipBottom);
+      return;
+    }
 
     if (ind.name === 'Liquidity Sweep Signal') {
       this.renderLiquiditySweepBox(ind, toY, clipTop, clipBottom);
@@ -1782,8 +2170,7 @@ export class ChartEngine {
           const x = this.viewport.barToPixelX(i);
           const barW = Math.max(1, Math.min(this.viewport.getBarSlotWidth(i) * 0.6, this.viewport.getBarSlotWidth(i) - 1));
           const y = toY(series[i]);
-          const color = series[i] >= 0 ? COLORS.green : COLORS.red;
-          this.renderer.rect(x - barW / 2, Math.min(y, zeroY), barW, Math.abs(y - zeroY), color);
+          this.renderer.rect(x - barW / 2, Math.min(y, zeroY), barW, Math.abs(y - zeroY), drawColor);
         }
         continue;
       }
@@ -1809,6 +2196,42 @@ export class ChartEngine {
           this.renderer.polyline(points, drawColor, lw);
         }
       }
+    }
+  }
+
+  private renderVolumeProfile(
+    ind: ActiveIndicator,
+    toY: (value: number) => number,
+    clipTop: number,
+    clipBottom: number,
+  ) {
+    const prices = ind.data[0] ?? [];
+    const volumes = ind.data[1] ?? [];
+    const bins = Math.min(prices.length, volumes.length);
+    if (bins === 0) return;
+
+    let maxVolume = 0;
+    for (let i = 0; i < bins; i++) {
+      if (!isNaN(volumes[i]) && volumes[i] > maxVolume) maxVolume = volumes[i];
+    }
+    if (!(maxVolume > 0)) return;
+
+    const chartAreaWidth = this.width - PRICE_AXIS_WIDTH;
+    const rightX = chartAreaWidth - 8;
+    const maxProfileWidth = Math.max(24, Math.min(chartAreaWidth * 0.28, 140));
+    const drawColor = ind.colors?.volumes ?? indicatorRegistry[ind.name].outputs[1]?.color ?? COLORS.blue;
+    const binHeight = Math.max(2, Math.floor((clipBottom - clipTop) / Math.max(bins, 1) * 0.9));
+
+    for (let i = 0; i < bins; i++) {
+      const price = prices[i];
+      const volume = volumes[i];
+      if (isNaN(price) || isNaN(volume) || volume <= 0) continue;
+
+      const y = toY(price);
+      if (y < clipTop - binHeight || y > clipBottom + binHeight) continue;
+
+      const width = Math.max(1, (volume / maxVolume) * maxProfileWidth);
+      this.renderer.rect(rightX - width, y - binHeight / 2, width, binHeight, drawColor);
     }
   }
 
@@ -2022,8 +2445,7 @@ export class ChartEngine {
     min -= pad;
     max += pad;
 
-    this.scaleY.renderSubPane(this.renderer, pane.top, pane.height, min, max, this.width);
-    this.renderer.textSmall('Script', 4, pane.top + 12, COLORS.purple, 'left');
+    this.scaleY.renderSubPane(this.renderer, pane.top, pane.height, min, max, this.width, 'auto', pane.height > 24, pane.height > 24);
 
     const range = max - min;
     const toY = (v: number) => pane.top + ((max - v) / range) * pane.height;
@@ -2114,7 +2536,17 @@ export class ChartEngine {
     this.panZoom.onMouseDown(e);
   };
 
+  // Coalesced into RAF loop for crosshair — drawing/drag paths still run per-event for responsiveness
   private onMouseMove = (e: MouseEvent) => {
+    // Drawing and drag operations need immediate response — bypass the RAF coalescing
+    if (this.drawingPointerActive || this.draggedDrawingId) {
+      this.processMouseMove(e);
+      return;
+    }
+    this.pendingMouseEvent = e;
+  };
+
+  private processMouseMove = (e: MouseEvent) => {
     const { mx, my, rect } = this.getCanvasPoint(e);
 
     if (this.drawingPointerActive && this.drawingStart) {
@@ -2185,11 +2617,14 @@ export class ChartEngine {
       }
     }
 
-    // Crosshair
+    // Crosshair — only redraw if the bar index or chart-presence changed
     const hit = this.hitTest.test(this.viewport, this.bars, mx, my);
+    const prev = this.crosshair.hit;
     this.crosshair.visible = hit.inChart;
     this.crosshair.hit = hit;
-    this.markDirty();
+    if (!prev || hit.barIndex !== prev.barIndex || hit.inChart !== prev.inChart || Math.abs(hit.pixelY - prev.pixelY) > 0.5) {
+      this.markCrosshairDirty();
+    }
   };
 
   private onMouseUp = (e: MouseEvent) => {

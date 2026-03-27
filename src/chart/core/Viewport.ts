@@ -14,6 +14,7 @@ export class Viewport {
   totalBars: number = 0;
   rightOffsetBars: number = 0;
   private initialized: boolean = false;
+  private pendingScrollToEnd: boolean = false;
 
   // Computed layout region for the main chart area
   chartLeft: number = 0;
@@ -74,9 +75,16 @@ export class Viewport {
    * Call this when switching symbols to avoid staying stuck at old scroll position.
    */
   reset() {
-    this.initialized = false;
-    this.startIndex = 0;
     this.manualYScale = false;
+    this.pendingScrollToEnd = true;
+    if (this.totalBars > 0) {
+      // Bars already loaded — scroll to end immediately so there's no jump to index 0
+      this.scrollToEnd();
+    } else {
+      // No bars yet — wait for first non-empty setTotalBars
+      this.initialized = false;
+      this.startIndex = 0;
+    }
   }
 
   setTotalBars(total: number) {
@@ -87,9 +95,10 @@ export class Viewport {
       // Symbol changes use reset() explicitly which handles that case.
       return;
     }
-    // On first non-empty load, scroll to end
-    if (!this.initialized) {
+    // Scroll to end whenever a reset was requested (covers both first load and symbol/timeframe switch)
+    if (!this.initialized || this.pendingScrollToEnd) {
       this.initialized = true;
+      this.pendingScrollToEnd = false;
       this.scrollToEnd();
       return;
     }
@@ -108,6 +117,16 @@ export class Viewport {
     const anchorBar = this.startIndex + this.barsVisible / 2;
     this.barsVisible = next;
     this.startIndex = this.clampStart(anchorBar - this.barsVisible / 2);
+  }
+
+  setBarsVisibleAround(bars: number, anchorPixelX: number) {
+    if (this.chartWidth <= 0) return;
+    const next = Math.max(MIN_BARS_VISIBLE, Math.min(MAX_BARS_VISIBLE, Math.round(bars)));
+    if (next === this.barsVisible) return;
+    const anchorRatio = (anchorPixelX - this.chartLeft) / this.chartWidth;
+    const anchorBar = this.pixelXToBar(anchorPixelX);
+    this.barsVisible = next;
+    this.startIndex = this.clampStart(anchorBar - this.barsVisible * anchorRatio);
   }
 
   getMaxStart(): number {

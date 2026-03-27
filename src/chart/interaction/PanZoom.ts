@@ -1,14 +1,19 @@
 import { Viewport } from '../core/Viewport';
-import { PRICE_AXIS_WIDTH } from '../constants';
+import { PRICE_AXIS_WIDTH, TIME_AXIS_HEIGHT } from '../constants';
 
 export class PanZoom {
   private dragging = false;
   private yScaling = false;
+  private xScaling = false;
+  private xScaleStartX = 0;
+  private xScaleAnchorX = 0;
+  private xScaleStartBarsVisible = 0;
   private lastX = 0;
   private lastY = 0;
   private onDirty: () => void;
   private viewport: Viewport;
   private canvasWidth = 0;
+  private canvasHeight = 0;
   private canvasEl: HTMLCanvasElement | null = null;
 
   constructor(viewport: Viewport, onDirty: () => void) {
@@ -18,6 +23,10 @@ export class PanZoom {
 
   setCanvasWidth(w: number) {
     this.canvasWidth = w;
+  }
+
+  setCanvasHeight(h: number) {
+    this.canvasHeight = h;
   }
 
   setCanvasEl(el: HTMLCanvasElement) {
@@ -34,11 +43,18 @@ export class PanZoom {
     };
   }
 
+  private isInTimeAxis(mx: number, my: number): boolean {
+    const axisTop = this.canvasHeight - TIME_AXIS_HEIGHT;
+    const axisBottom = this.canvasHeight;
+    return my >= axisTop && my <= axisBottom && !this.viewport.isInPriceAxis(mx, this.canvasWidth, PRICE_AXIS_WIDTH);
+  }
+
   onMouseDown(e: MouseEvent) {
     if (e.button !== 0) return;
     const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
     const { sx, sy } = this.getScale();
     const mx = (e.clientX - rect.left) / sx;
+    const my = (e.clientY - rect.top) / sy;
 
     // If clicking on price axis, start Y-scale drag (blocked in auto mode)
     if (this.viewport.isInPriceAxis(mx, this.canvasWidth, PRICE_AXIS_WIDTH)) {
@@ -46,6 +62,14 @@ export class PanZoom {
         this.yScaling = true;
         this.viewport.startYScaleDrag((e.clientY - rect.top) / sy);
       }
+      return;
+    }
+
+    if (this.isInTimeAxis(mx, my)) {
+      this.xScaling = true;
+      this.xScaleStartX = mx;
+      this.xScaleAnchorX = mx;
+      this.xScaleStartBarsVisible = this.viewport.barsVisible;
       return;
     }
 
@@ -59,6 +83,17 @@ export class PanZoom {
       const { sy } = this.getScale();
       const my = (e.clientY - canvasRect.top) / sy;
       this.viewport.updateYScaleDrag(my);
+      this.onDirty();
+      return;
+    }
+
+    if (this.xScaling && canvasRect) {
+      const { sx } = this.getScale();
+      const mouseX = (e.clientX - canvasRect.left) / sx;
+      const dx = mouseX - this.xScaleStartX;
+      const zoomFactor = Math.exp(-dx / 140);
+      const nextBarsVisible = this.xScaleStartBarsVisible * zoomFactor;
+      this.viewport.setBarsVisibleAround(nextBarsVisible, this.xScaleAnchorX);
       this.onDirty();
       return;
     }
@@ -82,6 +117,7 @@ export class PanZoom {
       this.viewport.endYScaleDrag();
       this.yScaling = false;
     }
+    this.xScaling = false;
     this.dragging = false;
   }
 
@@ -144,6 +180,6 @@ export class PanZoom {
   }
 
   get isDragging() {
-    return this.dragging || this.yScaling;
+    return this.dragging || this.yScaling || this.xScaling;
   }
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useSyncExternalStore, useMemo } from "react";
+import { useEffect, useSyncExternalStore, useMemo } from "react";
 import { type QuoteData, ALL_SYMBOLS } from "./market-data";
 import { useTws } from "./tws";
 import tickersJson from "../../data/tickers.json";
@@ -14,6 +14,25 @@ const KNOWN_SYMBOLS: Set<string> = new Set([
 const liveQuotes = new Map<string, QuoteData>();
 const storeListeners = new Set<() => void>();
 let storeVersion = 0;
+const SNAPSHOT_POLL_MS = 5_000;
+const ACTIVE_SYMBOLS_REFRESH_MS = 90_000;
+const ACTIVE_SYMBOLS_STALE_MS = 90_000;
+const POLLER_STOP_GRACE_MS = 1_000;
+
+type PollerState = {
+  symbols: Map<string, number>;
+  snapshotIntervalId: number | null;
+  activeSymbolsIntervalId: number | null;
+  stopTimeoutId: number | null;
+  subscriberCount: number;
+  snapshotInFlight: boolean;
+  activeSymbolsInFlight: boolean;
+  lastSnapshotRequestKey: string;
+  lastActiveSymbolsKey: string;
+  lastActiveSymbolsPostedAt: number;
+};
+
+const pollersByPort = new Map<number, PollerState>();
 
 function notifyStore() {
   storeVersion++;
@@ -31,10 +50,173 @@ function getStoreVersion(): number {
   return storeVersion;
 }
 
-function deleteLiveQuote(symbol: string): void {
-  if (liveQuotes.delete(symbol)) {
-    notifyStore();
+function normalizeSymbols(symbols: string[]): string[] {
+  return Array.from(
+    new Set(
+      symbols
+        .map((symbol) => symbol.trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function getOrCreatePoller(sidecarPort: number): PollerState {
+  const existing = pollersByPort.get(sidecarPort);
+  if (existing) return existing;
+  const created: PollerState = {
+    symbols: new Map(),
+    snapshotIntervalId: null,
+    activeSymbolsIntervalId: null,
+    stopTimeoutId: null,
+    subscriberCount: 0,
+    snapshotInFlight: false,
+    activeSymbolsInFlight: false,
+    lastSnapshotRequestKey: "",
+    lastActiveSymbolsKey: "",
+    lastActiveSymbolsPostedAt: 0,
+  };
+  pollersByPort.set(sidecarPort, created);
+  return created;
+}
+
+function getTrackedSymbols(poller: PollerState): string[] {
+  return Array.from(poller.symbols.keys());
+}
+
+function getTrackedSymbolsKey(poller: PollerState): string {
+  return getTrackedSymbols(poller).join(",");
+}
+
+async function fetchSnapshots(sidecarPort: number, poller: PollerState): Promise<void> {
+  const symbols = getTrackedSymbols(poller);
+  if (symbols.length === 0 || poller.snapshotInFlight) return;
+
+  poller.snapshotInFlight = true;
+  try {
+    poller.lastSnapshotRequestKey = symbols.join(",");
+    const qs = encodeURIComponent(symbols.join(","));
+    const res = await fetch(`http://127.0.0.1:${sidecarPort}/market/snapshots?symbols=${qs}`);
+    if (!res.ok) return;
+    const payload = await res.json();
+    const quotes = (payload.snapshots as Array<Record<string, unknown>>) || [];
+    for (const q of quotes) {
+      const sym = q.symbol as string;
+      if (sym) updateLiveQuote(sym, q);
+    }
+  } catch {
+    // Ignore transient errors
+  } finally {
+    poller.snapshotInFlight = false;
   }
+}
+
+async function registerActiveSymbols(sidecarPort: number, poller: PollerState): Promise<void> {
+  const symbols = getTrackedSymbols(poller);
+  if (symbols.length === 0 || poller.activeSymbolsInFlight) return;
+
+  poller.activeSymbolsInFlight = true;
+  try {
+    await fetch(`http://127.0.0.1:${sidecarPort}/active-symbols`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbols }),
+    });
+    poller.lastActiveSymbolsKey = symbols.join(",");
+    poller.lastActiveSymbolsPostedAt = Date.now();
+  } catch {
+    // Ignore transient errors
+  } finally {
+    poller.activeSymbolsInFlight = false;
+  }
+}
+
+function ensurePollerRunning(sidecarPort: number, poller: PollerState): void {
+  if (poller.stopTimeoutId !== null) {
+    window.clearTimeout(poller.stopTimeoutId);
+    poller.stopTimeoutId = null;
+  }
+
+  if (poller.snapshotIntervalId === null) {
+    void fetchSnapshots(sidecarPort, poller);
+    poller.snapshotIntervalId = window.setInterval(() => {
+      void fetchSnapshots(sidecarPort, poller);
+    }, SNAPSHOT_POLL_MS);
+  }
+
+  if (poller.activeSymbolsIntervalId === null) {
+    void registerActiveSymbols(sidecarPort, poller);
+    poller.activeSymbolsIntervalId = window.setInterval(() => {
+      const currentKey = getTrackedSymbolsKey(poller);
+      const isStale = Date.now() - poller.lastActiveSymbolsPostedAt >= ACTIVE_SYMBOLS_STALE_MS;
+      if (currentKey && (currentKey !== poller.lastActiveSymbolsKey || isStale)) {
+        void registerActiveSymbols(sidecarPort, poller);
+      }
+    }, ACTIVE_SYMBOLS_REFRESH_MS);
+  }
+}
+
+function stopPoller(sidecarPort: number, poller: PollerState): void {
+  if (poller.snapshotIntervalId !== null) {
+    window.clearInterval(poller.snapshotIntervalId);
+    poller.snapshotIntervalId = null;
+  }
+  if (poller.activeSymbolsIntervalId !== null) {
+    window.clearInterval(poller.activeSymbolsIntervalId);
+    poller.activeSymbolsIntervalId = null;
+  }
+  if (poller.stopTimeoutId !== null) {
+    window.clearTimeout(poller.stopTimeoutId);
+    poller.stopTimeoutId = null;
+  }
+  pollersByPort.delete(sidecarPort);
+}
+
+function subscribeSymbols(sidecarPort: number, symbols: string[]): () => void {
+  const normalizedSymbols = normalizeSymbols(symbols);
+  if (normalizedSymbols.length === 0) {
+    return () => {};
+  }
+
+  const poller = getOrCreatePoller(sidecarPort);
+  const previousKey = getTrackedSymbolsKey(poller);
+  poller.subscriberCount += 1;
+  for (const symbol of normalizedSymbols) {
+    poller.symbols.set(symbol, (poller.symbols.get(symbol) ?? 0) + 1);
+  }
+  const currentKey = getTrackedSymbolsKey(poller);
+
+  ensurePollerRunning(sidecarPort, poller);
+  if (currentKey !== previousKey && currentKey !== poller.lastSnapshotRequestKey) {
+    void fetchSnapshots(sidecarPort, poller);
+  }
+  if (
+    currentKey &&
+    (currentKey !== poller.lastActiveSymbolsKey ||
+      Date.now() - poller.lastActiveSymbolsPostedAt >= ACTIVE_SYMBOLS_STALE_MS)
+  ) {
+    void registerActiveSymbols(sidecarPort, poller);
+  }
+
+  return () => {
+    for (const symbol of normalizedSymbols) {
+      const nextCount = (poller.symbols.get(symbol) ?? 0) - 1;
+      if (nextCount > 0) {
+        poller.symbols.set(symbol, nextCount);
+      } else {
+        poller.symbols.delete(symbol);
+      }
+    }
+
+    poller.subscriberCount = Math.max(0, poller.subscriberCount - 1);
+
+    if (poller.symbols.size === 0 && poller.subscriberCount === 0) {
+      poller.stopTimeoutId = window.setTimeout(() => {
+        if (poller.symbols.size === 0 && poller.subscriberCount === 0) {
+          stopPoller(sidecarPort, poller);
+        }
+      }, POLLER_STOP_GRACE_MS);
+    }
+  };
 }
 
 function _posNum(v: unknown): number | null {
@@ -76,59 +258,9 @@ export interface WatchlistDataResult {
 
 export function useWatchlistData(symbols: string[]): WatchlistDataResult {
   const { sidecarPort } = useTws();
-  const prevSymbolsRef = useRef<string>("");
-
   useEffect(() => {
     if (!sidecarPort) return;
-    const key = symbols.join(",");
-    if (key === prevSymbolsRef.current) return;
-    prevSymbolsRef.current = key;
-  }, [sidecarPort, symbols]);
-
-  // Register symbols as active so the watchlist worker subscribes them for live quotes.
-  // Re-registers every 90s to stay within the worker's 120s TTL.
-  useEffect(() => {
-    if (!sidecarPort || symbols.length === 0) return;
-    const register = () => {
-      fetch(`http://127.0.0.1:${sidecarPort}/active-symbols`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbols }),
-      }).catch(() => {});
-    };
-    register();
-    const id = setInterval(register, 90_000);
-    return () => clearInterval(id);
-  }, [sidecarPort, symbols]);
-
-  useEffect(() => {
-    if (!sidecarPort || symbols.length === 0) return;
-
-    let cancelled = false;
-
-    async function fetchQuotes() {
-      try {
-        const qs = encodeURIComponent(symbols.join(","));
-        const res = await fetch(`http://127.0.0.1:${sidecarPort}/market/snapshots?symbols=${qs}`);
-        if (!res.ok) return;
-        const payload = await res.json();
-        const quotes = (payload.snapshots as Array<Record<string, unknown>>) || [];
-        if (cancelled) return;
-        for (const q of quotes) {
-          const sym = q.symbol as string;
-          if (sym) updateLiveQuote(sym, q);
-        }
-      } catch {
-        // Ignore transient errors
-      }
-    }
-
-    fetchQuotes();
-    const id = setInterval(fetchQuotes, 3000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
+    return subscribeSymbols(sidecarPort, symbols);
   }, [sidecarPort, symbols]);
 
   const version = useSyncExternalStore(subscribeToStore, getStoreVersion);
@@ -155,38 +287,13 @@ export function useWatchlistData(symbols: string[]): WatchlistDataResult {
   }, [symbols, version]);
 }
 
-export function useQuoteData(quoteId: string, symbol: string): Quote | null {
+export function useQuoteData(_quoteId: string, symbol: string): Quote | null {
   const { sidecarPort } = useTws();
 
   useEffect(() => {
-    if (!sidecarPort || !symbol) return;
-
-    let cancelled = false;
-
-    async function fetchQuote() {
-      try {
-        const qs = encodeURIComponent(symbol);
-        const res = await fetch(`http://127.0.0.1:${sidecarPort}/market/snapshots?symbols=${qs}`);
-        if (!res.ok) return;
-        const payload = await res.json();
-        const quotes = (payload.snapshots as Array<Record<string, unknown>>) || [];
-        if (cancelled) return;
-        for (const q of quotes) {
-          const sym = q.symbol as string;
-          if (sym) updateLiveQuote(sym, q);
-        }
-      } catch {
-        // Ignore transient errors
-      }
-    }
-
-    fetchQuote();
-    const id = setInterval(fetchQuote, 3000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [sidecarPort, symbol, quoteId]);
+    if (!sidecarPort) return;
+    return subscribeSymbols(sidecarPort, [symbol]);
+  }, [sidecarPort, symbol]);
 
   const version = useSyncExternalStore(subscribeToStore, getStoreVersion);
 

@@ -1,0 +1,4 @@
+//@version=1
+indicator("On Balance Volume", overlay=false)
+obvVal = ta.obv()
+plot(obvVal, "OBV", color=#1A56DB)

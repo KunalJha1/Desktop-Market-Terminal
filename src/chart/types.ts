@@ -5,6 +5,7 @@ export interface OHLCVBar {
   low: number;
   close: number;
   volume: number;
+  synthetic?: boolean; // true = built from quote ticks (off-hours), not TWS realtime bars
 }
 
 export type PresetTimeframe = '1m' | '2m' | '3m' | '5m' | '10m' | '15m' | '30m' | '1H' | '2H' | '3H' | '4H' | '1D' | '3D' | '1W' | '1M' | '3M' | '6M' | '12M';
@@ -71,6 +72,15 @@ export interface IndicatorMeta {
   paramLabels: Record<string, string>;
   outputs: IndicatorOutput[];
   guideLines?: IndicatorGuideLine[];
+  paneRange?: {
+    min?: number;
+    max?: number;
+  };
+  hidePaneScaleControls?: boolean;
+  /** DailyIQ Script source — viewable and duplicatable by users */
+  scriptSource?: string;
+  /** True for indicators that ship with the app */
+  isBuiltIn?: boolean;
 }
 
 export interface IndicatorGuideLine {
@@ -115,6 +125,7 @@ export interface SubPaneLayout {
   top: number;
   height: number;
   yScaleMode: YScaleMode;
+  showScaleControls: boolean;
   collapsed: boolean;
   maximized: boolean;
 }
@@ -124,6 +135,8 @@ export interface ScriptPlot {
   label: string;
   color: string;
   lineWidth: number;
+  /** Optional style override: 'line' | 'histogram' | 'area' | 'dots' */
+  style?: string;
 }
 
 export interface ScriptHLine {
@@ -138,11 +151,25 @@ export interface ScriptFill {
   color: string;
 }
 
+export interface ScriptShape {
+  /** Price level at each bar — NaN means no shape at that bar. */
+  values: number[];
+  /** 'triangleup' | 'triangledown' | 'circle' | 'cross' | 'diamond' */
+  style: string;
+  /** 'abovebar' | 'belowbar' | 'high' | 'low' | 'close' */
+  location: string;
+  color: string;
+  text: string;
+}
+
 export interface ScriptResult {
   plots: ScriptPlot[];
   hlines: ScriptHLine[];
   fills: ScriptFill[];
+  shapes: ScriptShape[];
   inputs: Record<string, number>;
+  /** Set by indicator() / strategy() declaration in script */
+  indicatorMeta?: { name: string; overlay: boolean; isStrategy: boolean };
   errors: ScriptError[];
 }
 

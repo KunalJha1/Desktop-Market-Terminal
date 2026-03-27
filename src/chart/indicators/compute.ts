@@ -85,6 +85,7 @@ import { computeMACD } from './oscillators/macd';
 import { computeStochastic } from './oscillators/stochastic';
 import { computeATR } from './oscillators/atr';
 import { computeCCI } from './oscillators/cci';
+import { computeChopZone } from './oscillators/chopZone';
 import { computeWilliamsR } from './oscillators/williamsR';
 import { computeROC } from './oscillators/roc';
 import { computeMFI } from './oscillators/mfi';
@@ -129,6 +130,7 @@ const computeFns: Record<string, (bars: OHLCVBar[], params: Record<string, numbe
   Stochastic: computeStochastic,
   ATR: computeATR,
   CCI: computeCCI,
+  'Chop Zone': computeChopZone,
   'Williams %R': computeWilliamsR,
   ROC: computeROC,
   MFI: computeMFI,
@@ -166,4 +168,70 @@ export function computeIndicator(
     throw new Error(`Unknown indicator: "${name}"`);
   }
   return fn(bars, params);
+}
+
+/**
+ * Recompute indicator outputs from changeOffset onward when prefix bars are unchanged.
+ * Used for live tail merges. Falls back to full compute when prev is missing/misaligned
+ * or the indicator does not support a cheap tail path.
+ */
+export function recomputeIndicatorTail(
+  name: string,
+  bars: OHLCVBar[],
+  params: Record<string, number>,
+  changeOffset: number,
+  prev: number[][] | undefined,
+): number[][] {
+  const n = bars.length;
+  if (
+    changeOffset <= 0 ||
+    changeOffset >= n ||
+    !prev ||
+    prev.length === 0 ||
+    prev.some((row) => !row || row.length !== n)
+  ) {
+    return computeIndicator(name, bars, params);
+  }
+
+  if (name === 'Volume') {
+    const next = prev.map((row) => row.slice());
+    for (let i = changeOffset; i < n; i++) {
+      next[0][i] = bars[i].volume;
+    }
+    return next;
+  }
+
+  if (name === 'SMA') {
+    const period = Math.max(1, Math.floor(params.period ?? 20));
+    const start = Math.max(0, changeOffset - period + 1);
+    const sub = bars.slice(start);
+    const fresh = computeSMA(sub, params)[0];
+    const out = prev.map((row) => row.slice());
+    for (let i = start; i < n; i++) {
+      out[0][i] = fresh[i - start];
+    }
+    return out;
+  }
+
+  if (name === 'EMA') {
+    const period = Math.max(1, Math.floor(params.period ?? 20));
+    if (changeOffset <= period - 1) {
+      return computeIndicator(name, bars, params);
+    }
+    const out = prev.map((row) => row.slice());
+    const row = out[0].slice();
+    const k = 2 / (period + 1);
+    let emaVal = row[changeOffset - 1];
+    if (!Number.isFinite(emaVal)) {
+      return computeIndicator(name, bars, params);
+    }
+    for (let i = changeOffset; i < n; i++) {
+      emaVal = bars[i].close * k + emaVal * (1 - k);
+      row[i] = emaVal;
+    }
+    out[0] = row;
+    return out;
+  }
+
+  return computeIndicator(name, bars, params);
 }

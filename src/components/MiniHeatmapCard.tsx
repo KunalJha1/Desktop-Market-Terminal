@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
-import { useTws } from "../lib/tws";
+import { useSp500HeatmapData } from "../lib/use-sp500-heatmap";
 import {
+  HEATMAP_METRIC_OPTIONS,
+  type HeatmapMetricMode,
   type HeatmapTile,
   type Rect,
   type LayoutRect,
+  formatTileMetricValue,
   squarify,
-  tileColor,
-  formatPct,
   formatPrice,
+  getTileMetricColor,
+  getTileMetricValue,
 } from "../lib/heatmap-utils";
-
-const DATA_POLL_MS = 5_000;
 
 interface MiniHeatmapCardProps {
   linkChannel: number | null;
@@ -26,9 +27,10 @@ export default function MiniHeatmapCard({
   linkChannel,
   onSetLinkChannel,
   onClose,
+  config,
+  onConfigChange,
 }: MiniHeatmapCardProps) {
-  const { sidecarPort } = useTws();
-  const [tiles, setTiles] = useState<HeatmapTile[]>([]);
+  const tiles = useSp500HeatmapData();
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [tooltip, setTooltip] = useState<{
@@ -36,26 +38,11 @@ export default function MiniHeatmapCard({
     x: number;
     y: number;
   } | null>(null);
-
-  // Fetch heatmap data
-  useEffect(() => {
-    if (!sidecarPort) return;
-    let cancelled = false;
-
-    async function fetchHeatmap() {
-      try {
-        const res = await fetch(`http://127.0.0.1:${sidecarPort}/heatmap/sp500`);
-        if (!res.ok) return;
-        const payload = await res.json();
-        if (cancelled) return;
-        setTiles((payload.tiles as HeatmapTile[]) ?? []);
-      } catch { /* ignore */ }
-    }
-
-    fetchHeatmap();
-    const id = setInterval(fetchHeatmap, DATA_POLL_MS);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [sidecarPort]);
+  const metricMode: HeatmapMetricMode =
+    typeof config.metricMode === "string" &&
+    HEATMAP_METRIC_OPTIONS.some((o) => o.value === config.metricMode)
+      ? (config.metricMode as HeatmapMetricMode)
+      : "change";
 
   // Observe container size
   useEffect(() => {
@@ -156,6 +143,20 @@ export default function MiniHeatmapCard({
           S&P 500 Heatmap
         </span>
         <div className="flex items-center gap-1">
+          <select
+            value={metricMode}
+            onChange={(e) =>
+              onConfigChange({ ...config, metricMode: e.target.value as HeatmapMetricMode })
+            }
+            className="h-5 rounded-sm border border-white/[0.08] bg-[#131720] px-1.5 text-[9px] text-white/75 outline-none"
+            title="Heatmap metric"
+          >
+            {HEATMAP_METRIC_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
           <ComponentLinkMenu linkChannel={linkChannel} onSetLinkChannel={onSetLinkChannel} />
           <button
             onClick={onClose}
@@ -181,7 +182,8 @@ export default function MiniHeatmapCard({
             {tileRects.map((rect) => {
               const area = rect.w * rect.h;
               const showSymbol = area > 600 || (rect.w > 22 && rect.h > 12);
-              const showChange = area > 1800 || (rect.w > 36 && rect.h > 22);
+              const showMetric = area > 1800 || (rect.w > 36 && rect.h > 22);
+              const metricValue = getTileMetricValue(rect.data, metricMode);
 
               return (
                 <div
@@ -192,7 +194,7 @@ export default function MiniHeatmapCard({
                     top: rect.y,
                     width: rect.w,
                     height: rect.h,
-                    backgroundColor: tileColor(rect.data.changePct, rect.data.status),
+                    backgroundColor: getTileMetricColor(rect.data, metricMode),
                   }}
                   onMouseEnter={(e) => handleMouseMove(e, rect.data)}
                   onMouseMove={(e) => handleMouseMove(e, rect.data)}
@@ -203,9 +205,9 @@ export default function MiniHeatmapCard({
                       <span className="truncate font-sans text-[9px] font-semibold leading-none text-white">
                         {rect.data.symbol}
                       </span>
-                      {showChange && (
+                      {showMetric && (
                         <span className="mt-0.5 font-sans text-[8px] leading-none text-white/80">
-                          {formatPct(rect.data.changePct)}
+                          {formatTileMetricValue(metricValue, metricMode)}
                         </span>
                       )}
                     </div>
@@ -233,10 +235,18 @@ export default function MiniHeatmapCard({
                   </span>
                   <span
                     className={`font-mono text-[10px] ${
-                      (tooltip.tile.changePct ?? 0) >= 0 ? "text-green" : "text-red"
+                      metricMode === "change"
+                        ? (tooltip.tile.changePct ?? 0) >= 0
+                          ? "text-green"
+                          : "text-red"
+                        : ((getTileMetricValue(tooltip.tile, metricMode) ?? 50) >= 55)
+                          ? "text-green"
+                          : ((getTileMetricValue(tooltip.tile, metricMode) ?? 50) <= 45)
+                            ? "text-red"
+                            : "text-white/80"
                     }`}
                   >
-                    {formatPct(tooltip.tile.changePct)}
+                    {formatTileMetricValue(getTileMetricValue(tooltip.tile, metricMode), metricMode)}
                   </span>
                 </div>
               </div>

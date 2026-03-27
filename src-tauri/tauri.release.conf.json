@@ -3,7 +3,8 @@
     "bundle": {
       "externalBin": [
         "binaries/dailyiq-sidecar",
-        "binaries/dailyiq-worker"
+        "binaries/dailyiq-worker",
+        "binaries/dailyiq-valuation-worker"
       ]
     }
   }

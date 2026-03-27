@@ -1,25 +1,69 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { formatMarketCap } from "../lib/market-data";
-import { useTws } from "../lib/tws";
 import CircularGauge from "../components/CircularGauge";
 import {
-  type HeatmapTechTimeframe,
-  type HeatmapTile,
-  type Rect,
-  type LayoutRect,
-  type SectorBound,
+  HEATMAP_METRIC_OPTIONS,
   HEATMAP_TECH_TIMEFRAMES,
-  squarify,
-  tileColor,
-  formatPct,
+  type HeatmapMetricMode,
+  type HeatmapTile,
+  type LayoutRect,
+  type Rect,
+  type SectorBound,
+  formatTileMetricValue,
   formatPrice,
+  getTileMetricColor,
+  getTileMetricValue,
+  resolveHeatmapTechScore,
+  squarify,
 } from "../lib/heatmap-utils";
+import { formatMarketCap } from "../lib/market-data";
+import { useTws } from "../lib/tws";
 
-function resolveHeatmapTechScore(tile: HeatmapTile, key: HeatmapTechTimeframe): number | null {
-  return (
-    tile.techScores?.[key] ??
-    (key === "1d" ? tile.techScore1d : key === "1w" ? tile.techScore1w : null)
-  );
+const HEATMAP_METRIC_STORAGE_KEY = "dailyiq-heatmap-metric";
+
+function loadStoredMetricMode(): HeatmapMetricMode {
+  try {
+    const raw = localStorage.getItem(HEATMAP_METRIC_STORAGE_KEY);
+    if (raw === "change" || raw === "tech-1d" || raw === "tech-1w") return raw;
+  } catch {
+    // Ignore localStorage failures.
+  }
+  return "change";
+}
+
+function getMetricToneClass(value: number | null, mode: HeatmapMetricMode): string {
+  if (value == null) return "text-white/55";
+  if (mode === "change") return value >= 0 ? "text-green" : "text-red";
+  if (value >= 55) return "text-green";
+  if (value <= 45) return "text-red";
+  return "text-white/75";
+}
+
+function getMetricLabel(mode: HeatmapMetricMode): string {
+  if (mode === "change") return "Change";
+  if (mode === "tech-1d") return "Technical Score 1D";
+  return "Technical Score 1W";
+}
+
+function getLegendItems(mode: HeatmapMetricMode): { color: string; label: string }[] {
+  if (mode === "change") {
+    return [
+      { color: "#0b7a36", label: "Strong gain (>=4%)" },
+      { color: "#1fa34f", label: "Gain (>=0.5%)" },
+      { color: "#2a6e3f", label: "Slight gain" },
+      { color: "#8a3344", label: "Slight loss" },
+      { color: "#c43d53", label: "Loss (<=-0.5%)" },
+      { color: "#981b31", label: "Strong loss (<=-4%)" },
+    ];
+  }
+
+  return [
+    { color: "#0b7a36", label: "Very bullish (85+)" },
+    { color: "#138a40", label: "Bullish (70-84)" },
+    { color: "#1fa34f", label: "Leaning bullish (55-69)" },
+    { color: "#4b5563", label: "Neutral (45-54)" },
+    { color: "#c43d53", label: "Leaning bearish (30-44)" },
+    { color: "#981b31", label: "Bearish (<30)" },
+  ];
 }
 
 function formatAsOf(asOf: number | null): string {
@@ -36,6 +80,7 @@ export default function HeatmapPage() {
   const [tiles, setTiles] = useState<HeatmapTile[]>([]);
   const [asOf, setAsOf] = useState<number | null>(null);
   const [hovered, setHovered] = useState<HeatmapTile | null>(null);
+  const [metricMode, setMetricMode] = useState<HeatmapMetricMode>(() => loadStoredMetricMode());
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
 
@@ -64,9 +109,16 @@ export default function HeatmapPage() {
     };
   }, [sidecarPort]);
 
-  // Heatmap prices are handled by the background universe price loop —
-  // no need to register these as active symbols (which would trigger
-  // expensive realtime 5s bar subscriptions and hit TWS limits).
+  useEffect(() => {
+    try {
+      localStorage.setItem(HEATMAP_METRIC_STORAGE_KEY, metricMode);
+    } catch {
+      // Ignore localStorage failures.
+    }
+  }, [metricMode]);
+
+  // Heatmap prices are handled by the background universe price loop.
+  // Avoid registering them as active symbols, which would add extra TWS load.
 
   useEffect(() => {
     const el = containerRef.current;
@@ -172,6 +224,9 @@ export default function HeatmapPage() {
 
   const totalTiles = tiles.length;
   const loadedTiles = tiles.filter((tile) => tile.status !== "pending").length;
+  const legendItems = getLegendItems(metricMode);
+  const hoveredMetricValue = hovered ? getTileMetricValue(hovered, metricMode) : null;
+
   return (
     <div className="flex h-full min-h-0 bg-[#111318] text-white">
       <div className="min-w-0 flex-1 border-r border-white/[0.06]">
@@ -184,9 +239,25 @@ export default function HeatmapPage() {
               {loadedTiles}/{totalTiles}
             </span>
           </div>
-          <span className="font-mono text-[10px] text-white/35">
-            Updated {formatAsOf(asOf)}
-          </span>
+          <div className="flex items-center gap-2">
+            <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-white/35">
+              Metric
+            </label>
+            <select
+              value={metricMode}
+              onChange={(e) => setMetricMode(e.target.value as HeatmapMetricMode)}
+              className="h-6 rounded-sm border border-white/[0.08] bg-[#131720] px-2 font-mono text-[10px] text-white/80 outline-none"
+            >
+              {HEATMAP_METRIC_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <span className="font-mono text-[10px] text-white/35">
+              Updated {formatAsOf(asOf)}
+            </span>
+          </div>
         </div>
 
         <div
@@ -216,9 +287,10 @@ export default function HeatmapPage() {
                 const area = rect.w * rect.h;
                 const forceLabel = area > 5000;
                 const showSymbol = forceLabel || (rect.w > 28 && rect.h > 14);
-                const showChange = forceLabel || (rect.w > 42 && rect.h > 26);
+                const showMetric = forceLabel || (rect.w > 42 && rect.h > 26);
                 const showName = area > 12000 || (rect.w > 110 && rect.h > 52);
-                const isUnknown = rect.data.status === "pending" || rect.data.changePct == null;
+                const metricValue = getTileMetricValue(rect.data, metricMode);
+                const isUnknown = rect.data.status === "pending" || metricValue == null;
 
                 return (
                   <button
@@ -230,20 +302,20 @@ export default function HeatmapPage() {
                       top: rect.y,
                       width: rect.w,
                       height: rect.h,
-                      backgroundColor: tileColor(rect.data.changePct, rect.data.status),
+                      backgroundColor: getTileMetricColor(rect.data, metricMode),
                     }}
                     onMouseEnter={() => setHovered(rect.data)}
                     onFocus={() => setHovered(rect.data)}
-                    title={`${rect.data.symbol} ${formatPct(rect.data.changePct)}`}
+                    title={`${rect.data.symbol} ${formatTileMetricValue(metricValue, metricMode)}`}
                   >
                     {showSymbol ? (
                       <div className="flex h-full flex-col items-center justify-center px-0.5 text-center">
                         <span className="truncate font-sans text-[11px] font-semibold leading-none text-white">
                           {rect.data.symbol}
                         </span>
-                        {showChange ? (
+                        {showMetric ? (
                           <span className="mt-0.5 font-sans text-[10px] leading-none text-white/90">
-                            {isUnknown ? "—" : formatPct(rect.data.changePct)}
+                            {isUnknown ? "—" : formatTileMetricValue(metricValue, metricMode)}
                           </span>
                         ) : null}
                         {showName ? (
@@ -291,30 +363,15 @@ export default function HeatmapPage() {
             Legend
           </p>
           <div className="mt-2 space-y-1 font-sans text-[11px] text-white/70">
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 bg-[#0b7a36]" />
-              <span>Strong gain (&ge;4%)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 bg-[#1fa34f]" />
-              <span>Gain (&ge;0.5%)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 bg-[#2a6e3f]" />
-              <span>Slight gain</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 bg-[#8a3344]" />
-              <span>Slight loss</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 bg-[#c43d53]" />
-              <span>Loss (&ge;0.5%)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 bg-[#981b31]" />
-              <span>Strong loss (&ge;4%)</span>
-            </div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-white/30">
+              {getMetricLabel(metricMode)}
+            </p>
+            {legendItems.map((item) => (
+              <div key={item.label} className="flex items-center gap-2">
+                <span className="h-3 w-3" style={{ backgroundColor: item.color }} />
+                <span>{item.label}</span>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -332,12 +389,16 @@ export default function HeatmapPage() {
                 <p className="font-sans text-[18px] font-semibold text-white">
                   {formatPrice(hovered.last)}
                 </p>
+                <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-white/35">
+                  {getMetricLabel(metricMode)}
+                </p>
                 <p
-                  className={`mt-1 font-mono text-[12px] ${
-                    (hovered.changePct ?? 0) >= 0 ? "text-green" : "text-red"
-                  }`}
+                  className={`mt-1 font-mono text-[12px] ${getMetricToneClass(
+                    hoveredMetricValue,
+                    metricMode,
+                  )}`}
                 >
-                  {formatPct(hovered.changePct)}
+                  {formatTileMetricValue(hoveredMetricValue, metricMode)}
                 </p>
               </div>
 
@@ -364,21 +425,16 @@ export default function HeatmapPage() {
                   <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-white/30">
                     P/E
                   </p>
-                  <p>
-                    {hovered.trailingPE != null ? hovered.trailingPE.toFixed(1) : "—"}
-                  </p>
+                  <p>{hovered.trailingPE != null ? hovered.trailingPE.toFixed(1) : "—"}</p>
                 </div>
                 <div>
                   <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-white/30">
                     Forward P/E
                   </p>
-                  <p>
-                    {hovered.forwardPE != null ? hovered.forwardPE.toFixed(1) : "—"}
-                  </p>
+                  <p>{hovered.forwardPE != null ? hovered.forwardPE.toFixed(1) : "—"}</p>
                 </div>
               </div>
 
-              {/* Technical Scores — all cached horizons (intraday often empty off watchlist) */}
               <div className="border-t border-white/[0.06] pt-3">
                 <p className="mb-2 font-mono text-[9px] uppercase tracking-[0.14em] text-white/30">
                   Technical Scores

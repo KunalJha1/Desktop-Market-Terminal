@@ -5,10 +5,10 @@ import { useChartData } from '../hooks/useChartData';
 import { indicatorRegistry } from '../indicators/registry';
 import { STRATEGY_KEYS } from '../indicators/strategyKeys';
 import type { Timeframe, ChartType, ActiveIndicator, YScaleMode } from '../types';
-import { PRICE_AXIS_WIDTH, parseCustomTimeframe } from '../constants';
+import { PRICE_AXIS_CONTROL_HEIGHT, PRICE_AXIS_WIDTH } from '../constants';
 import { useTws } from '../../lib/tws';
 import { linkBus } from '../../lib/link-bus';
-import { X, ChevronDown, Search, TrendingUp, BrainCircuit, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import { X, ChevronDown, ChevronUp, Search, TrendingUp, BrainCircuit, ZoomIn, ZoomOut, RotateCcw, Minus, Maximize2, ChevronsUpDown } from 'lucide-react';
 import ComponentLinkMenu from '../../components/ComponentLinkMenu';
 import IndicatorLegend from './IndicatorLegend';
 
@@ -184,8 +184,6 @@ export default function MiniChart({
   const chartType = (config.chartType as ChartType) || 'candlestick';
   const yScaleMode = (config.yScaleMode as YScaleMode) || 'auto';
 
-  const [customTfInput, setCustomTfInput] = useState('');
-  const [customTfError, setCustomTfError] = useState('');
   const [showChartTypeMenu, setShowChartTypeMenu] = useState(false);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   const [showStrategyMenu, setShowStrategyMenu] = useState(false);
@@ -195,7 +193,7 @@ export default function MiniChart({
   /** Bumps when ChartEngine is (re)created so indicator reconcile runs against the new instance. */
   const [engineVersion, setEngineVersion] = useState(0);
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
-  const [paneLayout, setPaneLayout] = useState<Array<{ paneId: string; top: number; height: number; yScaleMode: YScaleMode }>>([]);
+  const [paneLayout, setPaneLayout] = useState<Array<{ paneId: string; top: number; height: number; yScaleMode: YScaleMode; showScaleControls: boolean; collapsed: boolean; maximized: boolean }>>([]);
   const [priceSectionHeight, setPriceSectionHeight] = useState(0);
   const [scriptSource, setScriptSource] = useState('');
   const [scriptErrors, setScriptErrors] = useState<string[]>([]);
@@ -214,7 +212,15 @@ export default function MiniChart({
 
   // Pull real data from the sidecar (same path as ChartPage)
   const { sidecarPort } = useTws();
-  const { bars, source } = useChartData({
+  const {
+    bars,
+    source,
+    onViewportChange,
+    pendingViewportShift,
+    onViewportShiftApplied,
+    updateMode,
+    tailChangeOffset,
+  } = useChartData({
     symbol,
     timeframe,
     sidecarPort,
@@ -222,10 +228,26 @@ export default function MiniChart({
   const stopperPx = (config.stopperPx as number) ?? 40;
 
   const handleCanvasPointerMove = useCallback((event: ReactMouseEvent<HTMLCanvasElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    setYAxisHovered(x >= rect.width - PRICE_AXIS_WIDTH && y >= 0 && y <= rect.height);
+    const canvas = event.currentTarget;
+    const ne = event.nativeEvent;
+    let x: number;
+    let y: number;
+    let w: number;
+    let h: number;
+    if (typeof ne.offsetX === 'number' && typeof ne.offsetY === 'number') {
+      x = ne.offsetX;
+      y = ne.offsetY;
+      w = canvas.clientWidth;
+      h = canvas.clientHeight;
+    } else {
+      const rect = canvas.getBoundingClientRect();
+      x = ne.clientX - rect.left;
+      y = ne.clientY - rect.top;
+      w = rect.width;
+      h = rect.height;
+    }
+    const overYAxis = x >= w - PRICE_AXIS_WIDTH && y >= 0 && y <= h;
+    setYAxisHovered(prev => prev === overYAxis ? prev : overYAxis);
   }, []);
 
   const handleCanvasPointerLeave = useCallback(() => {
@@ -265,7 +287,7 @@ export default function MiniChart({
     requestAnimationFrame(() => {
       const layout = engineRef.current?.getLayout();
       if (layout) {
-        setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode })));
+        setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode, showScaleControls: p.showScaleControls, collapsed: p.collapsed, maximized: p.maximized })));
         setPriceSectionHeight(layout.mainHeight);
       }
     });
@@ -291,7 +313,7 @@ export default function MiniChart({
     const engine = engineRef.current;
     if (!engine) return;
     const layout = engine.getLayout();
-    setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode })));
+    setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode, showScaleControls: p.showScaleControls, collapsed: p.collapsed, maximized: p.maximized })));
     setPriceSectionHeight(layout.mainHeight);
   }, []);
 
@@ -319,7 +341,7 @@ export default function MiniChart({
       requestAnimationFrame(() => {
         const layout = engineRef.current?.getLayout();
         if (layout) {
-          setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode })));
+          setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode, showScaleControls: p.showScaleControls, collapsed: p.collapsed, maximized: p.maximized })));
           setPriceSectionHeight(layout.mainHeight);
         }
       });
@@ -335,10 +357,36 @@ export default function MiniChart({
     document.addEventListener('mouseup', onMouseUp);
   }, [syncPaneLayout]);
 
-  // Push data to engine
+  // Push data to engine using the same incremental path as the full chart
   useEffect(() => {
-    engineRef.current?.setData(bars);
-  }, [bars]);
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (updateMode === 'tail' && bars.length > 0) {
+      engine.updateTail(bars, tailChangeOffset);
+    } else {
+      engine.setData(bars);
+    }
+    syncPaneLayout();
+  }, [bars, updateMode, tailChangeOffset, syncPaneLayout]);
+
+  // Wire viewport change notifications so intraday pan backfill stays anchored
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.setOnViewportChange(onViewportChange);
+    return () => {
+      engine.setOnViewportChange(null);
+    };
+  }, [onViewportChange]);
+
+  useEffect(() => {
+    if (!pendingViewportShift) return;
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.shiftViewportBy(pendingViewportShift);
+    syncPaneLayout();
+    onViewportShiftApplied();
+  }, [pendingViewportShift, onViewportShiftApplied, syncPaneLayout]);
 
   // Push chart type to engine
   useEffect(() => {
@@ -735,6 +783,9 @@ export default function MiniChart({
     const engine = engineRef.current;
     if (!engine) return;
     engine.setIndicatorPane(id, paneId);
+    if (paneId !== 'main') {
+      engine.expandPane(paneId);
+    }
     syncIndicators();
     syncPaneLayout();
   };
@@ -806,50 +857,11 @@ export default function MiniChart({
         {/* Right: timeframes + chart type + indicators + collapse + close */}
         <div className="flex items-center gap-0.5 shrink-0">
           {!toolbarCollapsed && (<>
-          {/* Custom timeframe input */}
-          <input
-            type="text"
-            value={customTfInput}
-            onChange={(e) => { setCustomTfInput(e.target.value); setCustomTfError(''); }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                const val = customTfInput.trim();
-                if (!val) return;
-                const parsed = parseCustomTimeframe(val);
-                if (!parsed.valid) {
-                  setCustomTfError(parsed.error ?? 'Invalid format');
-                } else {
-                  setCustomTfError('');
-                  setTimeframeValue(parsed.label as Timeframe);
-                }
-              } else if (e.key === 'Escape') {
-                setCustomTfInput('');
-                setCustomTfError('');
-              }
-            }}
-            onBlur={() => { if (customTfInput.trim() === '') setCustomTfError(''); }}
-            placeholder="2H"
-            title={customTfError || undefined}
-            style={{
-              fontFamily: '"JetBrains Mono", monospace',
-              fontSize: 9,
-              width: 28,
-              padding: '2px 3px',
-              borderRadius: 2,
-              outline: 'none',
-              background: 'transparent',
-              border: customTfError ? '1px solid #FF3D71' : '1px solid rgba(255,255,255,0.08)',
-              color: customTfError ? '#FF3D71' : '#E6EDF3',
-              lineHeight: 1,
-            }}
-            spellCheck={false}
-          />
-          <div style={{ width: 1, height: 10, background: 'rgba(255,255,255,0.08)', margin: '0 2px' }} />
           {/* Timeframe buttons */}
           {MINI_TIMEFRAMES.map((tf) => (
             <button
               key={tf.value}
-              onClick={() => { setTimeframeValue(tf.value); setCustomTfInput(''); setCustomTfError(''); }}
+              onClick={() => { setTimeframeValue(tf.value); }}
               className="rounded-sm transition-colors duration-75 hover:bg-white/[0.06]"
               style={{
                 fontFamily: '"JetBrains Mono", monospace',
@@ -858,8 +870,8 @@ export default function MiniChart({
                 borderRadius: 2,
                 border: 'none',
                 cursor: 'pointer',
-                backgroundColor: timeframe === tf.value && customTfInput === '' ? '#1A56DB' : 'transparent',
-                color: timeframe === tf.value && customTfInput === '' ? '#E6EDF3' : '#8B949E',
+                backgroundColor: timeframe === tf.value ? 'rgba(59, 130, 246, 0.1)' : 'transparent',
+                color: timeframe === tf.value ? '#3B82F6' : '#8B949E',
                 lineHeight: 1,
               }}
             >
@@ -1520,6 +1532,7 @@ export default function MiniChart({
                 alignItems: 'flex-start',
                 justifyContent: 'flex-end',
                 padding: 6,
+                zIndex: 30,
                 pointerEvents: 'auto',
               }}
             >
@@ -1528,7 +1541,19 @@ export default function MiniChart({
             {paneLayout.map((pane) => (
               <div
                 key={`${pane.paneId}-drop`}
-                onDragOver={(e) => e.preventDefault()}
+                onDragEnter={() => {
+                  const engine = engineRef.current;
+                  if (!engine || !pane.collapsed) return;
+                  engine.expandPane(pane.paneId);
+                  syncPaneLayout();
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  const engine = engineRef.current;
+                  if (!engine || !pane.collapsed) return;
+                  engine.expandPane(pane.paneId);
+                  syncPaneLayout();
+                }}
                 onDrop={(e) => {
                   e.preventDefault();
                   moveIndicatorToPane(draggingIndicatorId, pane.paneId);
@@ -1546,9 +1571,10 @@ export default function MiniChart({
                   fontFamily: '"JetBrains Mono", monospace',
                   fontSize: 10,
                   display: 'flex',
-                  alignItems: 'flex-start',
-                  justifyContent: 'flex-end',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                   padding: 6,
+                  zIndex: 31,
                   pointerEvents: 'auto',
                 }}
               >
@@ -1576,6 +1602,7 @@ export default function MiniChart({
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
+                zIndex: 30,
                 pointerEvents: 'auto',
               }}
             >
@@ -1583,6 +1610,100 @@ export default function MiniChart({
             </div>
           </>
         )}
+        {/* Per-sub-pane action buttons (top-right) */}
+        {paneLayout.map((pane, idx) => (
+          <div
+            key={`pane-actions-${pane.paneId}`}
+            style={{
+              position: 'absolute',
+              right: PRICE_AXIS_WIDTH + 4,
+              top: pane.top + (pane.collapsed ? 1 : 6),
+              display: 'flex',
+              alignItems: 'center',
+              gap: pane.collapsed ? 1 : 2,
+              zIndex: 20,
+              opacity: 0.4,
+              transition: 'opacity 120ms ease-out',
+              pointerEvents: draggingIndicatorId ? 'none' : 'auto',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
+            onMouseLeave={e => (e.currentTarget.style.opacity = '0.4')}
+          >
+            {(['up', 'down'] as const).map((dir) => {
+              const disabled = dir === 'up' ? idx === 0 : idx === paneLayout.length - 1;
+              return (
+                <button
+                  key={dir}
+                  onClick={() => { engineRef.current?.movePane(pane.paneId, dir); syncPaneLayout(); }}
+                  disabled={disabled}
+                  title={dir === 'up' ? 'Move pane up' : 'Move pane down'}
+                  style={{
+                    width: pane.collapsed ? 16 : 18, height: pane.collapsed ? 16 : 18,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    borderRadius: 3, border: 'none', background: 'transparent',
+                    color: disabled ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.4)',
+                    cursor: disabled ? 'default' : 'pointer',
+                    padding: 0,
+                  }}
+                  onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.06)'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+                >
+                  {dir === 'up' ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                </button>
+              );
+            })}
+            <button
+              onClick={() => {
+                if (pane.collapsed) engineRef.current?.expandPane(pane.paneId);
+                else engineRef.current?.collapsePane(pane.paneId);
+                syncPaneLayout();
+              }}
+              title={pane.collapsed ? 'Expand pane' : 'Collapse pane'}
+              style={{
+                width: pane.collapsed ? 16 : 18, height: pane.collapsed ? 16 : 18,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                borderRadius: 3, border: 'none', background: 'transparent',
+                color: 'rgba(255,255,255,0.4)', cursor: 'pointer', padding: 0,
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              {pane.collapsed ? <ChevronsUpDown size={11} /> : <Minus size={12} strokeWidth={2.25} />}
+            </button>
+            <button
+              onClick={() => {
+                if (pane.maximized) engineRef.current?.unmaximizePane();
+                else engineRef.current?.maximizePane(pane.paneId);
+                syncPaneLayout();
+              }}
+              title={pane.maximized ? 'Restore pane' : 'Maximize pane'}
+              style={{
+                width: pane.collapsed ? 16 : 18, height: pane.collapsed ? 16 : 18,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                borderRadius: 3, border: 'none', background: 'transparent',
+                color: 'rgba(255,255,255,0.4)', cursor: 'pointer', padding: 0,
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              <Maximize2 size={11} />
+            </button>
+            <button
+              onClick={() => { engineRef.current?.removePane(pane.paneId); syncPaneLayout(); }}
+              title="Delete pane"
+              style={{
+                width: pane.collapsed ? 16 : 18, height: pane.collapsed ? 16 : 18,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                borderRadius: 3, border: 'none', background: 'transparent',
+                color: 'rgba(255,255,255,0.4)', cursor: 'pointer', padding: 0,
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.06)'; (e.currentTarget as HTMLButtonElement).style.color = 'rgba(248,113,113,0.7)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.4)'; }}
+            >
+              <X size={11} />
+            </button>
+          </div>
+        ))}
         {/* Draggable sub-pane dividers */}
         {paneLayout.map((pane) => (
           <div
@@ -1620,78 +1741,39 @@ export default function MiniChart({
           style={{
             position: 'absolute',
             right: 0,
-            top: priceSectionHeight > 0 ? priceSectionHeight - 22 : undefined,
+            top: priceSectionHeight > 0 ? priceSectionHeight - PRICE_AXIS_CONTROL_HEIGHT : undefined,
             bottom: priceSectionHeight > 0 ? undefined : 24,
             width: PRICE_AXIS_WIDTH,
+            height: PRICE_AXIS_CONTROL_HEIGHT,
             display: 'flex',
             justifyContent: 'center',
-            gap: 1,
+            alignItems: 'center',
           }}
         >
-          <button
-            onClick={() => setYScaleModeValue(yScaleMode === 'auto' ? 'manual' : 'auto')}
-            style={{
-              fontFamily: '"JetBrains Mono", monospace',
-              fontSize: 8,
-              padding: '1px 3px',
-              borderRadius: 2,
-              border: yScaleMode === 'auto' ? '1px solid #ffffff' : '1px solid rgba(255,255,255,0.35)',
-              cursor: 'pointer',
-              backgroundColor: yScaleMode === 'auto' ? '#ffffff' : 'transparent',
-              color: yScaleMode === 'auto' ? '#000000' : '#ffffff',
-              lineHeight: 1,
-            }}
-            title="Auto scale"
-          >
-            A
-          </button>
-          <button
-            onClick={() => setYScaleModeValue(yScaleMode === 'log' ? 'manual' : 'log')}
-            style={{
-              fontFamily: '"JetBrains Mono", monospace',
-              fontSize: 8,
-              padding: '1px 3px',
-              borderRadius: 2,
-              border: yScaleMode === 'log' ? '1px solid #ffffff' : '1px solid rgba(255,255,255,0.35)',
-              cursor: 'pointer',
-              backgroundColor: yScaleMode === 'log' ? '#ffffff' : 'transparent',
-              color: yScaleMode === 'log' ? '#000000' : '#ffffff',
-              lineHeight: 1,
-            }}
-            title="Log scale"
-          >
-            L
-          </button>
-        </div>
-        {/* Per-sub-pane A / L scale mode buttons */}
-        {paneLayout.map((pane) => (
           <div
-            key={pane.paneId}
             style={{
-              position: 'absolute',
-              right: 0,
-              top: pane.top + pane.height - 22,
-              width: 70,
               display: 'flex',
-              justifyContent: 'center',
-              gap: 1,
+              alignItems: 'center',
+              gap: 4,
+              borderRadius: 999,
+              border: '1px solid rgba(255,255,255,0.08)',
+              backgroundColor: 'rgba(0,0,0,0.2)',
+              padding: '2px 6px',
+              backdropFilter: 'blur(4px)',
             }}
           >
             <button
-              onClick={() => {
-                const next = pane.yScaleMode === 'auto' ? 'manual' : 'auto';
-                engineRef.current?.setSubPaneScaleMode(pane.paneId, next);
-                syncPaneLayout();
-              }}
+              onClick={() => setYScaleModeValue(yScaleMode === 'auto' ? 'manual' : 'auto')}
               style={{
                 fontFamily: '"JetBrains Mono", monospace',
                 fontSize: 8,
-                padding: '1px 3px',
-                borderRadius: 2,
-                border: pane.yScaleMode === 'auto' ? '1px solid #ffffff' : '1px solid rgba(255,255,255,0.35)',
+                width: 16,
+                height: 16,
+                borderRadius: 999,
+                border: 'none',
                 cursor: 'pointer',
-                backgroundColor: pane.yScaleMode === 'auto' ? '#ffffff' : 'transparent',
-                color: pane.yScaleMode === 'auto' ? '#000000' : '#ffffff',
+                backgroundColor: yScaleMode === 'auto' ? '#ffffff' : 'transparent',
+                color: yScaleMode === 'auto' ? '#000000' : 'rgba(255,255,255,0.78)',
                 lineHeight: 1,
               }}
               title="Auto scale"
@@ -1699,26 +1781,97 @@ export default function MiniChart({
               A
             </button>
             <button
-              onClick={() => {
-                const next = pane.yScaleMode === 'log' ? 'manual' : 'log';
-                engineRef.current?.setSubPaneScaleMode(pane.paneId, next);
-                syncPaneLayout();
-              }}
+              onClick={() => setYScaleModeValue(yScaleMode === 'log' ? 'manual' : 'log')}
               style={{
                 fontFamily: '"JetBrains Mono", monospace',
                 fontSize: 8,
-                padding: '1px 3px',
-                borderRadius: 2,
-                border: pane.yScaleMode === 'log' ? '1px solid #ffffff' : '1px solid rgba(255,255,255,0.35)',
+                width: 16,
+                height: 16,
+                borderRadius: 999,
+                border: 'none',
                 cursor: 'pointer',
-                backgroundColor: pane.yScaleMode === 'log' ? '#ffffff' : 'transparent',
-                color: pane.yScaleMode === 'log' ? '#000000' : '#ffffff',
+                backgroundColor: yScaleMode === 'log' ? '#ffffff' : 'transparent',
+                color: yScaleMode === 'log' ? '#000000' : 'rgba(255,255,255,0.78)',
                 lineHeight: 1,
               }}
               title="Log scale"
             >
               L
             </button>
+          </div>
+        </div>
+        {/* Per-sub-pane A / L scale mode buttons */}
+        {paneLayout.filter((pane) => pane.height > 24 && !pane.collapsed && pane.showScaleControls).map((pane) => (
+          <div
+            key={pane.paneId}
+            style={{
+              position: 'absolute',
+              right: 0,
+              top: pane.top + pane.height - PRICE_AXIS_CONTROL_HEIGHT,
+              width: PRICE_AXIS_WIDTH,
+              height: PRICE_AXIS_CONTROL_HEIGHT,
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                borderRadius: 999,
+                border: '1px solid rgba(255,255,255,0.08)',
+                backgroundColor: 'rgba(0,0,0,0.2)',
+                padding: '2px 6px',
+                backdropFilter: 'blur(4px)',
+              }}
+            >
+              <button
+                onClick={() => {
+                  const next = pane.yScaleMode === 'auto' ? 'manual' : 'auto';
+                  engineRef.current?.setSubPaneScaleMode(pane.paneId, next);
+                  syncPaneLayout();
+                }}
+                style={{
+                  fontFamily: '"JetBrains Mono", monospace',
+                  fontSize: 8,
+                  width: 16,
+                  height: 16,
+                  borderRadius: 999,
+                  border: 'none',
+                  cursor: 'pointer',
+                  backgroundColor: pane.yScaleMode === 'auto' ? '#ffffff' : 'transparent',
+                  color: pane.yScaleMode === 'auto' ? '#000000' : 'rgba(255,255,255,0.78)',
+                  lineHeight: 1,
+                }}
+                title="Auto scale"
+              >
+                A
+              </button>
+              <button
+                onClick={() => {
+                  const next = pane.yScaleMode === 'log' ? 'manual' : 'log';
+                  engineRef.current?.setSubPaneScaleMode(pane.paneId, next);
+                  syncPaneLayout();
+                }}
+                style={{
+                  fontFamily: '"JetBrains Mono", monospace',
+                  fontSize: 8,
+                  width: 16,
+                  height: 16,
+                  borderRadius: 999,
+                  border: 'none',
+                  cursor: 'pointer',
+                  backgroundColor: pane.yScaleMode === 'log' ? '#ffffff' : 'transparent',
+                  color: pane.yScaleMode === 'log' ? '#000000' : 'rgba(255,255,255,0.78)',
+                  lineHeight: 1,
+                }}
+                title="Log scale"
+              >
+                L
+              </button>
+            </div>
           </div>
         ))}
         {source === 'tws' && (

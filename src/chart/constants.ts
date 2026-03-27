@@ -23,6 +23,7 @@ export const COLORS = {
   areaStroke: '#1A56DB',
   premarket: 'rgba(245, 158, 11, 0.06)',
   aftermarket: 'rgba(26, 86, 219, 0.06)',
+  syntheticBar: 'rgba(139, 92, 246, 0.10)',
 } as const;
 
 // Indicator palette for multiple overlays
@@ -108,6 +109,7 @@ export function getTimeframeMs(tf: string): number {
 
 // Chart layout constants
 export const PRICE_AXIS_WIDTH = 56;
+export const PRICE_AXIS_CONTROL_HEIGHT = 22;
 export const TIME_AXIS_HEIGHT = 24;
 export const SUB_PANE_HEIGHT = 120;
 export const SUB_PANE_SEPARATOR = 1;

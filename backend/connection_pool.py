@@ -16,6 +16,19 @@ from ibkr_utils import (
 logger = logging.getLogger(__name__)
 
 CLIENT_ID_START = 1000
+
+
+async def probe_tws_port(host: str, ports: tuple[int, ...], timeout: float = 2.0) -> int | None:
+    """Return the first port in *ports* that accepts a TCP connection, or None."""
+    for port in ports:
+        try:
+            _r, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+            w.close()
+            await w.wait_closed()
+            return port
+        except Exception:
+            continue
+    return None
 CLIENT_ID_SCAN_LIMIT = 10000
 
 
@@ -30,8 +43,6 @@ class ConnectionPool:
     def __init__(
         self,
         on_status_change: Callable[[int, str], None] | None = None,
-        *,
-        loop: asyncio.AbstractEventLoop | None = None,
     ):
         self._clients: dict[int, IB] = {}
         self._states: dict[int, ClientState] = {}
@@ -42,7 +53,6 @@ class ConnectionPool:
         self._host: str | None = None
         self._port: int | None = None
         self._on_status_change = on_status_change
-        self._loop = loop
         self._client_id_manager = IbkrClientIdManager(CLIENT_ID_START, CLIENT_ID_SCAN_LIMIT)
 
     def set_tws_address(self, host: str, port: int):
@@ -156,7 +166,7 @@ class ConnectionPool:
         task = self._reconnect_tasks.pop(role, None)
         if task:
             task.cancel()
-        loop = self._loop or asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         self._reconnect_tasks[role] = loop.create_task(self._reconnect_loop(role))
 
     async def _reconnect_loop(self, role: str):

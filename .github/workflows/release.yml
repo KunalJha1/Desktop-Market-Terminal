@@ -78,8 +78,14 @@ jobs:
             --hidden-import=ib_insync.contract \
             --hidden-import=ib_insync.objects \
             --add-data "../data/tickers.json:data" worker_watchlist.py
+          pyinstaller --clean --noconfirm --onefile --name dailyiq-valuation-worker \
+            --hidden-import=ib_insync \
+            --hidden-import=ib_insync.contract \
+            --hidden-import=ib_insync.objects \
+            --add-data "../data/tickers.json:data" worker_valuations.py
           cp dist/dailyiq-sidecar "../src-tauri/binaries/dailyiq-sidecar-${{ matrix.target }}"
           cp dist/dailyiq-worker "../src-tauri/binaries/dailyiq-worker-${{ matrix.target }}"
+          cp dist/dailyiq-valuation-worker "../src-tauri/binaries/dailyiq-valuation-worker-${{ matrix.target }}"
 
       - name: Build Python sidecar (Windows)
         if: runner.os == 'Windows'
@@ -100,8 +106,14 @@ jobs:
             --hidden-import=ib_insync.contract `
             --hidden-import=ib_insync.objects `
             --add-data "../data/tickers.json;data" worker_watchlist.py
+          pyinstaller --clean --noconfirm --onefile --name dailyiq-valuation-worker `
+            --hidden-import=ib_insync `
+            --hidden-import=ib_insync.contract `
+            --hidden-import=ib_insync.objects `
+            --add-data "../data/tickers.json;data" worker_valuations.py
           Copy-Item dist/dailyiq-sidecar.exe "..\src-tauri\binaries\dailyiq-sidecar-${{ matrix.target }}.exe"
           Copy-Item dist/dailyiq-worker.exe "..\src-tauri\binaries\dailyiq-worker-${{ matrix.target }}.exe"
+          Copy-Item dist/dailyiq-valuation-worker.exe "..\src-tauri\binaries\dailyiq-valuation-worker-${{ matrix.target }}.exe"
 
       - name: Install frontend deps
         run: npm ci

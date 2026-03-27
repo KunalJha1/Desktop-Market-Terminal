@@ -1,8 +1,7 @@
 import { useEffect, useState, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
 import type { CustomColumnDef, ExpressionColumn } from "../../lib/custom-column-types";
-
-const AVAILABLE_TF = ["5m", "15m", "1h", "4h", "1d", "1w"] as const;
+import { TA_SCORE_TIMEFRAMES } from "../../lib/ta-score-timeframes";
 
 interface PresetColumn {
   label: string;
@@ -82,7 +81,7 @@ export default function ColumnPopover({
         {/* Column 1: TA Scores */}
         <div className="px-2.5 py-2">
           <p className="pb-1.5 text-[8px] uppercase tracking-wider text-white/25">TA Scores</p>
-          {AVAILABLE_TF.map((tf) => (
+          {TA_SCORE_TIMEFRAMES.map((tf) => (
             <label
               key={tf}
               className="flex cursor-pointer items-center gap-2 py-1 hover:bg-white/[0.04] rounded-sm px-0.5"

@@ -1,0 +1,11 @@
+//@version=1
+indicator("RSI", overlay=false)
+length = input.int(14, "Length")
+maLength = input.int(14, "MA Length")
+rsiVal = ta.rsi(close, length)
+rsiMa = ta.sma(rsiVal, maLength)
+plot(rsiVal, "RSI", color=#F59E0B)
+plot(rsiMa, "MA", color=#8B5CF6)
+hline(70, color=#FF3D71, style=dashed)
+hline(50, color=#484F58, style=dashed)
+hline(30, color=#00C853, style=dashed)

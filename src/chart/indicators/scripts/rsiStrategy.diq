@@ -1,0 +1,10 @@
+//@version=1
+strategy("RSI Strategy", overlay=true)
+rsiLen = input.int(14, "RSI Length")
+overbought = input.int(70, "Overbought")
+oversold = input.int(30, "Oversold")
+rsiVal = ta.rsi(close, rsiLen)
+if ta.crossunder(rsiVal, overbought)
+    plotshape(high, style=triangledown, location=abovebar, color=#FF3D71, text="SELL")
+if ta.crossover(rsiVal, oversold)
+    plotshape(low, style=triangleup, location=belowbar, color=#00C853, text="BUY")

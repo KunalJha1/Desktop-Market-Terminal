@@ -1,10 +1,12 @@
 """Historical bar storage (SQLite) + fetching from TWS / Yahoo Finance."""
 
 import asyncio
+import json
 import logging
 import sqlite3
 import time
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 from db_utils import (
     DB_DIR,
@@ -14,6 +16,7 @@ from db_utils import (
     execute_one_tx_with_retry,
     sync_db_session,
 )
+from runtime_paths import data_dir
 from schema import ensure_historical_schema
 
 logger = logging.getLogger(__name__)
@@ -25,24 +28,35 @@ _schema_initialized = False
 CACHE_TTL = 300  # 5 minutes for intraday
 CACHE_TTL_DAILY = 21600  # 6 hours for daily bars
 
-# When doing an incremental fetch, overlap by this many days before the last cached bar
-# so we don't miss bars at the seam (e.g. partial last day, weekend gaps, etc.)
-INCREMENTAL_OVERLAP_DAYS = 5
-
 # Yahoo Finance hard limits for 1m data (API won't return further back)
 YAHOO_1M_MAX_DAYS = 29
 
 # Default/maximum horizons for deeper history pulls.
 DEFAULT_INTRADAY_DURATION = "30 D"
-BACKGROUND_INTRADAY_DURATION = "1 Y"
 DEFAULT_DAILY_DURATION = "30 Y"
+BACKGROUND_INTRADAY_DURATION = "2 Y"
 SEED_INTRADAY_DURATION = "5 D"
 SEED_DAILY_DURATION = "2 Y"
-MAX_INTRADAY_LOOKBACK_DAYS = 365
+MAX_INTRADAY_LOOKBACK_DAYS = 365 * 30
 MAX_DAILY_LOOKBACK_DAYS = 365 * 30
-TWS_INTRADAY_CHUNK_DAYS = 30
+# 1-minute historical requests start timing out on some TWS sessions when the
+# chunk is too large; keep the pagination window modest so deep backfills can
+# progress reliably.
+TWS_INTRADAY_CHUNK_DAYS = 14
 TWS_DAILY_CHUNK_YEARS = 10
 URGENT_HISTORICAL_WAIT_S = 4.0
+BACKGROUND_INTRADAY_MAX_YEARS = 30
+BACKGROUND_INTRADAY_MIN_YEARS = 1
+BACKGROUND_INTRADAY_DEFAULT_YEARS = 2
+SETTINGS_PATH = data_dir() / "tws-settings.json"
+BAR_SIZE_TARGET_DURATIONS = {
+    "1m": "20 D",
+    "5m": "90 D",
+    "15m": "270 D",
+    "1d": "30 Y",
+}
+MIN_INCREMENTAL_DAYS = 1
+MAX_INCREMENTAL_INTRADAY_DAYS = 14
 
 # Per-symbol async locks to prevent concurrent fetches for the same symbol+bar_size.
 # Key: "{symbol}:{bar_size}" (e.g. "HIMS:1m")
@@ -63,17 +77,66 @@ def _normalize_what_to_show(what_to_show: str) -> str:
     return mode
 
 
+def _normalize_bar_size(bar_size: str) -> str:
+    raw = (bar_size or "1 min").strip().lower()
+    mapping = {
+        "1m": "1m",
+        "1 min": "1m",
+        "1 mins": "1m",
+        "5m": "5m",
+        "5 min": "5m",
+        "5 mins": "5m",
+        "15m": "15m",
+        "15 min": "15m",
+        "15 mins": "15m",
+        "1d": "1d",
+        "1 day": "1d",
+        "5s": "5s",
+        "5 sec": "5s",
+        "5 secs": "5s",
+    }
+    return mapping.get(raw, "1d" if "day" in raw else "1m")
+
+
+def _is_daily_bar_size(bar_size: str) -> bool:
+    return _normalize_bar_size(bar_size) == "1d"
+
+
+def _ib_bar_size_setting(bar_size: str) -> str:
+    normalized = _normalize_bar_size(bar_size)
+    if normalized == "5m":
+        return "5 mins"
+    if normalized == "15m":
+        return "15 mins"
+    if normalized == "1d":
+        return "1 day"
+    if normalized == "5s":
+        return "5 secs"
+    return "1 min"
+
+
 def _table_for_series(bar_size: str, what_to_show: str) -> str:
-    base = "ohlcv_1d" if bar_size == "1d" else ("ohlcv_1m" if bar_size == "1m" else "ohlcv_5s")
+    normalized = _normalize_bar_size(bar_size)
+    base_map = {
+        "1m": "ohlcv_1m",
+        "5m": "ohlcv_5m",
+        "15m": "ohlcv_15m",
+        "1d": "ohlcv_1d",
+        "5s": "ohlcv_5s",
+    }
+    base = base_map.get(normalized, "ohlcv_1m")
     mode = _normalize_what_to_show(what_to_show)
-    if mode == "TRADES" or base == "ohlcv_5s":
+    if mode == "TRADES" or base == "ohlcv_5s" or normalized not in {"1m", "1d"}:
         return base
     return f"{base}_{mode.lower()}"
 
 
 def _cache_key_for_series(bar_size: str, what_to_show: str) -> str:
+    normalized = _normalize_bar_size(bar_size)
     mode = _normalize_what_to_show(what_to_show)
-    return bar_size if mode == "TRADES" else f"{bar_size}_{mode.lower()}"
+    if mode == "TRADES" or normalized not in {"1m", "1d"}:
+        return normalized
+    return f"{normalized}_{mode.lower()}"
 
 
 def _latest_bar_ts(conn: sqlite3.Connection, symbol: str, table: str) -> int | None:
@@ -114,6 +177,39 @@ def _duration_to_days(duration: str | None, fallback_days: int) -> int:
     return fallback_days
 
 
+def _normalize_background_intraday_years(value) -> int:
+    try:
+        years = int(value)
+    except (TypeError, ValueError):
+        years = BACKGROUND_INTRADAY_DEFAULT_YEARS
+    return max(BACKGROUND_INTRADAY_MIN_YEARS, min(BACKGROUND_INTRADAY_MAX_YEARS, years))
+
+
+def get_background_intraday_years(settings_path: Path | None = None) -> int:
+    path = settings_path or SETTINGS_PATH
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+    except FileNotFoundError:
+        return BACKGROUND_INTRADAY_DEFAULT_YEARS
+    except Exception as exc:
+        logger.warning("Failed to read intraday backfill settings from %s: %s", path, exc)
+        return BACKGROUND_INTRADAY_DEFAULT_YEARS
+
+    if not isinstance(payload, dict):
+        return BACKGROUND_INTRADAY_DEFAULT_YEARS
+    return _normalize_background_intraday_years(payload.get("intradayBackfillYears"))
+
+
+def get_background_intraday_duration(settings_path: Path | None = None) -> str:
+    return f"{get_background_intraday_years(settings_path)} Y"
+
+
+def target_duration_for_bar_size(bar_size: str) -> str:
+    normalized = _normalize_bar_size(bar_size)
+    return BAR_SIZE_TARGET_DURATIONS.get(normalized, BAR_SIZE_TARGET_DURATIONS["1m"])
+
+
 def _ib_datetime_utc(ts_ms: int) -> str:
     """Format a UTC timestamp for IB historical pagination."""
     dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
@@ -129,46 +225,38 @@ def _dedupe_bars(bars: list[dict]) -> list[dict]:
     return [deduped[ts] for ts in sorted(deduped)]
 
 
+def _days_to_ib_duration(days: int, is_daily: bool) -> str:
+    days = max(MIN_INCREMENTAL_DAYS, int(days))
+    if not is_daily:
+        return f"{min(days, MAX_INCREMENTAL_INTRADAY_DAYS)} D"
+    if days <= 365:
+        return f"{days} D"
+    return f"{max(1, (days + 364) // 365)} Y"
+
+
 def _incremental_tws_duration(last_ts_ms: int | None, default: str, is_daily: bool) -> str:
-    """
-    Return a TWS durationStr that covers only the gap since the last cached bar
-    plus INCREMENTAL_OVERLAP_DAYS. Falls back to `default` if there is no prior data.
-    """
+    """Return the gap-to-now duration, with 1D minimum and 14D intraday cap."""
     if last_ts_ms is None:
         return default
-    gap_days = (time.time() - last_ts_ms / 1000) / 86400 + INCREMENTAL_OVERLAP_DAYS
-    gap_days = max(gap_days, INCREMENTAL_OVERLAP_DAYS)
-    if is_daily:
-        if gap_days <= 365:
-            months = max(1, int(gap_days / 30) + 1)
-            return f"{months} M"
-        else:
-            years = int(gap_days / 365) + 1
-            return f"{years} Y"
-    else:
-        days = int(gap_days) + 1
-        if days <= 365:
-            return f"{days} D"
-        else:
-            months = int(gap_days / 30) + 1
-            return f"{months} M"
+    gap_days = int((time.time() - last_ts_ms / 1000) / 86400) + 1
+    return _days_to_ib_duration(gap_days, is_daily)
 
 
 def _incremental_yahoo_period(last_ts_ms: int | None, default: str, is_daily: bool) -> str:
     """
     Return a yahooquery period string covering only the gap since the last cached bar
-    plus INCREMENTAL_OVERLAP_DAYS. Falls back to `default` if there is no prior data.
+    with a minimum 1D window. Falls back to `default` if there is no prior data.
 
     For 1m bars Yahoo only goes back ~29 days regardless, so we cap there.
     """
     if last_ts_ms is None:
         return default
-    gap_days = (time.time() - last_ts_ms / 1000) / 86400 + INCREMENTAL_OVERLAP_DAYS
-    gap_days = max(gap_days, INCREMENTAL_OVERLAP_DAYS)
+    gap_days = int((time.time() - last_ts_ms / 1000) / 86400) + 1
+    gap_days = max(gap_days, MIN_INCREMENTAL_DAYS)
 
     if not is_daily:
         # Yahoo 1m hard limit — no point asking for more
-        gap_days = min(gap_days, YAHOO_1M_MAX_DAYS)
+        gap_days = min(gap_days, YAHOO_1M_MAX_DAYS if default in {"5d", "1mo"} else MAX_INCREMENTAL_INTRADAY_DAYS)
 
     if gap_days <= 5:
         return "5d"
@@ -188,6 +276,33 @@ def _incremental_yahoo_period(last_ts_ms: int | None, default: str, is_daily: bo
         return "10y"
     else:
         return "max"
+
+
+def _yahoo_seed_period(bar_size: str, lookback_days: int) -> str:
+    """Map the requested native series horizon to the best Yahoo period token."""
+    normalized = _normalize_bar_size(bar_size)
+    days = max(1, int(lookback_days))
+
+    if normalized == "1m":
+        # Yahoo 1m data is limited to about 29 days.
+        return "1mo"
+    if days <= 5:
+        return "5d"
+    if days <= 29:
+        return "1mo"
+    if days <= 89:
+        return "3mo"
+    if days <= 179:
+        return "6mo"
+    if days <= 364:
+        return "1y"
+    if days <= 729:
+        return "2y"
+    if days <= 1825:
+        return "5y"
+    if days <= 3650:
+        return "10y"
+    return "max"
 
 
 def _ensure_schema(conn: sqlite3.Connection):
@@ -335,35 +450,45 @@ def _init_schema(conn: sqlite3.Connection):
 
 def _cache_fresh(
     conn: sqlite3.Connection, symbol: str, bar_size: str, ttl: float = CACHE_TTL
-) -> tuple[bool, str]:
-    """Check if cached data is fresh enough. Returns (is_fresh, source)."""
+) -> tuple[bool, str, bool]:
+    """Check if cached data is fresh enough. Returns (is_fresh, source, depth_complete)."""
     row = conn.execute(
-        "SELECT fetched_at, source FROM fetch_meta WHERE symbol = ? AND bar_size = ?",
+        "SELECT fetched_at, source, depth_complete FROM fetch_meta WHERE symbol = ? AND bar_size = ?",
         [symbol, bar_size],
     ).fetchone()
     if not row:
-        return False, "none"
+        return False, "none", False
     fetched_at, source = row[0], row[1] or "yahoo"
+    depth_complete = bool(row[2]) if row[2] is not None else False
     age_s = (int(time.time() * 1000) - fetched_at) / 1000
-    return age_s < ttl, source
+    return age_s < ttl, source, depth_complete
 
 
 def _read_cached(conn: sqlite3.Connection, symbol: str, limit_days: int = 5, table: str = "ohlcv_1m") -> list[dict]:
     """Read cached bars, most recent `limit_days` days."""
     cutoff_ms = int((time.time() - limit_days * 86400) * 1000)
+    _synthetic_tables = {"ohlcv_1m", "ohlcv_5m", "ohlcv_15m"}
+    has_synthetic = table in _synthetic_tables
+    select_cols = "ts, open, high, low, close, volume, synthetic" if has_synthetic else "ts, open, high, low, close, volume"
     rows = conn.execute(
         f"""
-        SELECT ts, open, high, low, close, volume
+        SELECT {select_cols}
         FROM {table}
         WHERE symbol = ? AND ts >= ?
         ORDER BY ts ASC
         """,
         [symbol, cutoff_ms],
     ).fetchall()
-    bars = [
-        {"time": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]}
-        for r in rows
-    ]
+    if has_synthetic:
+        bars = [
+            {"time": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5], "synthetic": bool(r[6])}
+            for r in rows
+        ]
+    else:
+        bars = [
+            {"time": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]}
+            for r in rows
+        ]
 
     # For daily bars, fill in any days that have 1m data but no ohlcv_1d entry.
     if table == "ohlcv_1d":
@@ -454,11 +579,15 @@ def _read_cached_window(
 
     where = " AND ".join(conditions)
 
+    _synthetic_tables = {"ohlcv_1m", "ohlcv_5m", "ohlcv_15m"}
+    has_synthetic = table in _synthetic_tables
+    select_cols = "ts, open, high, low, close, volume, synthetic" if has_synthetic else "ts, open, high, low, close, volume"
+
     # When only limit is given (no time bounds), fetch the most recent bars
     if limit is not None and ts_start is None and ts_end is None:
         rows = conn.execute(
             f"""
-            SELECT ts, open, high, low, close, volume
+            SELECT {select_cols}
             FROM {table}
             WHERE {where}
             ORDER BY ts DESC
@@ -469,7 +598,7 @@ def _read_cached_window(
         rows.reverse()  # restore chronological order
     else:
         query = f"""
-            SELECT ts, open, high, low, close, volume
+            SELECT {select_cols}
             FROM {table}
             WHERE {where}
             ORDER BY ts ASC
@@ -479,6 +608,11 @@ def _read_cached_window(
             params.append(limit)
         rows = conn.execute(query, params).fetchall()
 
+    if has_synthetic:
+        return [
+            {"time": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5], "synthetic": bool(r[6])}
+            for r in rows
+        ]
     return [
         {"time": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]}
         for r in rows
@@ -497,6 +631,15 @@ def _cached_extent(
     return None, None
 
 
+def _has_full_coverage(ts_min: int | None, lookback_days: int, depth_complete: bool = False) -> bool:
+    if ts_min is None:
+        return False
+    if depth_complete:
+        return True
+    cached_span_days = (time.time() - ts_min / 1000) / 86400
+    return cached_span_days >= (lookback_days * 0.8)
+
+
 def read_cached_series(
     symbol: str,
     bar_size: str = "1m",
@@ -504,8 +647,8 @@ def read_cached_series(
     duration: str = DEFAULT_INTRADAY_DURATION,
 ) -> dict:
     """Return cached bars plus freshness metadata for a series."""
-    is_daily = bar_size in ("1 day", "1d")
-    db_bar_size = "1d" if is_daily else "1m"
+    db_bar_size = _normalize_bar_size(bar_size)
+    is_daily = db_bar_size == "1d"
     what_to_show = _normalize_what_to_show(what_to_show)
     cache_key = _cache_key_for_series(db_bar_size, what_to_show)
     ttl = CACHE_TTL_DAILY if is_daily else CACHE_TTL
@@ -521,7 +664,7 @@ def read_cached_series(
 
     with sync_db_session() as conn:
         _init_schema(conn)
-        is_fresh, source = _cache_fresh(conn, symbol, cache_key, ttl)
+        is_fresh, source, depth_complete = _cache_fresh(conn, symbol, cache_key, ttl)
         bars = _read_cached(conn, symbol, limit_days=lookback_days, table=table)
         ts_min, ts_max = _cached_extent(conn, symbol, table)
 
@@ -529,6 +672,7 @@ def read_cached_series(
         "bars": bars,
         "count": len(bars),
         "is_fresh": is_fresh,
+        "has_full_coverage": _has_full_coverage(ts_min, lookback_days, depth_complete),
         "source": source,
         "ts_min": ts_min,
         "ts_max": ts_max,
@@ -542,7 +686,7 @@ def enqueue_historical_priority(
     duration: str = DEFAULT_INTRADAY_DURATION,
 ) -> None:
     """Upsert an urgent historical fetch request visible across processes."""
-    db_bar_size = "1d" if bar_size in ("1 day", "1d") else "1m"
+    db_bar_size = _normalize_bar_size(bar_size)
     mode = _normalize_what_to_show(what_to_show)
     now_ms = int(time.time() * 1000)
     with sync_db_session() as conn:
@@ -604,7 +748,14 @@ def pop_historical_priority_requests(limit: int = 4) -> list[dict]:
 
 def seed_duration_for_bar_size(bar_size: str) -> str:
     """Return a smaller first-response fetch window for cold-cache requests."""
-    return SEED_DAILY_DURATION if bar_size in ("1 day", "1d") else SEED_INTRADAY_DURATION
+    normalized = _normalize_bar_size(bar_size)
+    if normalized == "1d":
+        return SEED_DAILY_DURATION
+    if normalized == "5m":
+        return "30 D"
+    if normalized == "15m":
+        return "90 D"
+    return SEED_INTRADAY_DURATION
 
 
 def _write_bars(
@@ -614,64 +765,124 @@ def _write_bars(
     bar_size: str = "1m",
     source: str = "yahoo",
     what_to_show: str = "TRADES",
+    update_meta: bool = True,
+    synthetic: bool = False,
+    depth_complete: bool | None = None,
 ):
     """
     Upsert bars into SQLite.
 
     TWS writes use INSERT OR REPLACE (authoritative — always overwrites).
     Yahoo writes use INSERT OR IGNORE (gap-fill only — never overwrites TWS bars).
+
+    Set update_meta=False for real-time bar writes so fetch_meta is not refreshed.
+    Cache freshness should only reflect completed historical fetches, not streaming bars.
+
+    Set synthetic=True for bars built from quote ticks (off-hours fallback).
+
+    Set depth_complete=True when the fetch has reached the earliest available history for
+    this series (i.e. the source returned all it has). When None, the existing flag is
+    preserved (important: INSERT OR REPLACE would otherwise reset it to 0).
     """
     if not bars:
         return
     table = _table_for_series(bar_size, what_to_show)
     cache_key = _cache_key_for_series(bar_size, what_to_show)
+    synthetic_flag = 1 if synthetic else 0
 
-    bar_params = [
-        (symbol, b["time"], b["open"], b["high"], b["low"], b["close"], b["volume"])
-        for b in bars
-    ]
+    # Only intraday tables carry the synthetic column; daily/5s tables do not.
+    _synthetic_tables = {"ohlcv_1m", "ohlcv_5m", "ohlcv_15m"}
+    has_synthetic_col = table in _synthetic_tables
+
+    if has_synthetic_col:
+        bar_params = [
+            (symbol, b["time"], b["open"], b["high"], b["low"], b["close"], b["volume"], synthetic_flag)
+            for b in bars
+        ]
+    else:
+        bar_params = [
+            (symbol, b["time"], b["open"], b["high"], b["low"], b["close"], b["volume"])
+            for b in bars
+        ]
 
     if source == "tws":
         # TWS is authoritative — overwrite any existing bar
-        execute_many_with_retry(
-            conn,
-            f"""
-            INSERT OR REPLACE INTO {table} (symbol, ts, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            bar_params,
-        )
-        # TWS always updates fetch_meta unconditionally
-        execute_one_tx_with_retry(
-            conn,
-            """
-            INSERT OR REPLACE INTO fetch_meta (symbol, bar_size, fetched_at, source)
-            VALUES (?, ?, ?, ?)
-            """,
-                (symbol, cache_key, int(time.time() * 1000), "tws"),
+        if has_synthetic_col:
+            execute_many_with_retry(
+                conn,
+                f"""
+                INSERT OR REPLACE INTO {table} (symbol, ts, open, high, low, close, volume, synthetic)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                bar_params,
+            )
+        else:
+            execute_many_with_retry(
+                conn,
+                f"""
+                INSERT OR REPLACE INTO {table} (symbol, ts, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                bar_params,
+            )
+        if update_meta:
+            if depth_complete is None:
+                existing = conn.execute(
+                    "SELECT depth_complete FROM fetch_meta WHERE symbol = ? AND bar_size = ?",
+                    [symbol, cache_key],
+                ).fetchone()
+                dc_val = existing[0] if existing and existing[0] is not None else 0
+            else:
+                dc_val = 1 if depth_complete else 0
+            execute_one_tx_with_retry(
+                conn,
+                """
+                INSERT OR REPLACE INTO fetch_meta (symbol, bar_size, fetched_at, source, depth_complete)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (symbol, cache_key, int(time.time() * 1000), "tws", dc_val),
             )
     else:
         # Yahoo — gap-fill only: never overwrite bars that may be from TWS
-        execute_many_with_retry(
-            conn,
-            f"""
-            INSERT OR IGNORE INTO {table} (symbol, ts, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            bar_params,
-        )
-        # Always update fetch_meta so the cache is marked fresh.
-        # Bar-level protection (INSERT OR IGNORE above) already prevents Yahoo
-        # from overwriting TWS bars — the metadata must still be updated so
-        # _cache_fresh() doesn't loop forever when TWS was the prior source.
-        execute_one_tx_with_retry(
-            conn,
-            """
-            INSERT OR REPLACE INTO fetch_meta (symbol, bar_size, fetched_at, source)
-            VALUES (?, ?, ?, ?)
-            """,
-            (symbol, cache_key, int(time.time() * 1000), "yahoo"),
-        )
+        if has_synthetic_col:
+            execute_many_with_retry(
+                conn,
+                f"""
+                INSERT OR IGNORE INTO {table} (symbol, ts, open, high, low, close, volume, synthetic)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                bar_params,
+            )
+        else:
+            execute_many_with_retry(
+                conn,
+                f"""
+                INSERT OR IGNORE INTO {table} (symbol, ts, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                bar_params,
+            )
+        if update_meta:
+            # Always update fetch_meta so the cache is marked fresh.
+            # Bar-level protection (INSERT OR IGNORE above) already prevents Yahoo
+            # from overwriting TWS bars — the metadata must still be updated so
+            # _cache_fresh() doesn't loop forever when TWS was the prior source.
+            if depth_complete is None:
+                existing = conn.execute(
+                    "SELECT depth_complete FROM fetch_meta WHERE symbol = ? AND bar_size = ?",
+                    [symbol, cache_key],
+                ).fetchone()
+                dc_val = existing[0] if existing and existing[0] is not None else 0
+            else:
+                dc_val = 1 if depth_complete else 0
+            execute_one_tx_with_retry(
+                conn,
+                """
+                INSERT OR REPLACE INTO fetch_meta (symbol, bar_size, fetched_at, source, depth_complete)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (symbol, cache_key, int(time.time() * 1000), "yahoo", dc_val),
+            )
 
 
 # ── TWS historical fetch ─────────────────────────────────────────────
@@ -688,11 +899,12 @@ async def fetch_from_tws(
     from ib_insync import Stock
 
     contract = Stock(symbol, "SMART", "USD")
+    ib_bar_size = _ib_bar_size_setting(bar_size)
     bars = await ib.reqHistoricalDataAsync(
         contract,
         endDateTime=end_date_time,
         durationStr=duration,
-        barSizeSetting=bar_size,
+        barSizeSetting=ib_bar_size,
         whatToShow=_normalize_what_to_show(what_to_show),
         useRTH=False,
         formatDate=2,  # UTC timestamp
@@ -730,7 +942,8 @@ async def fetch_from_tws_paginated(
     Walk backwards through TWS history in chunks so first-time backfills can
     collect materially more than a single IB request window.
     """
-    is_daily = bar_size in ("1 day", "1d")
+    normalized_bar_size = _normalize_bar_size(bar_size)
+    is_daily = normalized_bar_size == "1d"
     requested_days = _duration_to_days(
         duration,
         MAX_DAILY_LOOKBACK_DAYS if is_daily else MAX_INTRADAY_LOOKBACK_DAYS,
@@ -755,7 +968,7 @@ async def fetch_from_tws_paginated(
             ib,
             symbol,
             duration=chunk_duration,
-            bar_size=bar_size,
+            bar_size=normalized_bar_size,
             what_to_show=what_to_show,
             end_date_time=end_date_time,
         )
@@ -878,8 +1091,8 @@ async def get_historical_bars(
        - Yahoo uses INSERT OR IGNORE so it never overwrites TWS bars
     5. If fetch fails, return stale cache if available
     """
-    is_daily = bar_size in ("1 day", "1d")
-    db_bar_size = "1d" if is_daily else "1m"
+    db_bar_size = _normalize_bar_size(bar_size)
+    is_daily = db_bar_size == "1d"
     what_to_show = _normalize_what_to_show(what_to_show)
     cache_key = _cache_key_for_series(db_bar_size, what_to_show)
     ttl = CACHE_TTL_DAILY if is_daily else CACHE_TTL
@@ -898,16 +1111,13 @@ async def get_historical_bars(
         # ── Step 1: DB read (lock held briefly) ──────────────────────────
         async with _raw_db_session() as conn:
             _init_schema(conn)
-            is_fresh, cached_source = _cache_fresh(conn, symbol, cache_key, ttl)
+            is_fresh, cached_source, depth_complete = _cache_fresh(conn, symbol, cache_key, ttl)
             last_ts_ms = _latest_bar_ts(conn, symbol, table)
             earliest_ts_ms = _earliest_bar_ts(conn, symbol, table)
             if is_fresh:
                 cached = _read_cached(conn, symbol, limit_days=lookback_days, table=table)
                 if cached:
-                    has_full_coverage = False
-                    if earliest_ts_ms is not None:
-                        cached_span_days = (time.time() - earliest_ts_ms / 1000) / 86400
-                        has_full_coverage = cached_span_days >= (lookback_days * 0.8)
+                    has_full_coverage = _has_full_coverage(earliest_ts_ms, lookback_days, depth_complete)
                     if has_full_coverage:
                         logger.info(
                             f"Cache hit for {symbol} {cache_key} ({len(cached)} bars, source={cached_source})"
@@ -920,9 +1130,10 @@ async def get_historical_bars(
                     last_ts_ms = None
             if last_ts_ms is not None:
                 gap_days = (time.time() - last_ts_ms / 1000) / 86400
+                requested_duration = _incremental_tws_duration(last_ts_ms, duration, is_daily)
                 logger.info(
                     f"Incremental fetch for {symbol}: last bar {gap_days:.1f} days ago, "
-                    f"requesting ~{gap_days + INCREMENTAL_OVERLAP_DAYS:.0f} days"
+                    f"requesting {requested_duration}"
                 )
         # Lock released — network fetches happen outside the DB lock so other
         # coroutines (e.g. the frontend's historical request) can read the DB
@@ -931,10 +1142,11 @@ async def get_historical_bars(
         # ── Step 2: Network fetch (no DB lock held) ───────────────────────
         fetched_bars: list[dict] = []
         fetch_source: str = ""
+        mark_depth_complete: bool | None = None  # None = preserve existing flag
 
         if tws_connected and ib is not None:
             try:
-                tws_bar = "1 day" if is_daily else bar_size
+                tws_bar = db_bar_size
                 tws_default_dur = DEFAULT_DAILY_DURATION if is_daily else duration
                 tws_dur = _incremental_tws_duration(last_ts_ms, tws_default_dur, is_daily)
                 if last_ts_ms is None:
@@ -953,6 +1165,13 @@ async def get_historical_bars(
                         f"Fetched {len(fetched_bars)} {cache_key} bars from TWS for {symbol} "
                         f"(duration={tws_dur}, whatToShow={what_to_show})"
                     )
+                    # Full (non-incremental) paginated fetch: if earliest bar didn't move
+                    # backwards vs what we had, TWS has given us all available history.
+                    if last_ts_ms is None:
+                        new_earliest = min(b["time"] for b in fetched_bars)
+                        if earliest_ts_ms is None or new_earliest >= earliest_ts_ms - 86400_000:
+                            mark_depth_complete = True
+                            logger.info(f"Depth complete (TWS) for {symbol} {cache_key}")
             except Exception as e:
                 logger.warning(f"TWS historical fetch failed for {symbol}: {e}")
 
@@ -968,12 +1187,12 @@ async def get_historical_bars(
             # Even if cached source is TWS, still fetch from Yahoo to gap-fill
             # older history. Yahoo uses INSERT OR IGNORE so TWS bars stay intact.
             try:
-                yf_interval = "1d" if is_daily else "1m"
-                yf_default = "max" if is_daily else ("1mo" if lookback_days > 5 else "5d")
-                # If we have cached bars but they don't go back far enough,
-                # use the full default period to backfill older history
+                yf_interval = "1d" if is_daily else ("15m" if db_bar_size == "15m" else ("5m" if db_bar_size == "5m" else "1m"))
+                yf_default = _yahoo_seed_period(db_bar_size, lookback_days)
+                # If we have cached bars but they don't go back far enough, and depth is
+                # not already known to be complete, use the full period to backfill.
                 need_backfill = False
-                if earliest_ts_ms is not None and is_daily:
+                if not depth_complete and earliest_ts_ms is not None:
                     cached_span_days = (time.time() - earliest_ts_ms / 1000) / 86400
                     if cached_span_days < lookback_days * 0.8:  # less than 80% of requested range
                         need_backfill = True
@@ -992,6 +1211,11 @@ async def get_historical_bars(
                         f"Fetched {len(fetched_bars)} {cache_key} bars from Yahoo for {symbol} "
                         f"(period={yf_period})"
                     )
+                    # If earliest bar didn't move backwards, Yahoo has given us all it has.
+                    new_earliest = min(b["time"] for b in fetched_bars)
+                    if earliest_ts_ms is None or new_earliest >= earliest_ts_ms - 86400_000:
+                        mark_depth_complete = True
+                        logger.info(f"Depth complete (Yahoo) for {symbol} {cache_key}")
             except Exception as e:
                 logger.warning(f"Yahoo historical fetch failed for {symbol}: {e}")
 
@@ -999,7 +1223,8 @@ async def get_historical_bars(
         if fetched_bars:
             async with _raw_db_session() as conn:
                 _init_schema(conn)
-                _write_bars(conn, symbol, fetched_bars, db_bar_size, source=fetch_source, what_to_show=what_to_show)
+                _write_bars(conn, symbol, fetched_bars, db_bar_size, source=fetch_source,
+                            what_to_show=what_to_show, depth_complete=mark_depth_complete)
                 return _read_cached(conn, symbol, limit_days=lookback_days, table=table), fetch_source
 
         # Stale cache fallback
@@ -1017,17 +1242,37 @@ def save_realtime_bar(symbol: str, bar: dict):
     """Save a single real-time bar to SQLite (called from the RT bar callback).
 
     Uses sync_db_session so callback writes are safe from any thread.
+    Does not update fetch_meta — cache freshness must only reflect historical fetches,
+    not streaming bars, so the backfill loop can detect and fill intraday gaps.
     """
     with sync_db_session() as conn:
         _init_schema(conn)
-        _write_bars(conn, symbol, [bar], "5s", source="tws")
+        _write_bars(conn, symbol, [bar], "5s", source="tws", update_meta=False)
 
 
-def save_realtime_bar_1m(symbol: str, bar: dict):
-    """Upsert a single 1m bar to SQLite (partial bars overwrite)."""
+def save_realtime_bar_1m(symbol: str, bar: dict, synthetic: bool = False):
+    """Upsert a single 1m bar to SQLite (partial bars overwrite).
+
+    Does not update fetch_meta — cache freshness must only reflect historical fetches,
+    not streaming bars, so the backfill loop can detect and fill intraday gaps.
+    """
     with sync_db_session() as conn:
         _init_schema(conn)
-        _write_bars(conn, symbol, [bar], "1m", source="tws")
+        _write_bars(conn, symbol, [bar], "1m", source="tws", update_meta=False, synthetic=synthetic)
+
+
+def save_realtime_bar_5m(symbol: str, bar: dict, synthetic: bool = False):
+    """Upsert a single 5m bar to SQLite without refreshing fetch metadata."""
+    with sync_db_session() as conn:
+        _init_schema(conn)
+        _write_bars(conn, symbol, [bar], "5m", source="tws", update_meta=False, synthetic=synthetic)
+
+
+def save_realtime_bar_15m(symbol: str, bar: dict, synthetic: bool = False):
+    """Upsert a single 15m bar to SQLite without refreshing fetch metadata."""
+    with sync_db_session() as conn:
+        _init_schema(conn)
+        _write_bars(conn, symbol, [bar], "15m", source="tws", update_meta=False, synthetic=synthetic)
 
 
 def invalidate_yahoo_cache(symbols: list[str] | None = None):
@@ -1046,12 +1291,12 @@ def invalidate_yahoo_cache(symbols: list[str] | None = None):
             if symbols:
                 placeholders = ", ".join("?" * len(symbols))
                 conn.execute(
-                    f"UPDATE fetch_meta SET fetched_at = 0 WHERE source = 'yahoo' AND symbol IN ({placeholders})",
+                    f"UPDATE fetch_meta SET fetched_at = 0, depth_complete = 0 WHERE source = 'yahoo' AND symbol IN ({placeholders})",
                     symbols,
                 )
                 logger.info(f"Invalidated Yahoo cache for {symbols}")
             else:
-                conn.execute("UPDATE fetch_meta SET fetched_at = 0 WHERE source = 'yahoo'")
+                conn.execute("UPDATE fetch_meta SET fetched_at = 0, depth_complete = 0 WHERE source = 'yahoo'")
                 logger.info("Invalidated all Yahoo-sourced cache entries")
     except Exception as e:
         logger.warning(f"Yahoo cache invalidation failed: {e}")

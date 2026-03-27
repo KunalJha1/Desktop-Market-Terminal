@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import type { ScriptResult, ScriptError } from '../types';
 import { X, Play, Square, Plus, ChevronDown, ChevronUp, AlertTriangle, Circle } from 'lucide-react';
 
@@ -8,6 +8,9 @@ interface ScriptEditorProps {
   onRunScript: (id: string, source: string) => ScriptResult;
   onStopScript: (id: string) => void;
   onScriptsChange: (activeScripts: { id: string; source: string }[]) => void;
+  builtInViewer?: { name: string; source: string } | null;
+  onBuiltInViewerChange?: (viewer: { name: string; source: string } | null) => void;
+  width?: number;
 }
 
 interface ScriptEntry {
@@ -50,12 +53,90 @@ function createScript(name: string, source: string): ScriptEntry {
   };
 }
 
+const SCRIPT_KEYWORDS = new Set([
+  'indicator', 'strategy', 'plot', 'plotshape', 'hline', 'fill',
+  'input', 'if', 'else', 'for', 'while', 'return',
+  'and', 'or', 'not', 'true', 'false', 'na',
+  'color', 'style', 'overlay', 'title', 'format', 'precision', 'timeframe', 'timeframe_gaps',
+]);
+
+const SCRIPT_CONSTANTS = new Set([
+  'open', 'high', 'low', 'close', 'volume', 'hl2', 'hlc3', 'ohlc4',
+]);
+
+const SCRIPT_FUNCTIONS = new Set([
+  'sma', 'ema', 'rma', 'stdev', 'sum', 'highest', 'lowest', 'atr', 'rsi', 'mfi',
+  'cci', 'obv', 'vwap', 'supertrend', 'crossover', 'crossunder',
+  'round', 'floor', 'ceil', 'abs', 'sqrt', 'log', 'pow', 'max', 'min',
+]);
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function highlightScriptLine(line: string): string {
+  const commentStart = line.indexOf('//');
+  const codePart = commentStart >= 0 ? line.slice(0, commentStart) : line;
+  const commentPart = commentStart >= 0 ? line.slice(commentStart) : '';
+
+  const tokenRegex = /(#(?:[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})\b)|("(?:[^"\\]|\\.)*")|('(?:[^'\\]|\\.)*')|\b(\d+(?:\.\d+)?)\b|\b([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\b/g;
+  let html = '';
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenRegex.exec(codePart)) !== null) {
+    html += escapeHtml(codePart.slice(lastIndex, match.index));
+    const [token, hexColor, doubleQuoted, singleQuoted, numberLiteral, identifier] = match;
+
+    if (hexColor) {
+      html += `<span style="color:#79C0FF">${escapeHtml(token)}</span>`;
+    } else if (doubleQuoted || singleQuoted) {
+      html += `<span style="color:#A5D6A7">${escapeHtml(token)}</span>`;
+    } else if (numberLiteral) {
+      html += `<span style="color:#FFB86C">${escapeHtml(token)}</span>`;
+    } else if (identifier) {
+      const lower = identifier.toLowerCase();
+      const color = SCRIPT_KEYWORDS.has(lower)
+        ? '#FF7B72'
+        : SCRIPT_CONSTANTS.has(lower)
+          ? '#79C0FF'
+          : lower.includes('.') || SCRIPT_FUNCTIONS.has(lower)
+            ? '#D2A8FF'
+            : '#E6EDF3';
+      html += `<span style="color:${color}">${escapeHtml(token)}</span>`;
+    } else {
+      html += escapeHtml(token);
+    }
+
+    lastIndex = match.index + token.length;
+  }
+
+  html += escapeHtml(codePart.slice(lastIndex));
+  if (commentPart) {
+    html += `<span style="color:#6E7681">${escapeHtml(commentPart)}</span>`;
+  }
+  return html || '&nbsp;';
+}
+
+function highlightScriptSource(source: string): string {
+  return source
+    .split('\n')
+    .map((line) => `<div>${highlightScriptLine(line)}</div>`)
+    .join('');
+}
+
 export default function ScriptEditor({
   open,
   onClose,
   onRunScript,
   onStopScript,
   onScriptsChange,
+  builtInViewer = null,
+  onBuiltInViewerChange,
+  width = 320,
 }: ScriptEditorProps) {
   const [scripts, setScripts] = useState<ScriptEntry[]>(() => [
     createScript('RSI Example', DEFAULT_SCRIPT),
@@ -67,9 +148,15 @@ export default function ScriptEditor({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
+  const highlightRef = useRef<HTMLPreElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
   const currentScript = scripts.find((s) => s.id === activeTabId) ?? scripts[0];
+  const isBuiltInView = builtInViewer !== null;
+  const displayedName = builtInViewer?.name ?? currentScript.name;
+  const displayedSource = builtInViewer?.source ?? currentScript.source;
+  const displayedErrors = builtInViewer ? [] : currentScript.errors;
+  const highlightedSource = useMemo(() => highlightScriptSource(displayedSource), [displayedSource]);
 
   // Notify parent when active scripts change
   const notifyScriptsChange = useCallback(
@@ -103,20 +190,23 @@ export default function ScriptEditor({
 
   const handleSourceChange = useCallback(
     (value: string) => {
+      if (isBuiltInView) return;
       updateScript(currentScript.id, { source: value });
     },
-    [currentScript.id, updateScript],
+    [currentScript.id, isBuiltInView, updateScript],
   );
 
   const handleRun = useCallback(() => {
+    if (isBuiltInView) return;
     const result = onRunScript(currentScript.id, currentScript.source);
     updateScript(currentScript.id, { active: true, errors: result.errors });
-  }, [currentScript, onRunScript, updateScript]);
+  }, [currentScript, isBuiltInView, onRunScript, updateScript]);
 
   const handleStop = useCallback(() => {
+    if (isBuiltInView) return;
     onStopScript(currentScript.id);
     updateScript(currentScript.id, { active: false, errors: [] });
-  }, [currentScript.id, onStopScript, updateScript]);
+  }, [currentScript.id, isBuiltInView, onStopScript, updateScript]);
 
   const handleAddScript = useCallback(() => {
     const newScript = createScript(`Script ${scripts.length + 1}`, '// New script\n');
@@ -155,6 +245,10 @@ export default function ScriptEditor({
     if (textareaRef.current && lineNumbersRef.current) {
       lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop;
     }
+    if (textareaRef.current && highlightRef.current) {
+      highlightRef.current.scrollTop = textareaRef.current.scrollTop;
+      highlightRef.current.scrollLeft = textareaRef.current.scrollLeft;
+    }
   }, []);
 
   const handleKeyDown = useCallback(
@@ -162,6 +256,9 @@ export default function ScriptEditor({
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         handleRun();
+      }
+      if (isBuiltInView) {
+        return;
       }
       if (e.key === 'Tab') {
         e.preventDefault();
@@ -177,7 +274,7 @@ export default function ScriptEditor({
         });
       }
     },
-    [handleRun, currentScript.source, handleSourceChange],
+    [handleRun, isBuiltInView, currentScript.source, handleSourceChange],
   );
 
   // Rename on double-click
@@ -196,15 +293,15 @@ export default function ScriptEditor({
 
   if (!open) return null;
 
-  const lineCount = currentScript.source.split('\n').length;
-  const hasErrors = currentScript.errors.length > 0;
+  const lineCount = displayedSource.split('\n').length;
+  const hasErrors = displayedErrors.length > 0;
 
   return (
     <div
       ref={panelRef}
       className="flex flex-col border-l"
       style={{
-        width: 320,
+        width,
         height: '100%',
         backgroundColor: '#161B22',
         borderColor: '#21262D',
@@ -228,12 +325,17 @@ export default function ScriptEditor({
             color: '#8B5CF6',
           }}
         >
-          Scripts
+          {isBuiltInView ? `Built-in Script: ${displayedName}` : 'Scripts'}
         </span>
         <div className="flex items-center" style={{ gap: 8 }}>
-          <span style={{ fontSize: 9, color: '#484F58' }}>Ctrl+Enter to run</span>
+          <span style={{ fontSize: 9, color: '#484F58' }}>
+            {isBuiltInView ? 'Read only' : 'Ctrl+Enter to run'}
+          </span>
           <button
-            onClick={onClose}
+            onClick={() => {
+              onBuiltInViewerChange?.(null);
+              onClose();
+            }}
             style={{ color: '#484F58', background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex' }}
             onMouseEnter={(e) => (e.currentTarget.style.color = '#E6EDF3')}
             onMouseLeave={(e) => (e.currentTarget.style.color = '#484F58')}
@@ -244,6 +346,7 @@ export default function ScriptEditor({
       </div>
 
       {/* Script tabs */}
+      {!isBuiltInView ? (
       <div
         className="flex items-center"
         style={{
@@ -331,6 +434,24 @@ export default function ScriptEditor({
           <Plus size={12} />
         </button>
       </div>
+      ) : (
+        <div
+          style={{
+            height: 32,
+            display: 'flex',
+            alignItems: 'center',
+            padding: '0 10px',
+            borderBottom: '1px solid #21262D',
+            backgroundColor: '#0D1117',
+            fontSize: 10,
+            fontFamily: "'JetBrains Mono', monospace",
+            color: '#E6EDF3',
+            flexShrink: 0,
+          }}
+        >
+          {displayedName}
+        </div>
+      )}
 
       {/* Action bar */}
       <div
@@ -344,7 +465,7 @@ export default function ScriptEditor({
           flexShrink: 0,
         }}
       >
-        {currentScript.active ? (
+        {!isBuiltInView && currentScript.active ? (
           <button
             onClick={handleStop}
             style={{
@@ -367,7 +488,7 @@ export default function ScriptEditor({
             <Square size={9} />
             Stop
           </button>
-        ) : (
+        ) : !isBuiltInView ? (
           <button
             onClick={handleRun}
             style={{
@@ -390,8 +511,16 @@ export default function ScriptEditor({
             <Play size={9} />
             Run
           </button>
+        ) : (
+          <span
+            className="flex items-center"
+            style={{ gap: 4, fontSize: 9, color: '#79C0FF', marginLeft: 4 }}
+          >
+            <Circle size={6} fill="#79C0FF" stroke="none" />
+            Built-in source
+          </span>
         )}
-        {currentScript.active && (
+        {!isBuiltInView && currentScript.active && (
           <span
             className="flex items-center"
             style={{ gap: 4, fontSize: 9, color: '#00C853', marginLeft: 4 }}
@@ -434,7 +563,7 @@ export default function ScriptEditor({
                 fontSize: 11,
                 fontFamily: "'JetBrains Mono', monospace",
                 lineHeight: '20px',
-                color: currentScript.errors.some((e) => e.line === i + 1)
+                color: displayedErrors.some((e) => e.line === i + 1)
                   ? '#FF3D71'
                   : '#484F58',
               }}
@@ -445,28 +574,56 @@ export default function ScriptEditor({
         </div>
 
         {/* Textarea */}
-        <textarea
-          ref={textareaRef}
-          value={currentScript.source}
-          onChange={(e) => handleSourceChange(e.target.value)}
-          onScroll={handleScroll}
-          onKeyDown={handleKeyDown}
-          spellCheck={false}
-          style={{
-            flex: 1,
-            backgroundColor: '#0D1117',
-            color: '#E6EDF3',
-            fontSize: 11,
-            fontFamily: "'JetBrains Mono', monospace",
-            lineHeight: '20px',
-            padding: '8px 8px 8px 0',
-            outline: 'none',
-            resize: 'none',
-            border: 'none',
-            tabSize: 2,
-            overflowY: 'auto',
-          }}
-        />
+        <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+          <pre
+            ref={highlightRef}
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              margin: 0,
+              backgroundColor: '#0D1117',
+              color: '#E6EDF3',
+              fontSize: 11,
+              fontFamily: "'JetBrains Mono', monospace",
+              lineHeight: '20px',
+              padding: '8px 8px 8px 0',
+              overflow: 'hidden',
+              whiteSpace: 'pre',
+              pointerEvents: 'none',
+            }}
+            dangerouslySetInnerHTML={{ __html: highlightedSource }}
+          />
+          <textarea
+            ref={textareaRef}
+            value={displayedSource}
+            onChange={(e) => handleSourceChange(e.target.value)}
+            onScroll={handleScroll}
+            onKeyDown={handleKeyDown}
+            spellCheck={false}
+            readOnly={isBuiltInView}
+            style={{
+              position: 'relative',
+              zIndex: 1,
+              flex: 1,
+              width: '100%',
+              height: '100%',
+              backgroundColor: 'transparent',
+              color: 'transparent',
+              caretColor: '#E6EDF3',
+              fontSize: 11,
+              fontFamily: "'JetBrains Mono', monospace",
+              lineHeight: '20px',
+              padding: '8px 8px 8px 0',
+              outline: 'none',
+              resize: 'none',
+              border: 'none',
+              tabSize: 2,
+              overflowY: 'auto',
+              overflowX: 'auto',
+            }}
+          />
+        </div>
       </div>
 
       {/* Error panel */}
@@ -495,7 +652,7 @@ export default function ScriptEditor({
           >
             <AlertTriangle size={10} />
             <span>
-              {currentScript.errors.length} error{currentScript.errors.length !== 1 ? 's' : ''}
+              {displayedErrors.length} error{displayedErrors.length !== 1 ? 's' : ''}
             </span>
             <span style={{ marginLeft: 'auto', display: 'flex' }}>
               {errorsExpanded ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
@@ -509,7 +666,7 @@ export default function ScriptEditor({
                 padding: '0 8px 8px',
               }}
             >
-              {currentScript.errors.map((err, i) => (
+              {displayedErrors.map((err, i) => (
                 <div
                   key={i}
                   className="flex items-center"

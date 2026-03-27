@@ -1,0 +1,10 @@
+//@version=1
+indicator("Accumulation/Distribution Line", overlay=false)
+// Money Flow Multiplier = ((close - low) - (high - close)) / (high - low)
+// Money Flow Volume = MFM * volume
+// ADL = cumulative sum of MFV
+clv = (high - low) > 0 ? ((close - low) - (high - close)) / (high - low) : 0
+mfv = clv * volume
+// Rolling cumulative sum
+adl = sum(mfv, 500)
+plot(adl, "ADL", color=#1A56DB)

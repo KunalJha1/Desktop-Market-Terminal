@@ -1,0 +1,5 @@
+//@version=1
+indicator("Average True Range", overlay=false)
+length = input.int(14, "Length")
+atrVal = ta.atr(length)
+plot(atrVal, "ATR", color=#F59E0B)

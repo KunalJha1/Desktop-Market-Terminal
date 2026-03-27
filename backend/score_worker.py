@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timezone
 
 from db_utils import execute_many_with_retry, sync_db_session
-from technicals import score_symbols
+from technicals import MIN_BARS, SUPPORTED_TIMEFRAMES, inspect_symbol_timeframe, score_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"]
 UNIVERSE_TIMEFRAMES = ["1d", "1w"]
 INTERVAL_S = 60
 UNIVERSE_INTERVAL_S = 300
+_SCORE_FIELDS = ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
 
 
 def _upsert_scores(
@@ -58,7 +59,7 @@ def _compute_and_upsert(symbols: list[str]) -> None:
     if not symbols:
         return
     scored = score_symbols(symbols, TIMEFRAMES)
-    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)  # store as naive UTC
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     rows = [
         (
             sym,
@@ -73,7 +74,7 @@ def _compute_and_upsert(symbols: list[str]) -> None:
         for sym, scores in scored.items()
     ]
     _upsert_scores(rows, now_utc)
-    logger.info(f"Technical scores updated for {len(rows)} symbol(s)")
+    logger.info("Technical scores updated for %s symbol(s)", len(rows))
 
 
 def _compute_and_upsert_universe(symbols: list[str]) -> None:
@@ -102,14 +103,85 @@ def _compute_and_upsert_universe(symbols: list[str]) -> None:
             """,
             [(sym, s1d, s1w, now_utc) for sym, _, _, _, _, _, s1d, s1w in rows],
         )
-    logger.info(f"Universe tech scores (1d/1w) updated for {len(rows)} symbol(s)")
+    logger.info("Universe tech scores (1d/1w) updated for %s symbol(s)", len(rows))
+
+
+def _normalize_symbols(symbols: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in symbols:
+        sym = (raw or "").strip().upper()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        normalized.append(sym)
+    return normalized
+
+
+def _normalize_timeframes(timeframes: list[str] | None) -> list[str]:
+    requested = timeframes or list(_SCORE_FIELDS)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in requested:
+        tf = (raw or "").strip().lower()
+        if tf not in SUPPORTED_TIMEFRAMES or tf in seen:
+            continue
+        seen.add(tf)
+        normalized.append(tf)
+    return normalized or list(_SCORE_FIELDS)
+
+
+def _row_to_score_map(row: tuple | None) -> dict[str, int | None]:
+    if not row:
+        return {tf: None for tf in _SCORE_FIELDS}
+    return {
+        "1m": row[1],
+        "5m": row[2],
+        "15m": row[3],
+        "1h": row[4],
+        "4h": row[5],
+        "1d": row[6],
+        "1w": row[7],
+    }
+
+
+def _merge_score_row(
+    symbol: str,
+    existing: dict[str, int | None],
+    updates: dict[str, int | None],
+) -> tuple[str, int | None, int | None, int | None, int | None, int | None, int | None, int | None]:
+    merged = {
+        tf: updates[tf] if tf in updates else existing.get(tf)
+        for tf in _SCORE_FIELDS
+    }
+    return (
+        symbol,
+        merged["1m"],
+        merged["5m"],
+        merged["15m"],
+        merged["1h"],
+        merged["4h"],
+        merged["1d"],
+        merged["1w"],
+    )
 
 
 def read_scores(symbols: list[str]) -> list[dict]:
-    """Synchronous read — returns rows from cache for the given symbols."""
-    if not symbols:
+    """Backward-compatible cache read for all supported timeframes."""
+    return read_scores_for_timeframes(symbols, list(_SCORE_FIELDS))
+
+
+def read_scores_for_timeframes(
+    symbols: list[str],
+    timeframes: list[str] | None = None,
+) -> list[dict]:
+    """Read cached scores and compute missing requested timeframes on demand."""
+    normalized_symbols = _normalize_symbols(symbols)
+    if not normalized_symbols:
         return []
-    placeholders = ", ".join("?" * len(symbols))
+    requested_timeframes = _normalize_timeframes(timeframes)
+    placeholders = ", ".join("?" * len(normalized_symbols))
+
     with sync_db_session() as conn:
         rows = conn.execute(
             f"""
@@ -118,22 +190,57 @@ def read_scores(symbols: list[str]) -> list[dict]:
             FROM technical_scores
             WHERE symbol IN ({placeholders})
             """,
-            [s.upper() for s in symbols],
+            normalized_symbols,
         ).fetchall()
-    return [
-        {
-            "symbol": r[0],
-            "1m": r[1],
-            "5m": r[2],
-            "15m": r[3],
-            "1h": r[4],
-            "4h": r[5],
-            "1d": r[6],
-            "1w": r[7],
-            "last_updated_utc": r[8].isoformat() if hasattr(r[8], "isoformat") else r[8],
-        }
-        for r in rows
+        row_map = {row[0]: row for row in rows}
+
+    symbols_needing_fill = [
+        sym for sym in normalized_symbols
+        if any(_row_to_score_map(row_map.get(sym)).get(tf) is None for tf in requested_timeframes)
     ]
+    if symbols_needing_fill:
+        computed = score_symbols(symbols_needing_fill, requested_timeframes)
+        rows_to_upsert: list[tuple[str, int | None, int | None, int | None, int | None, int | None, int | None, int | None]] = []
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        for sym in symbols_needing_fill:
+            updates = {
+                tf: score
+                for tf, score in computed.get(sym, {}).items()
+                if score is not None
+            }
+            if not updates:
+                continue
+            merged_row = _merge_score_row(sym, _row_to_score_map(row_map.get(sym)), updates)
+            rows_to_upsert.append(merged_row)
+            row_map[sym] = (*merged_row, now_utc)
+        if rows_to_upsert:
+            _upsert_scores(rows_to_upsert, now_utc)
+
+    payloads: list[dict] = []
+    with sync_db_session() as conn:
+        for sym in normalized_symbols:
+            row = row_map.get(sym)
+            cached = _row_to_score_map(row)
+            payload = {
+                "symbol": sym,
+                "last_updated_utc": row[8].isoformat() if row and hasattr(row[8], "isoformat") else (row[8] if row else None),
+            }
+            for tf in _SCORE_FIELDS:
+                payload[tf] = cached.get(tf)
+            for tf in requested_timeframes:
+                score = cached.get(tf)
+                if score is not None:
+                    payload[f"status_{tf}"] = "ok"
+                    payload[f"bars_{tf}"] = None
+                    payload[f"required_bars_{tf}"] = MIN_BARS
+                    continue
+                info = inspect_symbol_timeframe(conn, sym, tf)
+                payload[f"status_{tf}"] = "error" if info["status"] == "scorable" else info["status"]
+                payload[f"bars_{tf}"] = info["bar_count"]
+                payload[f"required_bars_{tf}"] = info["required_bars"]
+            payloads.append(payload)
+
+    return payloads
 
 
 class TechnicalsScorer:
@@ -150,27 +257,11 @@ class TechnicalsScorer:
         self._task: asyncio.Task | None = None
 
     def set_symbols(self, symbols: list[str]) -> None:
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for raw in symbols:
-            sym = (raw or "").strip().upper()
-            if not sym or sym in seen:
-                continue
-            seen.add(sym)
-            normalized.append(sym)
-        self._symbols = normalized
+        self._symbols = _normalize_symbols(symbols)
 
     def set_universe(self, symbols: list[str]) -> None:
         """Set the broad universe (e.g. S&P 500) for low-frequency 1d/1w scoring."""
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for raw in symbols:
-            sym = (raw or "").strip().upper()
-            if not sym or sym in seen:
-                continue
-            seen.add(sym)
-            normalized.append(sym)
-        self._universe = normalized
+        self._universe = _normalize_symbols(symbols)
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -188,25 +279,21 @@ class TechnicalsScorer:
         while True:
             loop = asyncio.get_event_loop()
 
-            # Tier 1: watchlist — all timeframes, every iteration
             symbols = list(self._symbols)
             if symbols:
                 try:
                     await loop.run_in_executor(None, _compute_and_upsert, symbols)
                 except Exception as exc:
-                    logger.error(f"TechnicalsScorer watchlist error: {exc}")
+                    logger.error("TechnicalsScorer watchlist error: %s", exc)
 
-            # Tier 2: universe — 1d/1w only, every Nth iteration
             if iteration % universe_every == 0:
                 watchlist_set = set(self._symbols)
                 universe_only = [s for s in self._universe if s not in watchlist_set]
                 if universe_only:
                     try:
-                        await loop.run_in_executor(
-                            None, _compute_and_upsert_universe, universe_only
-                        )
+                        await loop.run_in_executor(None, _compute_and_upsert_universe, universe_only)
                     except Exception as exc:
-                        logger.error(f"TechnicalsScorer universe error: {exc}")
+                        logger.error("TechnicalsScorer universe error: %s", exc)
 
             iteration += 1
             await asyncio.sleep(INTERVAL_S)

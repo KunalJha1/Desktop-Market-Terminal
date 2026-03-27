@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Minimum resampled candles required before we attempt indicator math
 MIN_BARS = 60
+SUPPORTED_TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
+INTRADAY_TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h"}
 
 # How many 1m bars to pull per intraday timeframe (enough for 100+ resampled bars)
 _TF_1M_FETCH: dict[str, int] = {
@@ -323,6 +325,8 @@ def classify_technicals(technicals: dict, last_close: float) -> dict:
 
 def _load_df(conn, symbol: str, timeframe: str) -> pd.DataFrame:
     """Load and resample OHLCV for the given timeframe. Returns empty df on failure."""
+    if timeframe == "1m":
+        return _get_1m(conn, symbol, 200)
     if timeframe == "1d":
         return _get_1d(conn, symbol, 200)
     if timeframe == "1w":
@@ -332,6 +336,32 @@ def _load_df(conn, symbol: str, timeframe: str) -> pd.DataFrame:
         return pd.DataFrame()
     limit = min(_TF_1M_FETCH.get(timeframe, minutes * 200), 20_000)
     return _resample(_get_1m(conn, symbol, limit), minutes)
+
+
+def inspect_symbol_timeframe(conn, symbol: str, timeframe: str) -> dict[str, int | str | None]:
+    """Explain why a score is or is not available for a symbol/timeframe pair."""
+    if timeframe not in SUPPORTED_TIMEFRAMES:
+        return {
+            "status": "unsupported_timeframe",
+            "bar_count": 0,
+            "required_bars": MIN_BARS,
+        }
+    try:
+        df = _load_df(conn, symbol, timeframe)
+    except Exception:
+        logger.exception("inspect_symbol_timeframe(%s, %s) failed", symbol, timeframe)
+        return {
+            "status": "error",
+            "bar_count": None,
+            "required_bars": MIN_BARS,
+        }
+
+    bar_count = 0 if df is None else int(len(df))
+    return {
+        "status": "scorable" if bar_count >= MIN_BARS else "insufficient_bars",
+        "bar_count": bar_count,
+        "required_bars": MIN_BARS,
+    }
 
 
 def score_symbols(

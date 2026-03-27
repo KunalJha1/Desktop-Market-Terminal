@@ -1,0 +1,10 @@
+//@version=1
+strategy("EMA 5/20 Crossover", overlay=true)
+fast = ta.ema(close, 5)
+slow = ta.ema(close, 20)
+if ta.crossover(fast, slow)
+    plotshape(low, style=triangleup, location=belowbar, color=#00C853, text="BUY")
+if ta.crossunder(fast, slow)
+    plotshape(high, style=triangledown, location=abovebar, color=#FF3D71, text="SELL")
+plot(fast, "EMA 5",  color=#1A56DB)
+plot(slow, "EMA 20", color=#F59E0B)

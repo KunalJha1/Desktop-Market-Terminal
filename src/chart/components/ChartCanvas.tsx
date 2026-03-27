@@ -12,8 +12,8 @@ import type {
   DrawingSelection,
   YScaleMode,
 } from '../types';
-import { PRICE_AXIS_WIDTH } from '../constants';
-import { Brush, Crosshair, Lock, LockOpen, RotateCcw, Trash2, Type, ZoomIn, ZoomOut, Check } from 'lucide-react';
+import { PRICE_AXIS_CONTROL_HEIGHT, PRICE_AXIS_WIDTH } from '../constants';
+import { Brush, Crosshair, Lock, LockOpen, RotateCcw, Trash2, Type, ZoomIn, ZoomOut, Check, ChevronUp, ChevronDown, Minus, Maximize2, ChevronsUpDown } from 'lucide-react';
 
 const DRAWING_COLOR_PALETTE = [
   '#60A5FA',
@@ -83,20 +83,21 @@ export default function ChartCanvas({
   const textInputRef = useRef<HTMLInputElement>(null);
   const [activeTool, setActiveTool] = useState<DrawingTool>('none');
   const [yAxisHovered, setYAxisHovered] = useState(false);
+  const [xAxisHovered, setXAxisHovered] = useState(false);
   const [drawingHovered, setDrawingHovered] = useState(false);
   const [selectedDrawing, setSelectedDrawing] = useState<DrawingSelection | null>(null);
   const [pendingTextAnchor, setPendingTextAnchor] = useState<DrawingAnchor | null>(null);
   const [pendingTextValue, setPendingTextValue] = useState('');
   const [ctxMenu, setCtxMenu] = useState<DrawingContextMenu | null>(null);
   const [priceSectionHeight, setPriceSectionHeight] = useState(0);
-  const [paneLayout, setPaneLayout] = useState<Array<{ paneId: string; top: number; height: number; yScaleMode: YScaleMode }>>([]);
+  const [paneLayout, setPaneLayout] = useState<Array<{ paneId: string; top: number; height: number; yScaleMode: YScaleMode; showScaleControls: boolean; collapsed: boolean; maximized: boolean }>>([]);
 
   const notifyLayout = useCallback(() => {
     const engine = engineRef.current;
     if (!engine) return;
     const layout = engine.getLayout();
     setPriceSectionHeight(layout.mainHeight);
-    setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode })));
+    setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode, showScaleControls: p.showScaleControls, collapsed: p.collapsed, maximized: p.maximized })));
     onLayoutChange?.(layout);
   }, [engineRef, onLayoutChange]);
 
@@ -314,20 +315,41 @@ export default function ChartCanvas({
   const toolButtonClass = (tool: DrawingTool) => [
     'w-9 h-9 rounded-md border transition-colors flex items-center justify-center',
     activeTool === tool
-      ? 'bg-blue/20 border-blue text-blue'
+      ? 'bg-[#3B82F6]/10 border-[#3B82F6]/40 text-[#3B82F6]'
       : 'bg-base/80 border-border-default text-text-secondary hover:bg-hover hover:text-text-primary',
   ].join(' ');
 
   const handleCanvasPointerMove = useCallback((event: ReactMouseEvent<HTMLCanvasElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    setYAxisHovered(x >= rect.width - PRICE_AXIS_WIDTH && y >= 0 && y <= rect.height);
-    setDrawingHovered(!!engineRef.current?.getHoveredDrawingId());
+    const canvas = event.currentTarget;
+    const ne = event.nativeEvent;
+    let x: number;
+    let y: number;
+    let w: number;
+    let h: number;
+    if (typeof ne.offsetX === 'number' && typeof ne.offsetY === 'number') {
+      x = ne.offsetX;
+      y = ne.offsetY;
+      w = canvas.clientWidth;
+      h = canvas.clientHeight;
+    } else {
+      const rect = canvas.getBoundingClientRect();
+      x = ne.clientX - rect.left;
+      y = ne.clientY - rect.top;
+      w = rect.width;
+      h = rect.height;
+    }
+    const overYAxis = x >= w - PRICE_AXIS_WIDTH && y >= 0 && y <= h;
+    const axisTop = h - 24;
+    const overXAxis = x < w - PRICE_AXIS_WIDTH && y >= axisTop && y <= h;
+    setYAxisHovered(prev => prev === overYAxis ? prev : overYAxis);
+    setXAxisHovered(prev => prev === overXAxis ? prev : overXAxis);
+    const hovered = !!engineRef.current?.getHoveredDrawingId();
+    setDrawingHovered(prev => prev === hovered ? prev : hovered);
   }, [engineRef]);
 
   const handleCanvasPointerLeave = useCallback(() => {
     setYAxisHovered(false);
+    setXAxisHovered(false);
     setDrawingHovered(false);
   }, []);
 
@@ -339,6 +361,7 @@ export default function ChartCanvas({
   const pendingTextPosition = pendingTextAnchor
     ? engineRef.current?.anchorToCanvasPoint(pendingTextAnchor) ?? null
     : null;
+  const actionablePanes = paneLayout.filter((pane) => !pane.paneId.startsWith('__script_'));
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -452,92 +475,163 @@ export default function ChartCanvas({
           className="absolute inset-0"
           onMouseMove={handleCanvasPointerMove}
           onMouseLeave={handleCanvasPointerLeave}
-          style={{ cursor: yAxisHovered ? 'ns-resize' : activeTool !== 'none' ? 'copy' : drawingHovered ? 'move' : 'crosshair' }}
+          style={{ cursor: yAxisHovered ? 'ns-resize' : xAxisHovered ? 'ew-resize' : activeTool !== 'none' ? 'copy' : drawingHovered ? 'move' : 'crosshair' }}
         />
-        {yAxisHovered && (
-          <div className="pointer-events-none absolute right-5 top-1/2 z-20 flex h-16 w-4 -translate-y-1/2 flex-col items-center justify-center rounded-full border border-blue/40 bg-base/85 shadow-lg backdrop-blur-sm">
-            <div className="h-1.5 w-1.5 rounded-full bg-blue/90" />
-            <div className="my-1 h-6 w-px bg-blue/80" />
-            <div className="flex flex-col gap-1">
-              <div className="h-0.5 w-2 rounded-full bg-blue/80" />
-              <div className="h-0.5 w-2 rounded-full bg-blue/80" />
-            </div>
-          </div>
-        )}
         {/* A / L scale mode buttons pinned to bottom of price section y-axis */}
         <div
-          className="pointer-events-auto absolute z-10 flex flex-row justify-center gap-px"
+          className="pointer-events-auto absolute z-10 flex items-center justify-center"
           style={{
             right: 0,
-            top: priceSectionHeight > 0 ? priceSectionHeight - 22 : undefined,
+            top: priceSectionHeight > 0 ? priceSectionHeight - PRICE_AXIS_CONTROL_HEIGHT : undefined,
             bottom: priceSectionHeight > 0 ? undefined : 24,
             width: PRICE_AXIS_WIDTH,
+            height: PRICE_AXIS_CONTROL_HEIGHT,
           }}
         >
-          <button
-            onClick={() => onYScaleModeChange?.(yScaleMode === 'auto' ? 'manual' : 'auto')}
-            className={`px-1.5 py-0.5 text-[9px] font-mono rounded-sm transition-colors duration-[120ms] ${
-              yScaleMode === 'auto'
-                ? 'bg-white text-black border border-white'
-                : 'bg-transparent text-white border border-white/40 hover:border-white/70'
-            }`}
-            title="Auto scale"
-          >
-            A
-          </button>
-          <button
-            onClick={() => onYScaleModeChange?.(yScaleMode === 'log' ? 'manual' : 'log')}
-            className={`px-1.5 py-0.5 text-[9px] font-mono rounded-sm transition-colors duration-[120ms] ${
-              yScaleMode === 'log'
-                ? 'bg-white text-black border border-white'
-                : 'bg-transparent text-white border border-white/40 hover:border-white/70'
-            }`}
-            title="Logarithmic scale"
-          >
-            L
-          </button>
-        </div>
-        {/* Per-sub-pane A / L scale mode buttons */}
-        {paneLayout.map((pane) => (
-          <div
-            key={pane.paneId}
-            className="pointer-events-auto absolute z-10 flex flex-row justify-center gap-px"
-            style={{
-              right: 0,
-              top: pane.top + pane.height - 22,
-              width: PRICE_AXIS_WIDTH,
-            }}
-          >
+          <div className="flex items-center gap-1 rounded-full border border-white/[0.08] bg-black/20 px-1.5 py-0.5 shadow-sm backdrop-blur-sm">
             <button
-              onClick={() => {
-                const next = pane.yScaleMode === 'auto' ? 'manual' : 'auto';
-                engineRef.current?.setSubPaneScaleMode(pane.paneId, next);
-                notifyLayout();
-              }}
-              className={`px-1.5 py-0.5 text-[9px] font-mono rounded-sm transition-colors duration-[120ms] ${
-                pane.yScaleMode === 'auto'
-                  ? 'bg-white text-black border border-white'
-                  : 'bg-transparent text-white border border-white/40 hover:border-white/70'
+              onClick={() => onYScaleModeChange?.(yScaleMode === 'auto' ? 'manual' : 'auto')}
+              className={`flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-mono transition-colors duration-[120ms] ${
+                yScaleMode === 'auto'
+                  ? 'bg-white text-black'
+                  : 'text-white/78 hover:bg-white/[0.08] hover:text-white'
               }`}
               title="Auto scale"
             >
               A
             </button>
             <button
-              onClick={() => {
-                const next = pane.yScaleMode === 'log' ? 'manual' : 'log';
-                engineRef.current?.setSubPaneScaleMode(pane.paneId, next);
-                notifyLayout();
-              }}
-              className={`px-1.5 py-0.5 text-[9px] font-mono rounded-sm transition-colors duration-[120ms] ${
-                pane.yScaleMode === 'log'
-                  ? 'bg-white text-black border border-white'
-                  : 'bg-transparent text-white border border-white/40 hover:border-white/70'
+              onClick={() => onYScaleModeChange?.(yScaleMode === 'log' ? 'manual' : 'log')}
+              className={`flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-mono transition-colors duration-[120ms] ${
+                yScaleMode === 'log'
+                  ? 'bg-white text-black'
+                  : 'text-white/78 hover:bg-white/[0.08] hover:text-white'
               }`}
               title="Logarithmic scale"
             >
               L
             </button>
+          </div>
+        </div>
+        {/* Per-sub-pane action buttons (top-right) */}
+        {actionablePanes.map((pane, idx) => (
+          <div
+            key={`pane-actions-${pane.paneId}`}
+            className={`pointer-events-auto absolute z-20 flex items-center rounded-md border border-white/[0.08] bg-[#0d1117]/90 shadow-lg backdrop-blur-sm transition-colors duration-[120ms] hover:border-white/[0.16] ${
+              pane.collapsed ? 'gap-0.5 px-1 py-0.5' : 'gap-1 px-1.5 py-1'
+            }`}
+            style={{
+              right: PRICE_AXIS_WIDTH + 6,
+              top: pane.top + (pane.collapsed ? 1 : 5),
+            }}
+          >
+            <button
+              onClick={() => { engineRef.current?.movePane(pane.paneId, 'down'); notifyLayout(); }}
+              disabled={idx === actionablePanes.length - 1}
+              className={`flex items-center justify-center rounded-sm text-white/40 transition-colors duration-[120ms] hover:bg-white/[0.06] hover:text-white/80 disabled:pointer-events-none disabled:opacity-20 ${
+                pane.collapsed ? 'h-4 w-4' : 'h-[18px] w-[18px]'
+              }`}
+              title="Move pane down"
+            >
+              <ChevronDown size={11} />
+            </button>
+            <button
+              onClick={() => { engineRef.current?.movePane(pane.paneId, 'up'); notifyLayout(); }}
+              disabled={idx === 0}
+              className={`flex items-center justify-center rounded-sm text-white/40 transition-colors duration-[120ms] hover:bg-white/[0.06] hover:text-white/80 disabled:pointer-events-none disabled:opacity-20 ${
+                pane.collapsed ? 'h-4 w-4' : 'h-[18px] w-[18px]'
+              }`}
+              title="Move pane up"
+            >
+              <ChevronUp size={11} />
+            </button>
+            <button
+              onClick={() => { engineRef.current?.removePane(pane.paneId); notifyLayout(); }}
+              className={`flex items-center justify-center rounded-sm text-white/40 transition-colors duration-[120ms] hover:bg-white/[0.06] hover:text-red-400/80 ${
+                pane.collapsed ? 'h-4 w-4' : 'h-[18px] w-[18px]'
+              }`}
+              title="Delete pane"
+            >
+              <Trash2 size={11} />
+            </button>
+            <button
+              onClick={() => {
+                if (pane.collapsed) {
+                  engineRef.current?.expandPane(pane.paneId);
+                } else {
+                  engineRef.current?.collapsePane(pane.paneId);
+                }
+                notifyLayout();
+              }}
+              className={`flex items-center justify-center rounded-sm text-white/40 transition-colors duration-[120ms] hover:bg-white/[0.06] hover:text-white/80 ${
+                pane.collapsed ? 'h-4 w-4' : 'h-[18px] w-[18px]'
+              }`}
+              title={pane.collapsed ? 'Expand pane' : 'Collapse pane'}
+            >
+              {pane.collapsed ? <ChevronsUpDown size={11} /> : <Minus size={12} strokeWidth={2.25} />}
+            </button>
+            <button
+              onClick={() => {
+                if (pane.maximized) {
+                  engineRef.current?.unmaximizePane();
+                } else {
+                  engineRef.current?.maximizePane(pane.paneId);
+                }
+                notifyLayout();
+              }}
+              className={`flex items-center justify-center rounded-sm text-white/40 transition-colors duration-[120ms] hover:bg-white/[0.06] hover:text-white/80 ${
+                pane.collapsed ? 'h-4 w-4' : 'h-[18px] w-[18px]'
+              }`}
+              title={pane.maximized ? 'Restore pane' : 'Maximize pane'}
+            >
+              <Maximize2 size={11} />
+            </button>
+          </div>
+        ))}
+        {/* Per-sub-pane A / L scale mode buttons */}
+        {paneLayout.filter((pane) => pane.height > 24 && !pane.collapsed && pane.showScaleControls).map((pane) => (
+          <div
+            key={pane.paneId}
+            className="pointer-events-auto absolute z-10 flex items-center justify-center"
+            style={{
+              right: 0,
+              top: pane.top + pane.height - PRICE_AXIS_CONTROL_HEIGHT,
+              width: PRICE_AXIS_WIDTH,
+              height: PRICE_AXIS_CONTROL_HEIGHT,
+            }}
+          >
+            <div className="flex items-center gap-1 rounded-full border border-white/[0.08] bg-black/20 px-1.5 py-0.5 shadow-sm backdrop-blur-sm">
+              <button
+                onClick={() => {
+                  const next = pane.yScaleMode === 'auto' ? 'manual' : 'auto';
+                  engineRef.current?.setSubPaneScaleMode(pane.paneId, next);
+                  notifyLayout();
+                }}
+                className={`flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-mono transition-colors duration-[120ms] ${
+                  pane.yScaleMode === 'auto'
+                    ? 'bg-white text-black'
+                    : 'text-white/78 hover:bg-white/[0.08] hover:text-white'
+                }`}
+                title="Auto scale"
+              >
+                A
+              </button>
+              <button
+                onClick={() => {
+                  const next = pane.yScaleMode === 'log' ? 'manual' : 'log';
+                  engineRef.current?.setSubPaneScaleMode(pane.paneId, next);
+                  notifyLayout();
+                }}
+                className={`flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-mono transition-colors duration-[120ms] ${
+                  pane.yScaleMode === 'log'
+                    ? 'bg-white text-black'
+                    : 'text-white/78 hover:bg-white/[0.08] hover:text-white'
+                }`}
+                title="Logarithmic scale"
+              >
+                L
+              </button>
+            </div>
           </div>
         ))}
         {pendingTextAnchor && pendingTextPosition && (

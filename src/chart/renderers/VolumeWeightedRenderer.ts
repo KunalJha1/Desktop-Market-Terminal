@@ -22,15 +22,13 @@ const MAX_CANDLE_GAP_PX = 3;
  * Colors are solid green/red (bullish/bearish) with no alpha modulation.
  */
 export class VolumeWeightedRenderer {
-  private _cachedBarsRef: OHLCVBar[] | null = null;
-  private _cachedBarsLen: number = 0;
-  private _volumeEma: Float64Array = new Float64Array(0);
+  private _volumeEma = new Float64Array(0);
+  private _trackedLen = 0;
+  private _firstSrcTime = 0;
+  private _barAtTrackedMinus1Time = 0;
+  private _lastVolFingerprint = '';
 
-  private computeVolumeEma(bars: OHLCVBar[]): Float64Array {
-    if (bars === this._cachedBarsRef && bars.length === this._cachedBarsLen) {
-      return this._volumeEma;
-    }
-
+  private computeVolumeEmaFull(bars: OHLCVBar[]): Float64Array {
     const len = bars.length;
     const ema = new Float64Array(len);
     const k = 2 / (VOLUME_EMA_PERIOD + 1);
@@ -39,7 +37,6 @@ export class VolumeWeightedRenderer {
     for (let i = 0; i < len; i++) {
       const vol = bars[i].volume;
       if (i < VOLUME_EMA_PERIOD - 1) {
-        // Warmup: use running average so early bars get a valid denominator
         sum += vol;
         ema[i] = sum / (i + 1);
       } else if (i === VOLUME_EMA_PERIOD - 1) {
@@ -50,10 +47,100 @@ export class VolumeWeightedRenderer {
       }
     }
 
-    this._cachedBarsRef = bars;
-    this._cachedBarsLen = len;
     this._volumeEma = ema;
+    this._trackedLen = len;
+    if (len > 0) {
+      this._firstSrcTime = bars[0].time;
+      this._barAtTrackedMinus1Time = bars[len - 1].time;
+      const last = bars[len - 1];
+      this._lastVolFingerprint = `${last.time}:${last.volume}`;
+    } else {
+      this._firstSrcTime = 0;
+      this._barAtTrackedMinus1Time = 0;
+      this._lastVolFingerprint = '';
+    }
     return ema;
+  }
+
+  private extendVolumeEma(bars: OHLCVBar[], oldLen: number, newLen: number): Float64Array {
+    const k = 2 / (VOLUME_EMA_PERIOD + 1);
+    const next = new Float64Array(newLen);
+    next.set(this._volumeEma.subarray(0, oldLen));
+
+    if (oldLen < VOLUME_EMA_PERIOD) {
+      return this.computeVolumeEmaFull(bars);
+    }
+
+    for (let i = oldLen; i < newLen; i++) {
+      const vol = bars[i].volume;
+      next[i] = vol * k + next[i - 1] * (1 - k);
+    }
+
+    this._volumeEma = next;
+    this._trackedLen = newLen;
+    this._barAtTrackedMinus1Time = bars[newLen - 1].time;
+    const last = bars[newLen - 1];
+    this._lastVolFingerprint = `${last.time}:${last.volume}`;
+    return this._volumeEma;
+  }
+
+  private patchLastVolumeEma(bars: OHLCVBar[]) {
+    const i = bars.length - 1;
+    const k = 2 / (VOLUME_EMA_PERIOD + 1);
+    const vol = bars[i].volume;
+
+    if (i < VOLUME_EMA_PERIOD - 1) {
+      let sum = 0;
+      for (let j = 0; j <= i; j++) {
+        sum += bars[j].volume;
+        this._volumeEma[j] = sum / (j + 1);
+      }
+    } else if (i === VOLUME_EMA_PERIOD - 1) {
+      let sum = 0;
+      for (let j = 0; j <= i; j++) sum += bars[j].volume;
+      this._volumeEma[i] = sum / VOLUME_EMA_PERIOD;
+    } else {
+      this._volumeEma[i] = vol * k + this._volumeEma[i - 1] * (1 - k);
+    }
+
+    const last = bars[i];
+    this._lastVolFingerprint = `${last.time}:${last.volume}`;
+  }
+
+  private ensureVolumeEma(bars: OHLCVBar[]): Float64Array {
+    const len = bars.length;
+    if (len === 0) {
+      this._volumeEma = new Float64Array(0);
+      this._trackedLen = 0;
+      this._firstSrcTime = 0;
+      this._barAtTrackedMinus1Time = 0;
+      this._lastVolFingerprint = '';
+      return this._volumeEma;
+    }
+
+    const prefixOk = this._trackedLen > 0 && bars[0].time === this._firstSrcTime;
+
+    if (!prefixOk || len < this._trackedLen || this._volumeEma.length < this._trackedLen) {
+      return this.computeVolumeEmaFull(bars);
+    }
+
+    if (len > this._trackedLen) {
+      if (bars[this._trackedLen - 1].time !== this._barAtTrackedMinus1Time) {
+        return this.computeVolumeEmaFull(bars);
+      }
+      return this.extendVolumeEma(bars, this._trackedLen, len);
+    }
+
+    const last = bars[len - 1];
+    const fp = `${last.time}:${last.volume}`;
+    if (fp !== this._lastVolFingerprint) {
+      if (this._volumeEma.length !== len) {
+        return this.computeVolumeEmaFull(bars);
+      }
+      this.patchLastVolumeEma(bars);
+    }
+
+    return this._volumeEma;
   }
 
   updateViewportLayout(viewport: Viewport, bars: OHLCVBar[]) {
@@ -66,7 +153,7 @@ export class VolumeWeightedRenderer {
       return;
     }
 
-    const volumeEma = this.computeVolumeEma(bars);
+    const volumeEma = this.ensureVolumeEma(bars);
     const widths = new Float64Array(end - start);
     let visibleWeight = 0;
 

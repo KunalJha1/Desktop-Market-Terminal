@@ -31,6 +31,11 @@
             "name": "dailyiq-worker",
             "cmd": "binaries/dailyiq-worker",
             "args": true
+          },
+          {
+            "name": "dailyiq-valuation-worker",
+            "cmd": "binaries/dailyiq-valuation-worker",
+            "args": true
           }
         ]
       },
@@ -83,8 +88,8 @@
         "title": "DailyIQ",
         "width": 1440,
         "height": 900,
-        "minWidth": 1280,
-        "minHeight": 800,
+        "minWidth": 800,
+        "minHeight": 600,
         "resizable": true,
         "fullscreen": false,
         "titleBarStyle": "Overlay",

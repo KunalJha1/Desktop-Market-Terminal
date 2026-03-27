@@ -2,13 +2,18 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { ActiveIndicator, ScriptResult } from '../types';
 import { indicatorRegistry } from '../indicators/registry';
-import { Eye, EyeOff, X, Settings, ChevronUp, ChevronDown } from 'lucide-react';
+import { Eye, EyeOff, X, Settings, ChevronUp, ChevronDown, Pencil } from 'lucide-react';
 
 const LINE_STYLES: Array<{ key: 'solid' | 'dashed' | 'dotted'; css: string }> = [
   { key: 'solid', css: 'solid' },
   { key: 'dashed', css: 'dashed' },
   { key: 'dotted', css: 'dotted' },
 ];
+
+const LEGEND_ROW_BG = '#000000';
+const LEGEND_ROW_BG_ACTIVE = '#000000';
+const LEGEND_ROW_BORDER = 'rgba(255,255,255,0.08)';
+const CHOP_ZONE_ROW_BG = '#000000';
 
 // ── Color math ────────────────────────────────────────────────────────────────
 function hexToRgb(hex: string): [number, number, number] {
@@ -372,6 +377,7 @@ interface IndicatorLegendProps {
   onMoveDown?: (id: string) => void;
   onDragStart?: (id: string) => void;
   onDragEnd?: () => void;
+  onOpenBuiltInScript?: (script: { indicatorId: string; name: string; source: string }) => void;
   leftOffset?: number;
 }
 
@@ -389,10 +395,12 @@ export default function IndicatorLegend({
   onMoveDown,
   onDragStart,
   onDragEnd,
+  onOpenBuiltInScript,
   leftOffset = 8,
 }: IndicatorLegendProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [scriptViewerId, setScriptViewerId] = useState<string | null>(null);
   const [colorPicker, setColorPicker] = useState<{ id: string; key: string; rect: DOMRect } | null>(null);
 
   const hasScripts = Array.from(activeScripts.values()).some(r => r.plots.length > 0);
@@ -417,7 +425,9 @@ export default function IndicatorLegend({
         if (!meta) return null;
         const isHovered = hoveredId === ind.id;
         const isExpanded = expandedId === ind.id;
+        const isScriptOpen = scriptViewerId === ind.id;
         const colors = ind.colors ?? {};
+        const isChopZone = ind.name === 'Chop Zone';
 
         return (
           <div
@@ -441,11 +451,12 @@ export default function IndicatorLegend({
                 gap: 5,
                 padding: '2px 6px 2px 4px',
                 borderRadius: isExpanded ? '3px 3px 0 0' : 3,
-                backgroundColor: isHovered || isExpanded
-                  ? 'rgba(30,36,44,0.96)'
-                  : 'rgba(20,25,32,0.93)',
+                backgroundColor: isChopZone
+                  ? CHOP_ZONE_ROW_BG
+                  : (isHovered || isExpanded ? LEGEND_ROW_BG_ACTIVE : LEGEND_ROW_BG),
                 transition: 'background-color 120ms ease-out',
-                backdropFilter: 'blur(2px)',
+                border: `1px solid ${LEGEND_ROW_BORDER}`,
+                boxShadow: '0 3px 10px rgba(0, 0, 0, 0.45)',
                 cursor: 'default',
                 minHeight: 20,
               }}
@@ -494,6 +505,25 @@ export default function IndicatorLegend({
               {/* Action buttons — show on hover */}
               {isHovered && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 1, marginLeft: 2 }}>
+                  {meta.scriptSource && (
+                    <IconBtn
+                      onClick={() => {
+                        if (onOpenBuiltInScript) {
+                          onOpenBuiltInScript({
+                            indicatorId: ind.id,
+                            name: ind.name,
+                            source: meta.scriptSource!,
+                          });
+                          return;
+                        }
+                        setScriptViewerId(isScriptOpen ? null : ind.id);
+                      }}
+                      active={onOpenBuiltInScript ? false : isScriptOpen}
+                      title="View built-in script"
+                    >
+                      <Pencil size={9} />
+                    </IconBtn>
+                  )}
                   <IconBtn
                     onClick={() => setExpandedId(isExpanded ? null : ind.id)}
                     active={isExpanded}
@@ -524,6 +554,7 @@ export default function IndicatorLegend({
                   <IconBtn
                     onClick={() => {
                       setExpandedId(null);
+                      setScriptViewerId(null);
                       onRemove(ind.id);
                     }}
                     danger
@@ -535,6 +566,59 @@ export default function IndicatorLegend({
               )}
             </div>
 
+            {!onOpenBuiltInScript && isScriptOpen && meta.scriptSource && (
+              <div
+                onMouseEnter={() => setHoveredId(ind.id)}
+                onMouseLeave={() => setHoveredId(null)}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                  padding: '7px 8px',
+                  backgroundColor: '#000000',
+                  borderRadius: isExpanded ? 0 : '0 0 3px 3px',
+                  borderTop: '1px solid rgba(33,38,45,0.8)',
+                  minWidth: 240,
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                    fontSize: 9,
+                    fontFamily: "'JetBrains Mono', monospace",
+                    color: '#8B949E',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.12em',
+                  }}
+                >
+                  <span>Built-in Script</span>
+                  <span style={{ color: '#484F58' }}>Read only</span>
+                </div>
+                <pre
+                  style={{
+                    margin: 0,
+                    maxHeight: 220,
+                    overflow: 'auto',
+                    padding: '8px 9px',
+                    borderRadius: 4,
+                    backgroundColor: '#0D1117',
+                    border: '1px solid #21262D',
+                    color: '#C9D1D9',
+                    fontSize: 10,
+                    lineHeight: 1.5,
+                    fontFamily: "'JetBrains Mono', monospace",
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {meta.scriptSource}
+                </pre>
+              </div>
+            )}
+
             {/* Expanded settings panel */}
             {isExpanded && (
               <div
@@ -545,7 +629,7 @@ export default function IndicatorLegend({
                   flexDirection: 'column',
                   gap: 6,
                   padding: '6px 8px',
-                  backgroundColor: 'rgba(22,27,34,0.95)',
+                  backgroundColor: '#000000',
                   borderRadius: '0 0 3px 3px',
                   borderTop: '1px solid rgba(33,38,45,0.8)',
                   minWidth: 200,
@@ -760,9 +844,11 @@ export default function IndicatorLegend({
               gap: 5,
               padding: '2px 6px 2px 4px',
               borderRadius: 3,
-              backgroundColor: 'rgba(20,25,32,0.93)',
-              backdropFilter: 'blur(2px)',
+              backgroundColor: LEGEND_ROW_BG,
+              border: `1px solid ${LEGEND_ROW_BORDER}`,
+              boxShadow: '0 3px 10px rgba(0, 0, 0, 0.45)',
               pointerEvents: 'auto',
+              minHeight: 20,
             }}
           >
             {result.plots.map((plot, i) => (

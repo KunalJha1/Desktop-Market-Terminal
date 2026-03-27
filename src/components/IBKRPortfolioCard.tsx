@@ -7,7 +7,8 @@ import { linkBus } from "../lib/link-bus";
 import { getSymbolName } from "../lib/market-data";
 import { useWatchlistData } from "../lib/use-market-data";
 import { usePortfolioData } from "../lib/use-portfolio-data";
-import { useTechScores } from "../lib/use-technicals";
+import { describeTechScoreCell, useTechScores } from "../lib/use-technicals";
+import { isTaScoreTimeframe, TA_SCORE_TIMEFRAMES } from "../lib/ta-score-timeframes";
 
 interface PortfolioCardProps {
   linkChannel: number | null;
@@ -59,7 +60,6 @@ const COLUMNS: PortfolioColDef[] = [
 ];
 
 const DEFAULT_VISIBLE = COLUMNS.filter((c) => c.defaultVisible).map((c) => c.key);
-const TA_TIMEFRAMES_AVAILABLE = ["5m", "15m", "1h", "4h", "1d", "1w"] as const;
 const TA_COL_W = 52;
 const STAT_BOX = "h-[58px] w-[168px] shrink-0 rounded-sm border px-3 py-2";
 const HEADER_TINT_PRESETS: ReadonlyArray<{ label: string; value: string | null }> = [
@@ -118,7 +118,7 @@ function readFilter(config: Record<string, unknown>): FilterValue {
 
 function readRowHighlightTimeframe(config: Record<string, unknown>): string {
   const raw = config.rowHighlightTimeframe;
-  return typeof raw === "string" && (raw === "off" || TA_TIMEFRAMES_AVAILABLE.includes(raw as typeof TA_TIMEFRAMES_AVAILABLE[number]))
+  return typeof raw === "string" && (raw === "off" || isTaScoreTimeframe(raw))
     ? raw
     : "1h";
 }
@@ -483,7 +483,7 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
         case "costBasis": return row.costBasis;
         case "currency": return row.currency;
         case "updated": return updatedAt;
-        default: return techScores.get(row.symbol)?.get(key) ?? null;
+        default: return techScores.get(row.symbol)?.get(key)?.score ?? null;
       }
     };
 
@@ -891,7 +891,7 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
               <div className="border-t border-white/[0.08] bg-[#131920] p-2">
                 <p className="mb-1.5 text-[9px] uppercase tracking-[0.14em] text-blue/70">TA Score Columns</p>
                 <div className="flex flex-wrap gap-1">
-                  {TA_TIMEFRAMES_AVAILABLE.map((tf) => (
+                  {TA_SCORE_TIMEFRAMES.map((tf) => (
                     <button
                       key={tf}
                       type="button"
@@ -926,7 +926,7 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
                     className="h-7 w-full rounded-sm border border-white/[0.08] bg-[#0D1117] px-2 text-[10px] text-white/70 outline-none"
                   >
                     <option value="off">Off</option>
-                    {TA_TIMEFRAMES_AVAILABLE.map((tf) => (
+                    {TA_SCORE_TIMEFRAMES.map((tf) => (
                       <option key={`row-highlight-${tf}`} value={tf}>{tf}</option>
                     ))}
                   </select>
@@ -1094,7 +1094,7 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
             {sortedRows.map((row) => {
               const highlightScore = rowHighlightTimeframe === "off"
                 ? null
-                : techScores.get(row.symbol)?.get(rowHighlightTimeframe) ?? null;
+                : techScores.get(row.symbol)?.get(rowHighlightTimeframe)?.score ?? null;
               return (
               <div
                 key={`${row.accountId}:${row.symbol}`}
@@ -1105,14 +1105,15 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
                 {activeColumnIds.map((colId) => {
                   if (colId.startsWith("ta:")) {
                     const tf = colId.slice(3);
-                    const score = techScores.get(row.symbol)?.get(tf) ?? null;
+                    const cell = techScores.get(row.symbol)?.get(tf) ?? null;
+                    const score = cell?.score ?? null;
                     const isLong = row.quantity > 0;
                     const isShort = row.quantity < 0;
                     return (
                       <div
                         key={`${row.symbol}-${tf}`}
                         className={`flex min-w-0 items-center justify-center truncate border-r border-white/[0.04] px-1 py-2 text-center font-mono text-[11px] ${techScoreCellClass(score, isLong, isShort)}`}
-                        title={`${tf} score: ${score ?? "no data"} · ${isLong ? "Long" : isShort ? "Short" : "Flat"}`}
+                        title={`${describeTechScoreCell(tf, cell)} · ${isLong ? "Long" : isShort ? "Short" : "Flat"}`}
                       >
                         {score === null ? "—" : score}
                       </div>

@@ -9,6 +9,8 @@ interface UseChartDataOptions {
   sidecarPort: number | null;
 }
 
+type RawBarSize = '1m' | '5m' | '15m' | '1d';
+
 interface UseChartDataResult {
   bars: OHLCVBar[];
   loading: boolean;
@@ -19,9 +21,6 @@ interface UseChartDataResult {
   updateMode: 'full' | 'tail';
   tailChangeOffset: number;
 }
-
-const SYNTHETIC_DAILY_TIMEFRAME = '1D';
-const SYNTHETIC_DAILY_MINUTE_DURATION = '90 D';
 
 function isDailyTimeframe(tf: string): boolean {
   return getTimeframeMs(tf) >= 86_400_000;
@@ -40,77 +39,43 @@ function getResampleFactor(tf: string): number {
 
 // Buffer: fetch 3x the visible range to avoid constant re-fetches while panning
 const BUFFER_MULTIPLIER = 3;
-// Max raw 1m bars to keep in memory (enough for ~256 trading days of 1m data)
-const MAX_CACHED_BARS = 100_000;
+// Max raw 1m bars to keep in memory (trim oldest when exceeded; pan-fetch can reload)
+const MAX_INTRADAY_RAW_BARS = 200_000;
 // Debounce pan-triggered fetches (ms)
 const PAN_FETCH_DEBOUNCE = 200;
 // Polling intervals (ms)
 const INTRADAY_POLL_MS = 5_000;
 const DAILY_POLL_MS = 60_000;
 
-function parseBars(payload: { bars: Array<Record<string, number>> }): OHLCVBar[] {
+function parseBars(payload: { bars: Array<Record<string, number | boolean>> }): OHLCVBar[] {
   return payload.bars.map(b => ({
-    time: b.time,
-    open: b.open,
-    high: b.high,
-    low: b.low,
-    close: b.close,
-    volume: b.volume,
+    time: b.time as number,
+    open: b.open as number,
+    high: b.high as number,
+    low: b.low as number,
+    close: b.close as number,
+    volume: b.volume as number,
+    ...(b.synthetic ? { synthetic: true } : {}),
   }));
 }
 
-function dayBucket(tsMs: number): number {
-  const d = new Date(tsMs);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-}
-
-function aggregateBarsToDaily(bars: OHLCVBar[]): OHLCVBar[] {
-  const result: OHLCVBar[] = [];
-  let current: OHLCVBar | null = null;
-  let currentBucket = -1;
-
-  for (const bar of bars) {
-    const bucket = dayBucket(bar.time);
-    if (!current || bucket !== currentBucket) {
-      if (current) result.push(current);
-      currentBucket = bucket;
-      current = {
-        time: bucket,
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
-        volume: bar.volume,
-      };
-      continue;
-    }
-
-    current.high = Math.max(current.high, bar.high);
-    current.low = Math.min(current.low, bar.low);
-    current.close = bar.close;
-    current.volume += bar.volume;
+function getHistoricalRequestConfig(timeframe: string): {
+  barSizeParam: '1 min' | '5 mins' | '15 mins' | '1 day';
+  rawBarSize: RawBarSize;
+  duration: string;
+  stepMs: number;
+} {
+  const tfMs = getTimeframeMs(timeframe);
+  if (tfMs >= 86_400_000) {
+    return { barSizeParam: '1 day', rawBarSize: '1d', duration: '30 Y', stepMs: 86_400_000 };
   }
-
-  if (current) result.push(current);
-  return result;
-}
-
-function mergeDailyBars(nativeDaily: OHLCVBar[], syntheticDaily: OHLCVBar[]): OHLCVBar[] {
-  const merged = new Map<number, OHLCVBar>();
-
-  for (const bar of nativeDaily) {
-    merged.set(dayBucket(bar.time), { ...bar, time: dayBucket(bar.time) });
+  if (tfMs <= 3 * 60_000) {
+    return { barSizeParam: '1 min', rawBarSize: '1m', duration: '20 D', stepMs: 60_000 };
   }
-
-  for (const bar of syntheticDaily) {
-    merged.set(dayBucket(bar.time), { ...bar, time: dayBucket(bar.time) });
+  if (tfMs <= 10 * 60_000) {
+    return { barSizeParam: '5 mins', rawBarSize: '5m', duration: '90 D', stepMs: 5 * 60_000 };
   }
-
-  return Array.from(merged.values()).sort((a, b) => a.time - b.time);
-}
-
-function normalizeSource(value: unknown): 'tws' | 'yahoo' | 'cache' {
-  return value === 'tws' || value === 'yahoo' || value === 'cache' ? value : 'yahoo';
+  return { barSizeParam: '15 mins', rawBarSize: '15m', duration: '270 D', stepMs: 15 * 60_000 };
 }
 
 function mergeBarsByTime(existingBars: OHLCVBar[], incomingBars: OHLCVBar[]): OHLCVBar[] {
@@ -129,8 +94,13 @@ function mergeBarsByTime(existingBars: OHLCVBar[], incomingBars: OHLCVBar[]): OH
   return Array.from(merged.values()).sort((a, b) => a.time - b.time);
 }
 
-function getDisplayBars(rawBars: OHLCVBar[], rawBarSize: '1m' | '1d', timeframe: string): OHLCVBar[] {
-  if ((rawBarSize === '1d' && timeframe === '1D') || (rawBarSize === '1m' && timeframe === '1m')) {
+function trimIntradayTail(bars: OHLCVBar[]): OHLCVBar[] {
+  if (bars.length <= MAX_INTRADAY_RAW_BARS) return bars;
+  return bars.slice(bars.length - MAX_INTRADAY_RAW_BARS);
+}
+
+function getDisplayBars(rawBars: OHLCVBar[], rawBarSize: RawBarSize, timeframe: string): OHLCVBar[] {
+  if ((rawBarSize === '1d' && timeframe === '1D') || timeframe === rawBarSize) {
     return rawBars;
   }
   return resampleBars(rawBars, timeframe);
@@ -138,7 +108,7 @@ function getDisplayBars(rawBars: OHLCVBar[], rawBarSize: '1m' | '1d', timeframe:
 
 export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOptions): UseChartDataResult {
   const [rawBars, setRawBars] = useState<OHLCVBar[]>([]);
-  const [rawBarSize, setRawBarSize] = useState<'1m' | '1d'>('1m');
+  const [rawBarSize, setRawBarSize] = useState<RawBarSize>('1m');
   const [loading, setLoading] = useState(false);
   const [source, setSource] = useState<'tws' | 'yahoo' | 'cache' | 'mock'>('mock');
   const [pendingViewportShift, setPendingViewportShift] = useState(0);
@@ -155,11 +125,14 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
   // Track if a pan fetch is in-flight to avoid stacking
   const panFetchingRef = useRef(false);
   const viewportAnchorRef = useRef<{ startIdx: number; anchorTime: number } | null>(null);
+  const intradayPollRafRef = useRef<number | null>(null);
+  const intradayPollPendingRef = useRef<{ bars: OHLCVBar[]; source: 'tws' | 'yahoo' | 'cache' } | null>(null);
 
   // Keep ref in sync for async access
   rawBarsRef.current = rawBars;
 
   const useDaily = isDailyTimeframe(timeframe);
+  const requestConfig = useMemo(() => getHistoricalRequestConfig(timeframe), [timeframe]);
 
   // How many raw 1m bars to fetch for the initial load
   const initialLimit = useMemo(() => {
@@ -185,54 +158,10 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
 
     async function fetchBars() {
       try {
-        if (timeframe === SYNTHETIC_DAILY_TIMEFRAME) {
-          const dailyUrl = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
-          dailyUrl.searchParams.set('symbol', symbol);
-          dailyUrl.searchParams.set('bar_size', '1 day');
-          dailyUrl.searchParams.set('duration', '30 Y');
-
-          const minuteUrl = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
-          minuteUrl.searchParams.set('symbol', symbol);
-          minuteUrl.searchParams.set('bar_size', '1 min');
-          minuteUrl.searchParams.set('duration', SYNTHETIC_DAILY_MINUTE_DURATION);
-
-          const [dailyRes, minuteRes] = await Promise.all([
-            fetch(dailyUrl.toString()),
-            fetch(minuteUrl.toString()),
-          ]);
-          if (!dailyRes.ok) return;
-
-          const dailyPayload = await dailyRes.json();
-          const minutePayload = minuteRes.ok ? await minuteRes.json() : { bars: [], source: 'cache' };
-          if (cancelled || requestId !== requestIdRef.current) return;
-
-          const nativeDailyBars = parseBars(dailyPayload);
-          const minuteBars = parseBars(minutePayload);
-          const syntheticDailyBars = aggregateBarsToDaily(minuteBars);
-          const mergedBars = mergeDailyBars(nativeDailyBars, syntheticDailyBars);
-
-          if (mergedBars.length > 0) {
-            setRawBars(mergedBars);
-            setRawBarSize('1d');
-            setSource(normalizeSource(syntheticDailyBars.length > 0 ? minutePayload.source : dailyPayload.source));
-          } else {
-            setRawBars([]);
-            setSource('mock');
-          }
-          setLoading(false);
-          return;
-        }
-
         const url = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
         url.searchParams.set('symbol', symbol);
-
-        if (useDaily) {
-          url.searchParams.set('bar_size', '1 day');
-          url.searchParams.set('duration', '30 Y');
-        } else {
-          url.searchParams.set('bar_size', '1 min');
-          url.searchParams.set('duration', '30 D');
-        }
+        url.searchParams.set('bar_size', requestConfig.barSizeParam);
+        url.searchParams.set('duration', requestConfig.duration);
 
         const res = await fetch(url.toString());
         if (!res.ok) return;
@@ -247,8 +176,8 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
 
         setUpdateMode('full');
         if (bars.length > 0) {
-          setRawBars(bars);
-          setRawBarSize(useDaily ? '1d' : '1m');
+          setRawBars(useDaily ? bars : trimIntradayTail(bars));
+          setRawBarSize(requestConfig.rawBarSize);
           setSource((payload.source as 'tws' | 'yahoo' | 'cache') || 'yahoo');
         } else {
           setRawBars([]);
@@ -270,57 +199,15 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
       if (cancelled || requestId !== requestIdRef.current) return;
       if (panFetchingRef.current) return;
       try {
-        if (timeframe === SYNTHETIC_DAILY_TIMEFRAME) {
-          const dailyUrl = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
-          dailyUrl.searchParams.set('symbol', symbol);
-          dailyUrl.searchParams.set('bar_size', '1 day');
-          dailyUrl.searchParams.set('duration', '30 Y');
-
-          const minuteUrl = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
-          minuteUrl.searchParams.set('symbol', symbol);
-          minuteUrl.searchParams.set('bar_size', '1 min');
-          minuteUrl.searchParams.set('duration', SYNTHETIC_DAILY_MINUTE_DURATION);
-
-          const [dailyRes, minuteRes] = await Promise.all([
-            fetch(dailyUrl.toString()),
-            fetch(minuteUrl.toString()),
-          ]);
-          if (!dailyRes.ok) return;
-
-          const dailyPayload = await dailyRes.json();
-          const minutePayload = minuteRes.ok ? await minuteRes.json() : { bars: [], source: 'cache' };
-          if (cancelled || requestId !== requestIdRef.current) return;
-
-          const mergedBars = mergeDailyBars(
-            parseBars(dailyPayload),
-            aggregateBarsToDaily(parseBars(minutePayload)),
-          );
-
-          if (mergedBars.length > 0) {
-            setUpdateMode('full');
-            setRawBars(mergedBars);
-            setRawBarSize('1d');
-            const minuteBars = parseBars(minutePayload);
-            setSource(normalizeSource(minuteBars.length > 0 ? minutePayload.source : dailyPayload.source));
-          }
-          return;
-        }
-
         const url = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
         url.searchParams.set('symbol', symbol);
-
-        if (useDaily) {
-          url.searchParams.set('bar_size', '1 day');
-          url.searchParams.set('duration', '30 Y');
+        url.searchParams.set('bar_size', requestConfig.barSizeParam);
+        const currentBars = rawBarsRef.current;
+        if (currentBars.length > 0) {
+          const lastTs = currentBars[currentBars.length - 1].time;
+          url.searchParams.set('ts_start', String(Math.max(0, lastTs - requestConfig.stepMs)));
         } else {
-          url.searchParams.set('bar_size', '1 min');
-          const currentBars = rawBarsRef.current;
-          if (currentBars.length > 0) {
-            const lastTs = currentBars[currentBars.length - 1].time;
-            url.searchParams.set('ts_start', String(Math.max(0, lastTs - 60_000)));
-          } else {
-            url.searchParams.set('duration', '30 D');
-          }
+          url.searchParams.set('duration', requestConfig.duration);
         }
 
         const res = await fetch(url.toString());
@@ -334,29 +221,37 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
 
         const newBars = parseBars(payload);
 
-        if (useDaily) {
-          if (newBars.length > 0) {
-            setUpdateMode('full');
-            setRawBars(newBars);
-            setRawBarSize('1d');
-            setSource((payload.source as 'tws' | 'yahoo' | 'cache') || 'yahoo');
+        if (newBars.length > 0) {
+          intradayPollPendingRef.current = {
+            bars: newBars,
+            source: (payload.source as 'tws' | 'yahoo' | 'cache') || 'yahoo',
+          };
+          if (intradayPollRafRef.current == null) {
+            intradayPollRafRef.current = requestAnimationFrame(() => {
+              intradayPollRafRef.current = null;
+              if (cancelled || requestId !== requestIdRef.current) {
+                intradayPollPendingRef.current = null;
+                return;
+              }
+              const pack = intradayPollPendingRef.current;
+              intradayPollPendingRef.current = null;
+              if (!pack?.bars.length) return;
+              const incoming = pack.bars;
+              const prevBars = rawBarsRef.current;
+              const firstNewTs = incoming[0].time;
+              const changeIdx = prevBars.length > 0
+                ? prevBars.findIndex(b => b.time >= firstNewTs)
+                : 0;
+              setTailChangeOffset(Math.max(0, changeIdx === -1 ? prevBars.length : changeIdx));
+              setUpdateMode('tail');
+              setRawBars(prev => {
+                const merged = mergeBarsByTime(prev, incoming);
+                return requestConfig.rawBarSize === '1d' ? merged : trimIntradayTail(merged);
+              });
+              setRawBarSize(requestConfig.rawBarSize);
+              setSource(pack.source);
+            });
           }
-        } else if (newBars.length > 0) {
-          const prevBars = rawBarsRef.current;
-          const firstNewTs = newBars[0].time;
-          const changeIdx = prevBars.length > 0
-            ? prevBars.findIndex(b => b.time >= firstNewTs)
-            : 0;
-          setTailChangeOffset(Math.max(0, changeIdx === -1 ? prevBars.length : changeIdx));
-          setUpdateMode('tail');
-          setRawBars(prev => {
-            const merged = mergeBarsByTime(prev, newBars);
-            if (merged.length > MAX_CACHED_BARS) {
-              return merged.slice(merged.length - MAX_CACHED_BARS);
-            }
-            return merged;
-          });
-          setSource((payload.source as 'tws' | 'yahoo' | 'cache') || 'yahoo');
         }
       } catch {
         // Swallow poll errors — next poll will retry
@@ -364,14 +259,19 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
     }
 
     fetchBars();
-    const interval = setInterval(pollIncremental, useDaily ? DAILY_POLL_MS : INTRADAY_POLL_MS);
+    const interval = setInterval(pollIncremental, requestConfig.rawBarSize === '1d' ? DAILY_POLL_MS : INTRADAY_POLL_MS);
 
     return () => {
       cancelled = true;
       clearInterval(interval);
       if (panDebounceRef.current) clearTimeout(panDebounceRef.current);
+      if (intradayPollRafRef.current != null) {
+        cancelAnimationFrame(intradayPollRafRef.current);
+        intradayPollRafRef.current = null;
+      }
+      intradayPollPendingRef.current = null;
     };
-  }, [symbol, sidecarPort, timeframe, useDaily]);
+  }, [symbol, sidecarPort, timeframe, useDaily, requestConfig]);
 
   // ── Pan-triggered fetch: load older bars when scrolling left ─────────
   const onViewportChange = useCallback((startIdx: number, endIdx: number) => {
@@ -404,7 +304,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
         try {
           const url = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
           url.searchParams.set('symbol', symbol);
-          url.searchParams.set('bar_size', '1 min');
+          url.searchParams.set('bar_size', requestConfig.barSizeParam);
 
           const curBars = rawBarsRef.current;
           if (curBars.length > 0) {
@@ -425,11 +325,11 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
             const anchor = viewportAnchorRef.current;
             const currentRawBars = rawBarsRef.current;
             const merged = [...olderBars, ...currentRawBars];
-            const nextRawBars = merged.length > MAX_CACHED_BARS
-              ? merged.slice(0, MAX_CACHED_BARS)
+            const nextRawBars = merged.length > MAX_INTRADAY_RAW_BARS
+              ? merged.slice(0, MAX_INTRADAY_RAW_BARS)
               : merged;
             if (anchor) {
-              const nextDisplayBars = getDisplayBars(nextRawBars, '1m', timeframe);
+              const nextDisplayBars = getDisplayBars(nextRawBars, requestConfig.rawBarSize, timeframe);
               const nextAnchorIdx = nextDisplayBars.findIndex((bar) => bar.time === anchor.anchorTime);
               if (nextAnchorIdx > anchor.startIdx) {
                 setPendingViewportShift(shift => shift + (nextAnchorIdx - anchor.startIdx));
@@ -445,7 +345,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
         }
       }, PAN_FETCH_DEBOUNCE);
     }
-  }, [useDaily, sidecarPort, symbol, initialLimit, timeframe]);
+  }, [useDaily, sidecarPort, symbol, initialLimit, timeframe, requestConfig]);
 
   const bars = useMemo(() => {
     if (rawBars.length > 0) {
@@ -487,13 +387,18 @@ function resampleBars(bars1m: OHLCVBar[], timeframe: string): OHLCVBar[] {
   const result: OHLCVBar[] = [];
   let current: OHLCVBar | null = null;
   let currentBucket = -1;
+  let bucketHasSynthetic = false;
 
   for (const bar of bars1m) {
     const bucket = bucketFor(bar.time, timeframe);
 
     if (bucket !== currentBucket || !current) {
-      if (current) result.push(current);
+      if (current) {
+        if (bucketHasSynthetic) current.synthetic = true;
+        result.push(current);
+      }
       currentBucket = bucket;
+      bucketHasSynthetic = !!bar.synthetic;
       current = {
         time: bucket,
         open: bar.open,
@@ -507,9 +412,13 @@ function resampleBars(bars1m: OHLCVBar[], timeframe: string): OHLCVBar[] {
       current.low = Math.min(current.low, bar.low);
       current.close = bar.close;
       current.volume += bar.volume;
+      if (bar.synthetic) bucketHasSynthetic = true;
     }
   }
 
-  if (current) result.push(current);
+  if (current) {
+    if (bucketHasSynthetic) current.synthetic = true;
+    result.push(current);
+  }
   return result;
 }

@@ -6,7 +6,7 @@ Runs in a background asyncio task. Priority order:
 
 Two passes per cycle, but only when TWS is connected:
 - Daily bars (30Y history, 6hr cache TTL) — fills long-horizon charts/backtests
-- Intraday 1m bars (1Y history, 5min cache TTL) — builds a deeper backtest archive
+- Intraday 1m bars (30Y cap, 5min cache TTL) — builds the deepest archive TWS will return
 
 Sleeps 10s between each symbol fetch to avoid rate-limiting.
 Skips symbols whose cache is still fresh.
@@ -20,10 +20,10 @@ from pathlib import Path
 from db_utils import sync_db_session
 from historical import (
     _cache_fresh,
-    BACKGROUND_INTRADAY_DURATION,
     CACHE_TTL,
     CACHE_TTL_DAILY,
     DEFAULT_DAILY_DURATION,
+    get_background_intraday_duration,
 )
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ class Prefetcher:
                 for symbol in queue:
                     try:
                         with sync_db_session() as conn:
-                            is_fresh, _ = _cache_fresh(conn, symbol, "1d", CACHE_TTL_DAILY)
+                            is_fresh, _, _ = _cache_fresh(conn, symbol, "1d", CACHE_TTL_DAILY)
                         if is_fresh:
                             continue
                     except Exception:
@@ -132,10 +132,11 @@ class Prefetcher:
                     await asyncio.sleep(SLEEP_BETWEEN)
 
                 # ── Pass 2: Intraday 1m bars (deep recent history) ──
+                background_intraday_duration = get_background_intraday_duration()
                 for symbol in queue:
                     try:
                         with sync_db_session() as conn:
-                            is_fresh, _ = _cache_fresh(conn, symbol, "1m")
+                            is_fresh, _, _ = _cache_fresh(conn, symbol, "1m")
                         if is_fresh:
                             continue
                     except Exception:
@@ -153,7 +154,7 @@ class Prefetcher:
                             symbol=symbol,
                             ib=ib_client,
                             tws_connected=self._tws_connected,
-                            duration=BACKGROUND_INTRADAY_DURATION,
+                            duration=background_intraday_duration,
                             bar_size="1 min",
                         )
                         if bars:

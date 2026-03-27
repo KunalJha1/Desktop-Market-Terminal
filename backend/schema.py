@@ -228,6 +228,38 @@ def ensure_historical_schema(conn: sqlite3.Connection) -> None:
         ON ohlcv_1m_ask (symbol, ts)
     """)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS ohlcv_5m (
+            symbol   TEXT    NOT NULL,
+            ts       INTEGER NOT NULL,
+            open     REAL    NOT NULL,
+            high     REAL    NOT NULL,
+            low      REAL    NOT NULL,
+            close    REAL    NOT NULL,
+            volume   REAL    NOT NULL,
+            PRIMARY KEY (symbol, ts)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ohlcv_5m_sym_ts
+        ON ohlcv_5m (symbol, ts)
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ohlcv_15m (
+            symbol   TEXT    NOT NULL,
+            ts       INTEGER NOT NULL,
+            open     REAL    NOT NULL,
+            high     REAL    NOT NULL,
+            low      REAL    NOT NULL,
+            close    REAL    NOT NULL,
+            volume   REAL    NOT NULL,
+            PRIMARY KEY (symbol, ts)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_ohlcv_15m_sym_ts
+        ON ohlcv_15m (symbol, ts)
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS ohlcv_1d (
             symbol   TEXT    NOT NULL,
             ts       INTEGER NOT NULL,
@@ -307,13 +339,27 @@ def ensure_historical_schema(conn: sqlite3.Connection) -> None:
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS fetch_meta (
-            symbol     TEXT    NOT NULL,
-            bar_size   TEXT    NOT NULL,
-            fetched_at INTEGER NOT NULL,
-            source     TEXT    NOT NULL DEFAULT 'yahoo',
+            symbol         TEXT    NOT NULL,
+            bar_size       TEXT    NOT NULL,
+            fetched_at     INTEGER NOT NULL,
+            source         TEXT    NOT NULL DEFAULT 'yahoo',
+            depth_complete INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (symbol, bar_size)
         )
     """)
+    # Migration: add 'synthetic' flag to intraday bar tables (no-op if already present).
+    # synthetic=1 means the bar was built from quote ticks (off-hours), not from TWS realtime bars.
+    for _tbl in ("ohlcv_1m", "ohlcv_5m", "ohlcv_15m"):
+        try:
+            conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN synthetic INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass  # column already exists
+    # Migration: add depth_complete flag to fetch_meta (no-op if already present).
+    # depth_complete=1 means we fetched as far back as the source allows for this series.
+    try:
+        conn.execute("ALTER TABLE fetch_meta ADD COLUMN depth_complete INTEGER NOT NULL DEFAULT 0")
+    except Exception:
+        pass  # column already exists
 
 
 def ensure_options_schema(conn: sqlite3.Connection) -> None:

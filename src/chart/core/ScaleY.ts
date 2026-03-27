@@ -1,6 +1,6 @@
 import { Renderer } from './Renderer';
 import { Viewport } from './Viewport';
-import { COLORS, PRICE_AXIS_WIDTH } from '../constants';
+import { COLORS, PRICE_AXIS_CONTROL_HEIGHT, PRICE_AXIS_WIDTH } from '../constants';
 import type { YScaleMode } from '../types';
 
 /**
@@ -47,16 +47,19 @@ export class ScaleY {
   render(renderer: Renderer, viewport: Viewport, canvasWidth: number) {
     const ticks = this.computeTicks(viewport);
     const axisX = canvasWidth - PRICE_AXIS_WIDTH;
+    const footerTop = viewport.chartTop + viewport.chartHeight - PRICE_AXIS_CONTROL_HEIGHT;
 
     // Background for price axis
     renderer.rect(axisX, viewport.chartTop, PRICE_AXIS_WIDTH, viewport.chartHeight, COLORS.bgPanel);
+    renderer.rect(axisX, footerTop, PRICE_AXIS_WIDTH, PRICE_AXIS_CONTROL_HEIGHT, '#10161E');
 
     // Separator line
     renderer.line(axisX, viewport.chartTop, axisX, viewport.chartTop + viewport.chartHeight, COLORS.border);
+    renderer.line(axisX, footerTop, canvasWidth, footerTop, COLORS.border);
 
     for (const tick of ticks) {
       const y = viewport.priceToPixelY(tick);
-      if (y < viewport.chartTop || y > viewport.chartTop + viewport.chartHeight) continue;
+      if (y < viewport.chartTop || y > footerTop - 6) continue;
 
       // Label
       const label = formatPrice(tick);
@@ -83,12 +86,22 @@ export class ScaleY {
     max: number,
     canvasWidth: number,
     mode: YScaleMode = 'auto',
+    showTicks: boolean = true,
+    reserveFooter: boolean = true,
   ) {
     const axisX = canvasWidth - PRICE_AXIS_WIDTH;
+    const footerTop = reserveFooter ? top + height - PRICE_AXIS_CONTROL_HEIGHT : top + height;
 
     // BG
     renderer.rect(axisX, top, PRICE_AXIS_WIDTH, height, COLORS.bgPanel);
+    if (reserveFooter) {
+      renderer.rect(axisX, footerTop, PRICE_AXIS_WIDTH, PRICE_AXIS_CONTROL_HEIGHT, '#10161E');
+    }
     renderer.line(axisX, top, axisX, top + height, COLORS.border);
+    if (reserveFooter) {
+      renderer.line(axisX, footerTop, canvasWidth, footerTop, COLORS.border);
+    }
+    if (!showTicks) return;
 
     if (mode === 'log' && min > 0 && max > 0) {
       const logMin = Math.log10(min);
@@ -103,7 +116,7 @@ export class ScaleY {
         const v = Math.pow(10, lv);
         const ratio = (logMax - lv) / logRange;
         const y = top + ratio * height;
-        if (y < top + 5 || y > top + height - 5) continue;
+        if (y < top + 5 || y > footerTop - 5) continue;
         renderer.line(0, y, axisX, y, COLORS.gridLine);
         renderer.textSmall(formatPrice(v), axisX + 4, y, COLORS.textPrimary, 'left');
       }
@@ -118,7 +131,7 @@ export class ScaleY {
     for (let v = start; v <= max; v += step) {
       const ratio = (max - v) / range;
       const y = top + ratio * height;
-      if (y < top + 5 || y > top + height - 5) continue;
+      if (y < top + 5 || y > footerTop - 5) continue;
       renderer.line(0, y, axisX, y, COLORS.gridLine);
       renderer.textSmall(formatPrice(v), axisX + 4, y, COLORS.textPrimary, 'left');
     }

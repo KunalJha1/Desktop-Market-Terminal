@@ -1,0 +1,11 @@
+//@version=1
+strategy("MACD Crossover", overlay=true)
+fast = input.int(12, "Fast")
+slow = input.int(26, "Slow")
+sig = input.int(9, "Signal")
+macdLine = ta.ema(close, fast) - ta.ema(close, slow)
+signalLine = ta.ema(macdLine, sig)
+if ta.crossover(macdLine, signalLine)
+    plotshape(low, style=triangleup, location=belowbar, color=#00C853, text="BUY")
+if ta.crossunder(macdLine, signalLine)
+    plotshape(high, style=triangledown, location=abovebar, color=#FF3D71, text="SELL")

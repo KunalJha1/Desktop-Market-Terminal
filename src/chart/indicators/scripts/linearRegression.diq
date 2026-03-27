@@ -1,0 +1,9 @@
+//@version=1
+indicator("Linear Regression", overlay=false)
+length = input.int(14, "Length")
+// Linear regression slope: (n*sumXY - sumX*sumY) / (n*sumX2 - sumX^2)
+// Using a rolling window approximation via the slope between endpoints weighted by period
+// Simplified: use (close - close[length]) / length as slope signal
+slope = (close - close[length]) / length
+plot(slope, "LR Slope", color=#F59E0B)
+hline(0, color=#484F58, style=dashed)

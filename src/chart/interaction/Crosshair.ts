@@ -2,7 +2,7 @@ import { Renderer } from '../core/Renderer';
 import { Viewport } from '../core/Viewport';
 import { ScaleX } from '../core/ScaleX';
 import type { HitResult } from '../core/HitTest';
-import { COLORS, PRICE_AXIS_WIDTH, TIME_AXIS_HEIGHT } from '../constants';
+import { COLORS, PRICE_AXIS_CONTROL_HEIGHT, PRICE_AXIS_WIDTH, TIME_AXIS_HEIGHT } from '../constants';
 
 export class Crosshair {
   visible = false;
@@ -24,8 +24,11 @@ export class Crosshair {
     // Price label on Y axis
     const price = viewport.pixelYToPrice(pixelY);
     const priceLabel = price.toFixed(2);
-    renderer.rect(priceAxisX, pixelY - 10, PRICE_AXIS_WIDTH, 20, COLORS.borderActive);
-    renderer.text(priceLabel, priceAxisX + 6, pixelY, COLORS.textPrimary, 'left');
+    const labelMinY = viewport.chartTop + 10;
+    const labelMaxY = viewport.chartTop + viewport.chartHeight - PRICE_AXIS_CONTROL_HEIGHT - 10;
+    const labelY = Math.min(Math.max(pixelY, labelMinY), labelMaxY);
+    renderer.rect(priceAxisX, labelY - 10, PRICE_AXIS_WIDTH, 20, COLORS.borderActive);
+    renderer.text(priceLabel, priceAxisX + 6, labelY, COLORS.textPrimary, 'left');
 
     // Time label on X axis — centered on bar center (snapped)
     const timeLabel = scaleX.formatTimeFull(bar.time);

@@ -1,3 +1,6 @@
+import type { TaScoreTimeframe } from "./ta-score-timeframes";
+import { TA_SCORE_TIMEFRAMES } from "./ta-score-timeframes";
+
 // ─── Custom Column Type System ──────────────────────────────────────
 // expression  — legacy JS expression (backward compat)
 // indicator   — single indicator value (RSI, MACD signal, etc.)
@@ -17,7 +20,7 @@ export type IndicatorType =
   | "VWAP"
   | "ATR";
 
-export type Timeframe = "5m" | "15m" | "1h" | "4h" | "1d" | "1w";
+export type Timeframe = TaScoreTimeframe;
 
 export type IndicatorParams = Record<string, number>;
 
@@ -37,7 +40,7 @@ export interface IndicatorCatalogEntry {
   outputs?: Array<{ key: string; label: string }>;
 }
 
-export const AVAILABLE_TIMEFRAMES: Timeframe[] = ["5m", "15m", "1h", "4h", "1d", "1w"];
+export const AVAILABLE_TIMEFRAMES: Timeframe[] = [...TA_SCORE_TIMEFRAMES];
 
 export const INDICATOR_CATALOG: Record<IndicatorType, IndicatorCatalogEntry> = {
   PRICE: {

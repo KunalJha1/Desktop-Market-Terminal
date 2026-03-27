@@ -1,0 +1,4 @@
+//@version=1
+indicator("VWAP", overlay=true)
+vwapVal = ta.vwap()
+plot(vwapVal, "VWAP", color=#8B5CF6)

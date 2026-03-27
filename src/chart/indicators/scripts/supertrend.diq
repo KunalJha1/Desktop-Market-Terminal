@@ -1,0 +1,16 @@
+//@version=1
+indicator("Supertrend", overlay=true)
+factor = input.float(3.0, "Factor")
+length = input.int(10, "ATR Length")
+// ta.supertrend returns 1 (uptrend) or -1 (downtrend)
+direction = ta.supertrend(factor, length)
+// Reconstruct the supertrend line
+atrVal = ta.atr(length)
+basis = hl2
+upperBand = basis + factor * atrVal
+lowerBand = basis - factor * atrVal
+// Use direction as color signal: plot line where trend is up vs down
+stUp = direction > 0 ? lowerBand : 0 / 0
+stDown = direction < 0 ? upperBand : 0 / 0
+plot(stUp, "Up Trend", color=#00C853)
+plot(stDown, "Down Trend", color=#FF3D71)

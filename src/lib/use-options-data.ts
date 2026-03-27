@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { SEARCHABLE_SYMBOLS } from "./market-data";
+import { SEARCHABLE_SYMBOLS, filterRankSymbolSearch } from "./market-data";
 import { useTws } from "./tws";
 import { useWatchlist } from "./watchlist";
 
@@ -88,12 +88,7 @@ export function useOptionsSymbolSuggestions(query: string): typeof SEARCHABLE_SY
     if (!normalized) {
       return SEARCHABLE_SYMBOLS.slice(0, 12);
     }
-    return SEARCHABLE_SYMBOLS
-      .filter((entry) =>
-        entry.symbol.includes(normalized) ||
-        entry.name.toUpperCase().includes(normalized),
-      )
-      .slice(0, 12);
+    return filterRankSymbolSearch(SEARCHABLE_SYMBOLS, normalized, { limit: 12 });
   }, [query]);
 }
 

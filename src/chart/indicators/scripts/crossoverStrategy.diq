@@ -1,0 +1,12 @@
+//@version=1
+strategy("Crossover Strategy", overlay=true)
+fastLen = input.int(50, "Fast MA")
+slowLen = input.int(200, "Slow MA")
+fastMA = ta.sma(close, fastLen)
+slowMA = ta.sma(close, slowLen)
+if ta.crossover(fastMA, slowMA)
+    plotshape(low, style=triangleup, location=belowbar, color=#00C853, text="BUY")
+if ta.crossunder(fastMA, slowMA)
+    plotshape(high, style=triangledown, location=abovebar, color=#FF3D71, text="SELL")
+plot(fastMA, "Fast MA", color=#1A56DB)
+plot(slowMA, "Slow MA", color=#F59E0B)

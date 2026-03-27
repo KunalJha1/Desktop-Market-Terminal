@@ -1,0 +1,12 @@
+//@version=1
+indicator("MACD", overlay=false)
+fast = input.int(12, "Fast Length")
+slow = input.int(26, "Slow Length")
+sig = input.int(9, "Signal Length")
+macdLine = ta.ema(close, fast) - ta.ema(close, slow)
+signalLine = ta.ema(macdLine, sig)
+hist = macdLine - signalLine
+plot(macdLine, "MACD", color=#1A56DB)
+plot(signalLine, "Signal", color=#F59E0B)
+plot(hist, "Histogram", color=#00C853, style=histogram)
+hline(0, color=#484F58, style=solid)

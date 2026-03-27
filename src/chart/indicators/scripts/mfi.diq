@@ -1,0 +1,7 @@
+//@version=1
+indicator("Money Flow Index", overlay=false)
+length = input.int(14, "Length")
+mfi = ta.mfi(length)
+plot(mfi, "MFI", color=#1A56DB)
+hline(80, color=#FF3D71, style=dashed)
+hline(20, color=#00C853, style=dashed)

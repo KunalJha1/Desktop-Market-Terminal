@@ -52,6 +52,8 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   const [indicatorPanelOpen, setIndicatorPanelOpen] = useState(false);
   const [strategyPanelOpen, setStrategyPanelOpen] = useState(false);
   const [scriptEditorOpen, setScriptEditorOpen] = useState(false);
+  const [builtInScriptViewer, setBuiltInScriptViewer] = useState<{ name: string; source: string } | null>(null);
+  const [scriptEditorWidth, setScriptEditorWidth] = useState(320);
   const [activeIndicators, setActiveIndicators] = useState<ActiveIndicator[]>([]);
   const [activeScripts, setActiveScripts] = useState<Map<string, ScriptResult>>(new Map());
   const [chartLayout, setChartLayout] = useState<ChartLayout | null>(null);
@@ -60,9 +62,32 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   const [dragHoverPaneId, setDragHoverPaneId] = useState<string | null>(null);
   const restoredIndicatorsRef = useRef(false);
   const paneDividerDragRef = useRef<{ paneId: string; startY: number; startHeight: number } | null>(null);
+  const scriptDividerDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   const engineRef = useRef<ChartEngine | null>(null);
   const [engineVersion, setEngineVersion] = useState(0);
+
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      const drag = scriptDividerDragRef.current;
+      if (!drag) return;
+      const nextWidth = Math.min(720, Math.max(240, drag.startWidth - (event.clientX - drag.startX)));
+      setScriptEditorWidth(nextWidth);
+    };
+
+    const handleMouseUp = () => {
+      scriptDividerDragRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
 
   // TWS data hook
   const { sidecarPort } = useTws();
@@ -410,6 +435,9 @@ export default function ChartPage({ tabId }: ChartPageProps) {
     const engine = engineRef.current;
     if (!engine) return;
     engine.setIndicatorPane(id, paneId);
+    if (paneId !== 'main') {
+      engine.expandPane(paneId);
+    }
     setActiveIndicators([...engine.getActiveIndicators()]);
     setChartLayout(engine.getLayout());
   }, []);
@@ -540,6 +568,13 @@ export default function ChartPage({ tabId }: ChartPageProps) {
         (pane) => y >= pane.top && y <= pane.top + pane.height,
       );
       if (hoveredPane) {
+        if (hoveredPane.collapsed) {
+          const engine = engineRef.current;
+          if (engine) {
+            engine.expandPane(hoveredPane.paneId);
+            setChartLayout(engine.getLayout());
+          }
+        }
         setDragHoverPaneId(hoveredPane.paneId === dragState.sourcePaneId ? null : hoveredPane.paneId);
         return;
       }
@@ -634,7 +669,10 @@ export default function ChartPage({ tabId }: ChartPageProps) {
           setIndicatorPanelOpen(false);
           setStrategyPanelOpen(!strategyPanelOpen);
         }}
-        onScriptEditorToggle={() => setScriptEditorOpen(!scriptEditorOpen)}
+        onScriptEditorToggle={() => {
+          setBuiltInScriptViewer(null);
+          setScriptEditorOpen(!scriptEditorOpen);
+        }}
         indicatorPanelOpen={indicatorPanelOpen}
         strategyPanelOpen={strategyPanelOpen}
         onIndicatorPanelClose={() => setIndicatorPanelOpen(false)}
@@ -843,8 +881,8 @@ export default function ChartPage({ tabId }: ChartPageProps) {
                     fontFamily: '"JetBrains Mono", monospace',
                     fontSize: 10,
                     display: 'flex',
-                    alignItems: 'flex-start',
-                    justifyContent: 'flex-end',
+                    alignItems: 'center',
+                    justifyContent: 'center',
                     padding: 6,
                     pointerEvents: 'none',
                   }}
@@ -957,15 +995,58 @@ export default function ChartPage({ tabId }: ChartPageProps) {
             setDraggingMouse(null);
             setDragHoverPaneId(null);
           }}
+          onOpenBuiltInScript={({ name, source }) => {
+            setBuiltInScriptViewer({ name, source });
+            setScriptEditorOpen(true);
+          }}
         />
 
 
+        {scriptEditorOpen && (
+          <div
+            onMouseDown={(e) => {
+              e.preventDefault();
+              scriptDividerDragRef.current = {
+                startX: e.clientX,
+                startWidth: scriptEditorWidth,
+              };
+              document.body.style.cursor = 'ew-resize';
+              document.body.style.userSelect = 'none';
+            }}
+            style={{
+              width: 7,
+              cursor: 'ew-resize',
+              position: 'relative',
+              flexShrink: 0,
+              backgroundColor: 'transparent',
+            }}
+            title="Resize script panel"
+          >
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                bottom: 0,
+                left: 3,
+                width: 1,
+                backgroundColor: '#21262D',
+              }}
+            />
+          </div>
+        )}
+
         <ScriptEditor
           open={scriptEditorOpen}
-          onClose={() => setScriptEditorOpen(false)}
+          onClose={() => {
+            setBuiltInScriptViewer(null);
+            setScriptEditorOpen(false);
+          }}
           onRunScript={handleRunScript}
           onStopScript={handleStopScript}
           onScriptsChange={() => {}}
+          builtInViewer={builtInScriptViewer}
+          onBuiltInViewerChange={setBuiltInScriptViewer}
+          width={scriptEditorWidth}
         />
       </div>
     </div>

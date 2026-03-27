@@ -1,10 +1,34 @@
 import { Token, TokenType } from './types';
 
 const KEYWORDS: Record<string, TokenType> = {
+  // Original
   input: TokenType.KW_Input,
   plot: TokenType.KW_Plot,
   hline: TokenType.KW_HLine,
   fill: TokenType.KW_Fill,
+  // Control flow
+  if: TokenType.KW_If,
+  else: TokenType.KW_Else,
+  for: TokenType.KW_For,
+  to: TokenType.KW_To,
+  by: TokenType.KW_By,
+  while: TokenType.KW_While,
+  // Variables / functions
+  var: TokenType.KW_Var,
+  return: TokenType.KW_Return,
+  // Literals
+  true: TokenType.KW_True,
+  false: TokenType.KW_False,
+  // Declarations
+  indicator: TokenType.KW_Indicator,
+  strategy: TokenType.KW_Strategy,
+  // Plot extras
+  plotshape: TokenType.KW_PlotShape,
+  bgcolor: TokenType.KW_BgColor,
+  // Word-form logical operators (Pine Script style)
+  and: TokenType.KW_And,
+  or: TokenType.KW_Or,
+  not: TokenType.KW_Not,
 };
 
 export class Lexer {
@@ -13,6 +37,8 @@ export class Lexer {
   private line = 1;
   private col = 1;
   private tokens: Token[] = [];
+  /** True when the next non-whitespace character starts a new logical line. */
+  private atLineStart = true;
 
   constructor(source: string) {
     this.src = source;
@@ -20,57 +46,100 @@ export class Lexer {
 
   tokenize(): Token[] {
     while (this.pos < this.src.length) {
-      this.skipSpacesAndTabs();
-      if (this.pos >= this.src.length) break;
-
       const ch = this.src[this.pos];
 
-      // Line comment
+      // ── At the start of a line: count indentation ──────────────────────
+      if (this.atLineStart) {
+        this.atLineStart = false;
+        let indent = 0;
+        const indentStart = this.pos;
+        while (this.pos < this.src.length) {
+          const ic = this.src[this.pos];
+          if (ic === ' ') {
+            indent++;
+            this.pos++;
+            this.col++;
+          } else if (ic === '\t') {
+            // Tabs count as 4 spaces (normalize)
+            indent += 4;
+            this.pos++;
+            this.col++;
+          } else {
+            break;
+          }
+        }
+
+        // Skip entirely blank lines and comment-only lines
+        const nextCh = this.pos < this.src.length ? this.src[this.pos] : '';
+        const isBlank = nextCh === '\n' || nextCh === '\r' || nextCh === '';
+        const isComment = nextCh === '/' && this.peek(1) === '/';
+        if (!isBlank && !isComment) {
+          this.tokens.push({
+            type: TokenType.LineIndent,
+            value: String(indent),
+            line: this.line,
+            col: indentStart === this.pos ? this.col : 1,
+          });
+        }
+        continue;
+      }
+
+      // ── Skip inline spaces/tabs ─────────────────────────────────────────
+      if (ch === ' ' || ch === '\t') {
+        this.advance();
+        continue;
+      }
+
+      // ── Line comment ───────────────────────────────────────────────────
       if (ch === '/' && this.peek(1) === '/') {
         this.skipLineComment();
         continue;
       }
 
-      // Newline
+      // ── Newline ────────────────────────────────────────────────────────
       if (ch === '\n') {
         this.pushToken(TokenType.Newline, '\\n');
         this.advance();
         this.line++;
         this.col = 1;
+        this.atLineStart = true;
         continue;
       }
 
-      // Carriage return (skip, newline will follow)
+      // ── Carriage return ────────────────────────────────────────────────
       if (ch === '\r') {
         this.advance();
         continue;
       }
 
-      // Hex color literal: #RRGGBB or #RRGGBBAA
+      // ── Hex color literal: #RRGGBB or #RRGGBBAA ───────────────────────
       if (ch === '#' && this.isHexDigit(this.peek(1))) {
         this.readHexColor();
         continue;
       }
 
-      // Number
+      // ── Number ────────────────────────────────────────────────────────
       if (this.isDigit(ch) || (ch === '.' && this.isDigit(this.peek(1)))) {
         this.readNumber();
         continue;
       }
 
-      // String
+      // ── String ────────────────────────────────────────────────────────
       if (ch === '"' || ch === "'") {
         this.readString(ch);
         continue;
       }
 
-      // Identifier or keyword
+      // ── Identifier or keyword ─────────────────────────────────────────
       if (this.isIdentStart(ch)) {
         this.readIdentifier();
         continue;
       }
 
-      // Two-character operators
+      // ── Three-character operators ──────────────────────────────────────
+      // (none currently, but keep for future)
+
+      // ── Two-character operators ────────────────────────────────────────
       const two = this.src.slice(this.pos, this.pos + 2);
       switch (two) {
         case '>=': this.pushToken(TokenType.GTE, '>='); this.advance(); this.advance(); continue;
@@ -79,9 +148,11 @@ export class Lexer {
         case '!=': this.pushToken(TokenType.NotEq, '!='); this.advance(); this.advance(); continue;
         case '&&': this.pushToken(TokenType.And, '&&'); this.advance(); this.advance(); continue;
         case '||': this.pushToken(TokenType.Or, '||'); this.advance(); this.advance(); continue;
+        case ':=': this.pushToken(TokenType.ColonEquals, ':='); this.advance(); this.advance(); continue;
+        case '=>': this.pushToken(TokenType.FatArrow, '=>'); this.advance(); this.advance(); continue;
       }
 
-      // Single-character tokens
+      // ── Single-character tokens ────────────────────────────────────────
       switch (ch) {
         case '+': this.pushToken(TokenType.Plus, '+'); this.advance(); continue;
         case '-': this.pushToken(TokenType.Minus, '-'); this.advance(); continue;
@@ -99,9 +170,10 @@ export class Lexer {
         case '=': this.pushToken(TokenType.Equals, '='); this.advance(); continue;
         case '?': this.pushToken(TokenType.Question, '?'); this.advance(); continue;
         case ':': this.pushToken(TokenType.Colon, ':'); this.advance(); continue;
+        case '.': this.pushToken(TokenType.Dot, '.'); this.advance(); continue;
       }
 
-      // Unknown character — skip with a warning (could collect errors)
+      // Unknown character — skip
       this.advance();
     }
 
@@ -125,17 +197,6 @@ export class Lexer {
     this.tokens.push({ type, value, line: this.line, col: this.col });
   }
 
-  private skipSpacesAndTabs(): void {
-    while (this.pos < this.src.length) {
-      const ch = this.src[this.pos];
-      if (ch === ' ' || ch === '\t') {
-        this.advance();
-      } else {
-        break;
-      }
-    }
-  }
-
   private skipLineComment(): void {
     while (this.pos < this.src.length && this.src[this.pos] !== '\n') {
       this.advance();
@@ -147,13 +208,13 @@ export class Lexer {
     let num = '';
     let hasDot = false;
     while (this.pos < this.src.length) {
-      const ch = this.src[this.pos];
-      if (this.isDigit(ch)) {
-        num += ch;
+      const c = this.src[this.pos];
+      if (this.isDigit(c)) {
+        num += c;
         this.advance();
-      } else if (ch === '.' && !hasDot) {
+      } else if (c === '.' && !hasDot) {
         hasDot = true;
-        num += ch;
+        num += c;
         this.advance();
       } else {
         break;

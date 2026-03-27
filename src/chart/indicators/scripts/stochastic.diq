@@ -1,0 +1,12 @@
+//@version=1
+indicator("Stochastic", overlay=false)
+length = input.int(14, "K Length")
+smoothK = input.int(1, "K Smoothing")
+smoothD = input.int(3, "D Smoothing")
+kRaw = ta.stoch(close, high, low, length)
+k = ta.sma(kRaw, smoothK)
+d = ta.sma(k, smoothD)
+plot(k, "%K", color=#1A56DB)
+plot(d, "%D", color=#F59E0B)
+hline(80, color=#FF3D71, style=dashed)
+hline(20, color=#00C853, style=dashed)

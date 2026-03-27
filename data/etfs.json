@@ -50,7 +50,7 @@
                     "weight_pct": 2.26
                 },
                 {
-                    "symbol": "BRK.B",
+                    "symbol": "BRK B",
                     "name": "Berkshire Hathaway Inc. Class B",
                     "weight_pct": 1.54
                 }
@@ -106,7 +106,7 @@
                     "weight_pct": 2.25
                 },
                 {
-                    "symbol": "BRK.B",
+                    "symbol": "BRK B",
                     "name": "Berkshire Hathaway Inc. Class B",
                     "weight_pct": 1.54
                 }
@@ -213,7 +213,7 @@
                     "weight_pct": 1.79
                 },
                 {
-                    "symbol": "BRK.B",
+                    "symbol": "BRK B",
                     "name": "Berkshire Hathaway Inc. Class B",
                     "weight_pct": 1.4
                 }
@@ -269,7 +269,7 @@
                     "weight_pct": 1.99
                 },
                 {
-                    "symbol": "BRK.B",
+                    "symbol": "BRK B",
                     "name": "Berkshire Hathaway Inc. Class B",
                     "weight_pct": 1.36
                 }
@@ -493,7 +493,7 @@
                     "weight_pct": 2.0
                 },
                 {
-                    "symbol": "BRK.B",
+                    "symbol": "BRK B",
                     "name": "Berkshire Hathaway Inc Class B",
                     "weight_pct": 1.37
                 }
@@ -715,7 +715,7 @@
             "name": "Financial Select Sector SPDR Fund",
             "top_holdings": [
                 {
-                    "symbol": "BRK.B",
+                    "symbol": "BRK B",
                     "name": "Berkshire Hathaway Inc Class B",
                     "weight_pct": 12.8
                 },
@@ -1149,7 +1149,7 @@
             "name": "Vanguard Value ETF",
             "top_holdings": [
                 {
-                    "symbol": "BRK.B",
+                    "symbol": "BRK B",
                     "name": "Berkshire Hathaway Inc Class B",
                     "weight_pct": 8.9
                 },
@@ -1247,7 +1247,7 @@
                     "weight_pct": 2.1
                 },
                 {
-                    "symbol": "BRK.B",
+                    "symbol": "BRK B",
                     "name": "Berkshire Hathaway Inc Class B",
                     "weight_pct": 1.9
                 },
@@ -1514,7 +1514,7 @@
                     "weight_pct": 1.99
                 },
                 {
-                    "symbol": "BRK.B",
+                    "symbol": "BRK B",
                     "name": "Berkshire Hathaway Inc. Class B (Leveraged Exposure)",
                     "weight_pct": 1.62
                 }
@@ -1570,7 +1570,7 @@
                     "weight_pct": 1.99
                 },
                 {
-                    "symbol": "BRK.B",
+                    "symbol": "BRK B",
                     "name": "Berkshire Hathaway Inc. Class B (Inverse Exposure)",
                     "weight_pct": 1.62
                 }
