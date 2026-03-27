@@ -410,6 +410,7 @@ fn spawn_dev_python(
             .args(&args)
             .current_dir(cwd)
             .env("DAILYIQ_DATA_DIR", app_data.to_string_lossy().to_string())
+            .env("PYTHONUNBUFFERED", "1")
             .spawn()
             .map_err(|e| format!("Failed to spawn venv Python: {}", e))?
     } else {
@@ -417,12 +418,14 @@ fn spawn_dev_python(
             .args(&args)
             .current_dir(cwd)
             .env("DAILYIQ_DATA_DIR", app_data.to_string_lossy().to_string())
+            .env("PYTHONUNBUFFERED", "1")
             .spawn()
             .or_else(|_| {
                 Command::new("python")
                     .args(&args)
                     .current_dir(cwd)
                     .env("DAILYIQ_DATA_DIR", app_data.to_string_lossy().to_string())
+                    .env("PYTHONUNBUFFERED", "1")
                     .spawn()
             })
             .or_else(|_| {
@@ -430,6 +433,7 @@ fn spawn_dev_python(
                     .args(&args)
                     .current_dir(cwd)
                     .env("DAILYIQ_DATA_DIR", app_data.to_string_lossy().to_string())
+                    .env("PYTHONUNBUFFERED", "1")
                     .spawn()
             })
             .map_err(|e| format!("Failed to spawn Python process: {}", e))?
@@ -505,6 +509,31 @@ fn do_spawn_sidecar(app_handle: &AppHandle, state: &SidecarState) -> Result<u16,
     *state.port.lock().unwrap() = None;
 
     Err("Sidecar failed to become ready within 10s".to_string())
+}
+
+/// True when `GET /health` returns HTTP 200 (used by watchdog, not just process liveness).
+fn probe_sidecar_http_health(port: u16) -> bool {
+    let addr: SocketAddr = match format!("127.0.0.1:{}", port).parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(800)) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let request = "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 384];
+    match stream.read(&mut buf) {
+        Ok(n) if n > 0 => {
+            let head = String::from_utf8_lossy(&buf[..n]);
+            head.contains(" 200 ") || head.contains("200 OK")
+        }
+        _ => false,
+    }
 }
 
 fn do_spawn_worker(app_handle: &AppHandle, state: &SidecarState) -> Result<(), String> {
@@ -610,12 +639,15 @@ fn main() {
                 }
             });
 
-            // Watchdog: detect sidecar process death and auto-restart it.
+            // Watchdog: restart sidecar on process exit or repeated failed HTTP /health (hung server).
             let watchdog_handle = app.handle();
             std::thread::spawn(move || {
+                let mut health_fail_streak: u32 = 0;
                 loop {
                     std::thread::sleep(Duration::from_secs(5));
                     let state: tauri::State<SidecarState> = watchdog_handle.state();
+
+                    let port_snapshot = *state.port.lock().unwrap();
 
                     // Check if the child process has exited without us killing it.
                     let has_exited = {
@@ -627,6 +659,7 @@ fn main() {
                     };
 
                     if has_exited {
+                        health_fail_streak = 0;
                         eprintln!("Watchdog: sidecar process exited unexpectedly, restarting...");
                         // Take the dead child out and clear the stale port.
                         { let _ = state.child.lock().unwrap().take(); }
@@ -636,6 +669,33 @@ fn main() {
                             Ok(port) => println!("Watchdog: sidecar restarted on port {}", port),
                             Err(e) => eprintln!("Watchdog: sidecar restart failed: {}", e),
                         }
+                        continue;
+                    }
+
+                    if let Some(port) = port_snapshot {
+                        if probe_sidecar_http_health(port) {
+                            health_fail_streak = 0;
+                        } else {
+                            health_fail_streak += 1;
+                            // ~30s of failed probes before kill — avoids flapping on slow disks / GC pauses.
+                            if health_fail_streak >= 6 {
+                                eprintln!(
+                                    "Watchdog: sidecar HTTP /health failed {} times; forcing restart...",
+                                    health_fail_streak
+                                );
+                                health_fail_streak = 0;
+                                if let Some(child) = state.child.lock().unwrap().take() {
+                                    child.kill();
+                                }
+                                *state.port.lock().unwrap() = None;
+                                match do_spawn_sidecar(&watchdog_handle, &state) {
+                                    Ok(port) => println!("Watchdog: sidecar restarted on port {}", port),
+                                    Err(e) => eprintln!("Watchdog: sidecar restart failed: {}", e),
+                                }
+                            }
+                        }
+                    } else {
+                        health_fail_streak = 0;
                     }
                 }
             });

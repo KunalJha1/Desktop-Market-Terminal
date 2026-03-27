@@ -62,7 +62,7 @@ interface TwsContextValue {
   validateFinnhubKey: (apiKey: string) => Promise<FinnhubValidateResponse>;
 }
 
-const TwsContext = createContext<TwsContextValue | null>(null);
+export const TwsContext = createContext<TwsContextValue | null>(null);
 
 export function useTws(): TwsContextValue {
   const ctx = useContext(TwsContext);

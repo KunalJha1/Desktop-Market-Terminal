@@ -134,7 +134,9 @@ export function WatchlistProvider({ children }: { children: ReactNode }) {
   symbolsRef.current = symbols;
 
   async function saveToDisk(syms: string[]) {
-    const port = sidecarPortRef.current;
+    // Always resolve a fresh port — the Tauri-managed sidecar may restart on a new port.
+    const port = await getSidecarPort();
+    sidecarPortRef.current = port;
     if (port) {
       const ok = await apiSaveSymbols(syms, port);
       if (ok) return;

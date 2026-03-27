@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api";
 import {
   CustomColumnDef,
@@ -6,6 +6,7 @@ import {
   indicatorKey,
 } from "./custom-column-types";
 import type { Quote } from "./market-data";
+import { TwsContext } from "./tws";
 
 const POLL_INTERVAL_MS = 60_000;
 
@@ -23,10 +24,11 @@ export function useIndicatorValues(
   columns: CustomColumnDef[],
   quotes: Map<string, Quote>,
 ): Map<string, Map<string, number | string | null>> {
+  const tws = useContext(TwsContext);
+  const [fallbackPort, setFallbackPort] = useState<number | null>(null);
   const [values, setValues] = useState<Map<string, Map<string, number | string | null>>>(
     new Map(),
   );
-  const portRef = useRef<number | null>(null);
   const symbolsRef = useRef(symbols);
   const columnsRef = useRef(columns);
   const quotesRef = useRef(quotes);
@@ -35,13 +37,16 @@ export function useIndicatorValues(
   quotesRef.current = quotes;
 
   useEffect(() => {
+    if (tws) return;
     invoke<number | null>("get_sidecar_port")
-      .then((p) => { portRef.current = p; })
+      .then((p) => setFallbackPort(p))
       .catch(() => {});
-  }, []);
+  }, [tws]);
+
+  const sidecarPort = tws?.sidecarPort ?? fallbackPort;
 
   const fetchIndicators = useCallback(async () => {
-    const port = portRef.current;
+    const port = sidecarPort;
     const syms = symbolsRef.current;
     const cols = columnsRef.current;
     const currentQuotes = quotesRef.current;
@@ -192,7 +197,7 @@ export function useIndicatorValues(
     } catch {
       // Sidecar not ready
     }
-  }, []);
+  }, [sidecarPort]);
 
   useEffect(() => {
     fetchIndicators();

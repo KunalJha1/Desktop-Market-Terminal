@@ -1,6 +1,6 @@
 [package]
 name = "dailyiq-bench"
-version = "0.1.9"
+version = "0.2.0"
 description = "DailyIQ desktop app"
 authors = ["Kunal Jha"]
 edition = "2021"

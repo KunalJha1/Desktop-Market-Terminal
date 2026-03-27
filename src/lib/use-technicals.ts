@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api";
 import type { Timeframe } from "../chart/types";
+import { TwsContext } from "./tws";
 
 const POLL_INTERVAL_MS = 60_000;
 
@@ -78,23 +79,25 @@ export function useTechScores(
   symbols: string[],
   timeframes: string[],
 ): TechScoreMap {
+  const tws = useContext(TwsContext);
+  const [fallbackPort, setFallbackPort] = useState<number | null>(null);
   const [scores, setScores] = useState<TechScoreMap>(new Map());
-  const portRef = useRef<number | null>(null);
-  const [portReady, setPortReady] = useState(false);
   const symbolsRef = useRef(symbols);
   const timeframesRef = useRef(timeframes);
   symbolsRef.current = symbols;
   timeframesRef.current = timeframes;
 
   useEffect(() => {
-    invoke<number | null>("get_sidecar_port").then((p) => {
-      portRef.current = p;
-      setPortReady(Boolean(p));
-    }).catch(() => {});
-  }, []);
+    if (tws) return;
+    invoke<number | null>("get_sidecar_port")
+      .then((p) => setFallbackPort(p))
+      .catch(() => {});
+  }, [tws]);
+
+  const sidecarPort = tws?.sidecarPort ?? fallbackPort;
 
   const fetchScores = useCallback(async () => {
-    const port = portRef.current;
+    const port = sidecarPort;
     const syms = symbolsRef.current;
     const tfs = timeframesRef.current;
     if (!port || syms.length === 0 || tfs.length === 0) return;
@@ -142,7 +145,7 @@ export function useTechScores(
     } catch {
       // Sidecar not ready, or transient request failure.
     }
-  }, []);
+  }, [sidecarPort]);
 
   useEffect(() => {
     fetchScores();
@@ -152,7 +155,7 @@ export function useTechScores(
 
   useEffect(() => {
     fetchScores();
-  }, [symbols.join(","), timeframes.join(","), portReady, fetchScores]);
+  }, [symbols.join(","), timeframes.join(","), sidecarPort, fetchScores]);
 
   return scores;
 }
