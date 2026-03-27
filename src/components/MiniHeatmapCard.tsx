@@ -137,9 +137,9 @@ export default function MiniHeatmapCard({
     <div className="flex h-full flex-col overflow-hidden border border-white/[0.06] bg-panel">
       {/* Header */}
       <div
-        className="flex h-7 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2"
+        className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2"
       >
-        <span className="text-[10px] font-medium text-white/70">
+        <span className="text-[11px] font-medium text-white/80">
           S&P 500 Heatmap
         </span>
         <div className="flex items-center gap-1">

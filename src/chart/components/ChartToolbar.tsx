@@ -14,6 +14,8 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
+  Save,
+  FolderOpen,
 } from 'lucide-react';
 import { SEARCHABLE_SYMBOLS, filterRankSymbolSearch } from '../../lib/market-data';
 import ComponentLinkMenu from '../../components/ComponentLinkMenu';
@@ -36,7 +38,7 @@ interface ChartToolbarProps {
   onAddIndicator?: (name: string) => void;
   onToggleStrategy?: (name: string) => void;
   activeIndicators?: ActiveIndicator[];
-  dataSource?: 'tws' | 'yahoo' | 'cache' | 'mock';
+  dataSource?: 'tws' | 'yahoo' | 'cache' | 'offline';
   loading?: boolean;
   linkChannel?: number | null;
   onLinkChannelChange?: (ch: number | null) => void;
@@ -45,6 +47,8 @@ interface ChartToolbarProps {
   onZoomIn?: () => void;
   onZoomOut?: () => void;
   onZoomReset?: () => void;
+  onExportChart?: () => void;
+  onImportChart?: () => void;
 }
 
 export default function ChartToolbar({
@@ -64,7 +68,7 @@ export default function ChartToolbar({
   onAddIndicator,
   onToggleStrategy,
   activeIndicators = [],
-  dataSource = 'mock',
+  dataSource = 'offline',
   loading = false,
   linkChannel = null,
   onLinkChannelChange,
@@ -73,6 +77,8 @@ export default function ChartToolbar({
   onZoomIn,
   onZoomOut,
   onZoomReset,
+  onExportChart,
+  onImportChart,
 }: ChartToolbarProps) {
   const [symbolInput, setSymbolInput] = useState(symbol);
   const [chartTypeOpen, setChartTypeOpen] = useState(false);
@@ -360,6 +366,29 @@ export default function ChartToolbar({
 
       <div className="w-px h-4 bg-border-default" />
 
+      <div className="flex items-center gap-1 mx-1">
+        <button
+          onClick={onImportChart}
+          className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-text-secondary
+                     hover:text-text-primary hover:bg-hover rounded-btn transition-colors duration-120"
+          title="Import .diqc"
+        >
+          <FolderOpen size={12} />
+          <span className="font-mono">Import</span>
+        </button>
+        <button
+          onClick={onExportChart}
+          className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-text-secondary
+                     hover:text-text-primary hover:bg-hover rounded-btn transition-colors duration-120"
+          title="Export .diqc"
+        >
+          <Save size={12} />
+          <span className="font-mono">Export</span>
+        </button>
+      </div>
+
+      <div className="w-px h-4 bg-border-default" />
+
       {/* Link channel */}
       <ComponentLinkMenu
         linkChannel={linkChannel ?? null}
@@ -383,7 +412,7 @@ export default function ChartToolbar({
           {dataSource === 'tws' ? 'LIVE'
             : dataSource === 'yahoo' ? 'YAHOO'
             : dataSource === 'cache' ? 'CACHED'
-            : 'MOCK'}
+            : 'OFFLINE'}
         </span>
       </div>
 

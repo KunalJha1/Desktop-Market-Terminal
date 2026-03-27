@@ -175,7 +175,7 @@ def read_scores_for_timeframes(
     symbols: list[str],
     timeframes: list[str] | None = None,
 ) -> list[dict]:
-    """Read cached scores and compute missing requested timeframes on demand."""
+    """Read cached scores and surface coverage status without computing on demand."""
     normalized_symbols = _normalize_symbols(symbols)
     if not normalized_symbols:
         return []
@@ -193,28 +193,6 @@ def read_scores_for_timeframes(
             normalized_symbols,
         ).fetchall()
         row_map = {row[0]: row for row in rows}
-
-    symbols_needing_fill = [
-        sym for sym in normalized_symbols
-        if any(_row_to_score_map(row_map.get(sym)).get(tf) is None for tf in requested_timeframes)
-    ]
-    if symbols_needing_fill:
-        computed = score_symbols(symbols_needing_fill, requested_timeframes)
-        rows_to_upsert: list[tuple[str, int | None, int | None, int | None, int | None, int | None, int | None, int | None]] = []
-        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-        for sym in symbols_needing_fill:
-            updates = {
-                tf: score
-                for tf, score in computed.get(sym, {}).items()
-                if score is not None
-            }
-            if not updates:
-                continue
-            merged_row = _merge_score_row(sym, _row_to_score_map(row_map.get(sym)), updates)
-            rows_to_upsert.append(merged_row)
-            row_map[sym] = (*merged_row, now_utc)
-        if rows_to_upsert:
-            _upsert_scores(rows_to_upsert, now_utc)
 
     payloads: list[dict] = []
     with sync_db_session() as conn:

@@ -5,9 +5,20 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useMemo,
   type ReactNode,
 } from "react";
 import { useLayout } from "./layout";
+import {
+  readAllDetachedTabInfo,
+  readAllReattachRequests,
+  isReattachRequestKey,
+  readReattachRequest,
+  removeDetachedTabInfo,
+  removeReattachRequest,
+  writeDetachedTabInfo,
+  type DetachedTabInfo,
+} from "./detached";
 
 export type TabType =
   | "dashboard"
@@ -25,6 +36,12 @@ export interface Tab {
   type: TabType;
 }
 
+const DETACHABLE_TYPES: ReadonlySet<TabType> = new Set([
+  "chart",
+  "heatmap",
+  "screener",
+]);
+
 /** All available tab presets — shown in the "+" menu */
 export const tabPresets: { type: TabType; title: string }[] = [
   { type: "dashboard", title: "Dashboard" },
@@ -39,13 +56,17 @@ export const tabPresets: { type: TabType; title: string }[] = [
 
 interface TabContextValue {
   tabs: Tab[];
+  allTabs: Tab[];
   activeTabId: string;
   ready: boolean;
   setActiveTab: (id: string) => void;
   addTab: (type: TabType) => void;
   closeTab: (id: string) => void;
   /** Remove a tab and return it. If it's the last tab, a default replacement is added. */
-  detachTab: (id: string) => Tab | null;
+  detachTab: (id: string, info: DetachedTabInfo) => Tab | null;
+  reattachTab: (info: DetachedTabInfo) => void;
+  canDetachTab: (id: string) => boolean;
+  getDetachedTabByLabel: (label: string) => DetachedTabInfo | null;
   renameTab: (id: string, title: string) => void;
   duplicateTab: (id: string) => void;
   reorderTabs: (fromIndex: number, toIndex: number) => void;
@@ -61,12 +82,16 @@ const fallbackTabs: Tab[] = tabPresets.map((p) => makeTab(p.type));
 
 const TabContext = createContext<TabContextValue>({
   tabs: fallbackTabs,
+  allTabs: fallbackTabs,
   activeTabId: fallbackTabs[0].id,
   ready: false,
   setActiveTab: () => {},
   addTab: () => {},
   closeTab: () => {},
   detachTab: () => null,
+  reattachTab: () => {},
+  canDetachTab: () => false,
+  getDetachedTabByLabel: () => null,
   renameTab: () => {},
   duplicateTab: () => {},
   reorderTabs: () => {},
@@ -88,6 +113,7 @@ export function TabProvider({ children }: { children: ReactNode }) {
   const [tabs, setTabs] = useState<Tab[]>(initialTabs);
   const [activeTabId, setActiveTabId] = useState(initialActiveId);
   const [ready, setReady] = useState(false);
+  const detachedTabsRef = useRef<Map<string, DetachedTabInfo>>(new Map());
 
   // Mark ready after first render
   useEffect(() => { setReady(true); }, []);
@@ -131,6 +157,21 @@ export function TabProvider({ children }: { children: ReactNode }) {
     setActiveTabId(id);
   }, []);
 
+  useEffect(() => {
+    const initialDetached = new Map<string, DetachedTabInfo>();
+    for (const info of readAllDetachedTabInfo()) {
+      initialDetached.set(info.windowLabel, info);
+    }
+    detachedTabsRef.current = initialDetached;
+  }, []);
+
+  const insertTabAtIndex = useCallback((prev: Tab[], tab: Tab, index: number) => {
+    const next = prev.filter((existing) => existing.id !== tab.id);
+    const boundedIndex = Math.max(0, Math.min(index, next.length));
+    next.splice(boundedIndex, 0, tab);
+    return next;
+  }, []);
+
   const addTab = useCallback((type: TabType) => {
     const newTab = makeTab(type);
     setTabs((prev) => [...prev, newTab]);
@@ -154,7 +195,9 @@ export function TabProvider({ children }: { children: ReactNode }) {
   );
 
   const detachTab = useCallback(
-    (id: string): Tab | null => {
+    (id: string, info: DetachedTabInfo): Tab | null => {
+      writeDetachedTabInfo(info);
+      detachedTabsRef.current.set(info.windowLabel, info);
       let detached: Tab | null = null;
       setTabs((prev) => {
         const idx = prev.findIndex((t) => t.id === id);
@@ -177,6 +220,55 @@ export function TabProvider({ children }: { children: ReactNode }) {
     },
     [activeTabId],
   );
+
+  const reattachTab = useCallback((info: DetachedTabInfo) => {
+    detachedTabsRef.current.delete(info.windowLabel);
+    removeDetachedTabInfo(info.windowLabel);
+    setTabs((prev) => {
+      if (prev.some((tab) => tab.id === info.tabId)) return prev;
+      const tab: Tab = {
+        id: info.tabId,
+        title: info.title,
+        type: info.tabType,
+      };
+      return insertTabAtIndex(prev, tab, info.originalIndex);
+    });
+    setActiveTabId(info.tabId);
+  }, [insertTabAtIndex]);
+
+  const processPendingReattachRequests = useCallback(() => {
+    for (const { key, info } of readAllReattachRequests()) {
+      reattachTab(info);
+      removeReattachRequest(key);
+    }
+  }, [reattachTab]);
+
+  useEffect(() => {
+    processPendingReattachRequests();
+
+    const handleStorage = (event: StorageEvent) => {
+      if (!event.key || !isReattachRequestKey(event.key) || !event.newValue) return;
+      const info = readReattachRequest(event.key);
+      if (!info) {
+        removeReattachRequest(event.key);
+        return;
+      }
+      reattachTab(info);
+      removeReattachRequest(event.key);
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [processPendingReattachRequests, reattachTab]);
+
+  const canDetachTab = useCallback((id: string) => {
+    const tab = tabs.find((item) => item.id === id);
+    return tab ? DETACHABLE_TYPES.has(tab.type) : false;
+  }, [tabs]);
+
+  const getDetachedTabByLabel = useCallback((label: string) => {
+    return detachedTabsRef.current.get(label) ?? null;
+  }, []);
 
   const renameTab = useCallback((id: string, title: string) => {
     const trimmed = title.trim();
@@ -215,16 +307,22 @@ export function TabProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const visibleTabs = useMemo(() => tabs, [tabs]);
+
   return (
     <TabContext.Provider
       value={{
-        tabs,
+        tabs: visibleTabs,
+        allTabs: tabs,
         activeTabId,
         ready,
         setActiveTab,
         addTab,
         closeTab,
         detachTab,
+        reattachTab,
+        canDetachTab,
+        getDetachedTabByLabel,
         renameTab,
         duplicateTab,
         reorderTabs,

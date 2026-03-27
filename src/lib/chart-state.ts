@@ -6,10 +6,16 @@ export interface PersistedChartIndicator {
   name: string;
   paneId: string;
   params: Record<string, number>;
+  textParams?: Record<string, string>;
   colors: Record<string, string>;
   lineWidths?: Record<string, number>;
   lineStyles?: Record<string, "solid" | "dashed" | "dotted">;
   visible: boolean;
+}
+
+export interface PersistedChartScript {
+  id: string;
+  source: string;
 }
 
 export interface ChartState {
@@ -20,6 +26,7 @@ export interface ChartState {
   indicators: PersistedChartIndicator[];
   stopperPx: number;
   indicatorColorDefaults: Record<string, Record<string, string>>;
+  scripts?: PersistedChartScript[];
 }
 
 const KEY_PREFIX = "chart-state:";
@@ -79,6 +86,7 @@ function parseIndicators(value: unknown): PersistedChartIndicator[] {
         name: item,
         paneId: meta?.category === "overlay" ? "main" : `pane:${item}`,
         params: {},
+        textParams: {},
         colors: {},
         lineWidths: {},
         lineStyles: {},
@@ -97,10 +105,22 @@ function parseIndicators(value: unknown): PersistedChartIndicator[] {
       name: item.name,
       paneId,
       params: sanitizeNumberRecord(item.params),
+      textParams: sanitizeStringRecord(item.textParams),
       colors: sanitizeStringRecord(item.colors),
       lineWidths: sanitizeNumberRecord(item.lineWidths),
       lineStyles: sanitizeLineStyleRecord(item.lineStyles),
       visible: typeof item.visible === "boolean" ? item.visible : true,
+    }];
+  });
+}
+
+function parseScripts(value: unknown): PersistedChartScript[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.source !== "string") return [];
+    return [{
+      id: typeof item.id === "string" ? item.id : `script_${Date.now()}`,
+      source: item.source,
     }];
   });
 }
@@ -116,7 +136,7 @@ export function loadChartState(tabId: string): ChartState | null {
     };
     const hasIndicators = Object.prototype.hasOwnProperty.call(parsed, "indicators");
     return {
-      symbol: typeof parsed.symbol === "string" ? parsed.symbol : "AAPL",
+      symbol: typeof parsed.symbol === "string" ? parsed.symbol : "",
       timeframe: (typeof parsed.timeframe === "string" ? parsed.timeframe : "1D") as Timeframe,
       chartType: (typeof parsed.chartType === "string" ? parsed.chartType : "candlestick") as ChartType,
       linkChannel: typeof parsed.linkChannel === "number" ? parsed.linkChannel : null,
@@ -126,6 +146,7 @@ export function loadChartState(tabId: string): ChartState | null {
         parsed.indicatorColorDefaults && typeof parsed.indicatorColorDefaults === "object"
           ? (parsed.indicatorColorDefaults as Record<string, Record<string, string>>)
           : {},
+      scripts: parseScripts((parsed as { scripts?: unknown }).scripts),
     };
   } catch {
     return null;

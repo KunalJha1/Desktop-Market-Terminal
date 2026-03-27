@@ -1,0 +1,42 @@
+//@version=1
+indicator("Fair Value Gap", overlay=true)
+
+thresholdPercent = input.float(0.0, "Gap Threshold %")
+extendBars = input.int(30, "Extend Bars")
+requireNextBarReaction = input.bool(true, "Require Next Bar Reaction")
+sourceTimeframe = input.string("", "FVG Timeframe (blank = chart)")
+
+// Detection logic used by the built-in renderer:
+// bull FVG:
+//   low > high[2]
+//   close[1] > high[2]
+//   (low - high[2]) / high[2] > thresholdPercent / 100
+//
+// bear FVG:
+//   high < low[2]
+//   close[1] < low[2]
+//   (low[2] - high) / high > thresholdPercent / 100
+//
+// Box geometry:
+//   bull top    = max(low, high[2])
+//   bull bottom = min(low, high[2])
+//   bear top    = max(low[2], high)
+//   bear bottom = min(low[2], high)
+//
+// Active box lifecycle:
+//   1. Create the rectangle when an FVG is confirmed.
+//   2. Extend it right by `extendBars`.
+//   3. Mark first touch when candle overlaps the zone after creation.
+//   4. Delete the zone only when it is "used":
+//      bullish used => close > top
+//      bearish used => close < bottom
+//      and, if enabled, that reaction must happen on a later bar than the touch bar.
+//
+// Higher timeframe behavior:
+//   If `sourceTimeframe` is set above the chart timeframe,
+//   FVGs are detected on that source timeframe and projected onto chart time.
+//
+// Rendering note:
+//   The rectangle boxes are drawn by the app's native chart renderer,
+//   not by the script engine, so this built-in script is for inspection/editing
+//   of the calculations behind the indicator.

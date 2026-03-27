@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DailyIQ Test Window</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: Inter, "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top, rgba(26, 86, 219, 0.3), transparent 42%),
+          linear-gradient(180deg, #0d1117 0%, #111827 100%);
+        color: rgba(255, 255, 255, 0.92);
+      }
+
+      .card {
+        width: min(88vw, 540px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.04);
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35);
+        padding: 36px 28px;
+        text-align: center;
+        backdrop-filter: blur(10px);
+      }
+
+      .badge {
+        display: inline-block;
+        margin-bottom: 18px;
+        padding: 6px 12px;
+        border: 1px solid rgba(16, 185, 129, 0.35);
+        border-radius: 999px;
+        background: rgba(16, 185, 129, 0.12);
+        color: #86efac;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+
+      .logo {
+        width: min(280px, 70%);
+        height: auto;
+        margin: 0 auto 18px;
+        display: block;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 24px;
+        font-weight: 700;
+      }
+
+      p {
+        margin: 0;
+        color: rgba(255, 255, 255, 0.58);
+        font-size: 14px;
+        line-height: 1.6;
+      }
+
+      .meta {
+        margin-top: 22px;
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(0, 0, 0, 0.22);
+        padding: 14px 16px;
+        text-align: left;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+
+      .meta div + div {
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="badge">Test Window Booted</div>
+      <img class="logo" src="/dailyiq-brand-resources/daily-iq-topbar-logo.svg" alt="DailyIQ" />
+      <h1>DailyIQ Test Window</h1>
+      <p>This window is now running as a standalone test page.</p>
+      <div class="meta">
+        <div>path: <span id="path"></span></div>
+        <div>query: <span id="query"></span></div>
+      </div>
+    </main>
+    <script>
+      document.getElementById("path").textContent = window.location.pathname || "(empty)";
+      document.getElementById("query").textContent = window.location.search || "(empty)";
+    </script>
+  </body>
+  </html>

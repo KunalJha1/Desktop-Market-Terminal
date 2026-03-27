@@ -154,6 +154,37 @@ class ConnectionPoolTests(unittest.IsolatedAsyncioTestCase):
         mgr = IbkrClientIdManager(1000, 1005, owner="owner-2")
         self.assertEqual(mgr.acquire("other", preferred_id=client_id), client_id)
 
+    async def test_role_status_tracks_reconnect_metadata(self):
+        FakeIB.taken_ids = set()
+        pool = ConnectionPool()
+        pool.set_tws_address("127.0.0.1", 7497)
+
+        async def fake_probe():
+            return ("127.0.0.1", 7497)
+
+        pool._probe_fn = fake_probe
+
+        with patch("connection_pool.IB", FakeIB):
+            ib = await pool.get_or_create("quote:test")
+            client_id = pool.get_client_id("quote:test")
+            self.assertIsNotNone(client_id)
+
+            before_disconnect = pool.get_role_status("quote:test")
+            self.assertTrue(before_disconnect["connected"])
+            self.assertEqual(before_disconnect["reconnectAttempts"], 0)
+            self.assertIsNone(before_disconnect["lastDisconnectAt"])
+            self.assertIsNone(before_disconnect["lastReconnectAt"])
+
+            ib.disconnectedEvent.emit()
+            await asyncio.sleep(1.2)
+
+            after_reconnect = pool.get_role_status("quote:test")
+            self.assertTrue(after_reconnect["connected"])
+            self.assertGreaterEqual(after_reconnect["reconnectAttempts"], 1)
+            self.assertIsNotNone(after_reconnect["lastDisconnectAt"])
+            self.assertIsNotNone(after_reconnect["lastReconnectAt"])
+            self.assertIsNone(after_reconnect["lastError"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,9 +8,17 @@ import type { Timeframe, ChartType, ActiveIndicator, YScaleMode } from '../types
 import { PRICE_AXIS_CONTROL_HEIGHT, PRICE_AXIS_WIDTH } from '../constants';
 import { useTws } from '../../lib/tws';
 import { linkBus } from '../../lib/link-bus';
-import { X, ChevronDown, ChevronUp, Search, TrendingUp, BrainCircuit, ZoomIn, ZoomOut, RotateCcw, Minus, Maximize2, ChevronsUpDown } from 'lucide-react';
+import { X, ChevronDown, ChevronUp, Search, TrendingUp, BrainCircuit, ZoomIn, ZoomOut, RotateCcw, Minus, Maximize2, ChevronsUpDown, Save, FolderOpen } from 'lucide-react';
 import ComponentLinkMenu from '../../components/ComponentLinkMenu';
 import IndicatorLegend from './IndicatorLegend';
+import {
+  dailyIqChartConfigToMiniChartConfig,
+  miniChartConfigToDailyIqChartConfig,
+} from '../../lib/chart-config';
+import {
+  exportChartConfigToFile,
+  importChartConfigFromFile,
+} from '../../lib/chart-config-storage';
 
 interface MiniChartProps {
   config: Record<string, unknown>;
@@ -62,6 +70,7 @@ interface PersistedMiniIndicator {
   name: string;
   paneId: string;
   params: Record<string, number>;
+  textParams?: Record<string, string>;
   colors: Record<string, string>;
   lineWidths?: Record<string, number>;
   lineStyles?: Record<string, 'solid' | 'dashed' | 'dotted'>;
@@ -117,6 +126,7 @@ function parsePersistedIndicators(value: unknown): PersistedMiniIndicator[] {
         ? item.paneId
         : (indicatorRegistry[item.name]?.category === 'overlay' ? 'main' : `pane:${item.name}`),
       params: sanitizeNumberRecord(item.params),
+      textParams: sanitizeStringRecord(item.textParams),
       colors: sanitizeStringRecord(item.colors),
       lineWidths: sanitizeNumberRecord(item.lineWidths),
       lineStyles: sanitizeLineStyleRecord(item.lineStyles),
@@ -130,6 +140,7 @@ function serializeIndicators(indicators: ActiveIndicator[]): PersistedMiniIndica
     name: indicator.name,
     paneId: indicator.paneId,
     params: { ...indicator.params },
+    textParams: { ...indicator.textParams },
     colors: { ...indicator.colors },
     lineWidths: indicator.lineWidths ? { ...indicator.lineWidths } : undefined,
     lineStyles: indicator.lineStyles ? { ...indicator.lineStyles } : undefined,
@@ -142,6 +153,7 @@ function getDefaultMiniIndicators(): PersistedMiniIndicator[] {
     name: 'Volume',
     paneId: 'main',
     params: {},
+    textParams: {},
     colors: {},
     lineWidths: {},
     lineStyles: {},
@@ -170,7 +182,7 @@ export default function MiniChart({
   const configRef = useRef(config);
   useEffect(() => { configRef.current = config; }, [config]);
 
-  const symbol = (config.symbol as string) || 'AAPL';
+  const symbol = typeof config.symbol === 'string' ? config.symbol.trim().toUpperCase() : '';
 
   // Subscribe to link channel so watchlist/other components can drive the symbol
   useEffect(() => {
@@ -199,6 +211,7 @@ export default function MiniChart({
   const [scriptErrors, setScriptErrors] = useState<string[]>([]);
   const [draggingIndicatorId, setDraggingIndicatorId] = useState<string | null>(null);
   const [yAxisHovered, setYAxisHovered] = useState(false);
+  const [chartNotice, setChartNotice] = useState<string | null>(null);
   const dragStateRef = useRef<{
     paneId: string;
     startY: number;
@@ -537,6 +550,9 @@ export default function MiniChart({
       if (Object.keys(indicator.params).length > 0) {
         engine.updateIndicatorParams(id, indicator.params);
       }
+      if (Object.keys(indicator.textParams ?? {}).length > 0) {
+        engine.updateIndicatorTextParams(id, indicator.textParams ?? {});
+      }
       const mergedColors = {
         ...(indicatorColorDefaults[indicator.name] ?? {}),
         ...indicator.colors,
@@ -566,6 +582,7 @@ export default function MiniChart({
         && expectedIndicator.paneId === engineIndicator.paneId
         && expectedIndicator.visible === engineIndicator.visible
         && recordsEqual(expectedIndicator.params, engineIndicator.params)
+        && recordsEqual(expectedIndicator.textParams, engineIndicator.textParams)
         && recordsEqual(expectedIndicator.colors, engineIndicator.colors)
         && recordsEqual(expectedIndicator.lineWidths, engineIndicator.lineWidths)
         && recordsEqual(expectedIndicator.lineStyles, engineIndicator.lineStyles);
@@ -629,7 +646,7 @@ export default function MiniChart({
 
     // Fingerprint guard: skip re-application if persisted content hasn't changed
     const fingerprint = persistedIndicators
-      .map((i) => `${i.name}:${i.paneId}:${JSON.stringify(i.params)}:${i.visible}`)
+      .map((i) => `${i.name}:${i.paneId}:${JSON.stringify(i.params)}:${JSON.stringify(i.textParams ?? {})}:${i.visible}`)
       .join('|');
     const needsRestoreDespiteFingerprint =
       engineIndicators.length === 0 && persistedIndicators.length > 0;
@@ -740,6 +757,13 @@ export default function MiniChart({
     syncIndicators();
   };
 
+  const updateIndicatorTextParams = (id: string, textParams: Record<string, string>) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.updateIndicatorTextParams(id, textParams);
+    syncIndicators();
+  };
+
   const updateIndicatorColor = (id: string, outputKey: string, color: string) => {
     const engine = engineRef.current;
     if (!engine) return;
@@ -806,13 +830,74 @@ export default function MiniChart({
     onConfigChange({ ...configRef.current, scripts: [] });
   }, [onConfigChange]);
 
+  useEffect(() => {
+    if (!chartNotice) return;
+    const timer = window.setTimeout(() => setChartNotice(null), 2400);
+    return () => window.clearTimeout(timer);
+  }, [chartNotice]);
+
+  const handleExportChart = useCallback(async () => {
+    const ok = await exportChartConfigToFile(miniChartConfigToDailyIqChartConfig(configRef.current, linkChannel));
+    if (!ok) {
+      setChartNotice('Chart export failed.');
+    } else {
+      setChartNotice('Chart exported.');
+    }
+  }, [linkChannel]);
+
+  const handleImportChart = useCallback(async () => {
+    const result = await importChartConfigFromFile();
+    if (result.status === 'canceled') {
+      return;
+    }
+    if (result.status !== 'success') {
+      setChartNotice(result.status === 'invalid' ? 'Invalid .diqc file.' : 'Chart import failed.');
+      return;
+    }
+
+    const engine = engineRef.current;
+    if (engine) {
+      for (const indicator of [...engine.getActiveIndicators()]) {
+        engine.removeIndicator(indicator.id);
+      }
+      engine.clearAllScripts();
+    }
+    setActiveIndicators([]);
+    setScriptSource('');
+    setScriptErrors([]);
+    lastRestoredFingerprintRef.current = '';
+
+    onSetLinkChannel(result.file.chart.linkChannel);
+    onConfigChange(dailyIqChartConfigToMiniChartConfig(result.file.chart));
+    setChartNotice('Chart imported.');
+  }, [onConfigChange, onSetLinkChannel]);
+
   return (
     <div
-      className="flex h-full w-full min-h-[200px] min-w-[240px] flex-col overflow-hidden rounded-none border border-white/[0.06] bg-panel"
+      className="relative flex h-full w-full min-h-[200px] min-w-[240px] flex-col overflow-hidden rounded-none border border-white/[0.06] bg-panel"
     >
+      {chartNotice && (
+        <div className="pointer-events-none absolute left-1/2 top-8 z-20 -translate-x-1/2">
+          <div
+            style={{
+              borderRadius: 6,
+              border: '1px solid rgba(255,255,255,0.08)',
+              backgroundColor: '#161B22',
+              padding: '5px 8px',
+              fontFamily: '"JetBrains Mono", monospace',
+              fontSize: 9,
+              color: 'rgba(255,255,255,0.8)',
+              boxShadow: '0 10px 24px rgba(0,0,0,0.35)',
+            }}
+          >
+            {chartNotice}
+          </div>
+        </div>
+      )}
+
       {/* Toolbar: symbol, timeframes, chart type, indicators, close */}
       <div
-        className="flex h-7 shrink-0 select-none items-center justify-between border-b border-white/[0.10] bg-base px-2"
+        className="flex h-8 shrink-0 select-none items-center justify-between border-b border-white/[0.10] bg-base px-2"
       >
         {/* Left: link + symbol + price + collapse toggle */}
         <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
@@ -824,7 +909,7 @@ export default function MiniChart({
           <span
             style={{
               fontFamily: '"JetBrains Mono", monospace',
-              fontSize: 10,
+              fontSize: 11,
               fontWeight: 600,
               color: '#E6EDF3',
               whiteSpace: 'nowrap',
@@ -835,7 +920,7 @@ export default function MiniChart({
           <span
             style={{
               fontFamily: '"JetBrains Mono", monospace',
-              fontSize: 10,
+              fontSize: 11,
               color: '#E6EDF3',
               whiteSpace: 'nowrap',
             }}
@@ -1283,6 +1368,37 @@ export default function MiniChart({
 
           {/* Compact mode toggle */}
           <button
+            onClick={() => { void handleImportChart(); }}
+            className="flex items-center justify-center rounded-sm text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/55"
+            style={{
+              width: 16,
+              height: 16,
+              borderRadius: 2,
+              border: 'none',
+              background: 'transparent',
+              cursor: 'pointer',
+            }}
+            title="Import .diqc"
+          >
+            <FolderOpen size={9} />
+          </button>
+          <button
+            onClick={() => { void handleExportChart(); }}
+            className="flex items-center justify-center rounded-sm text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/55"
+            style={{
+              width: 16,
+              height: 16,
+              borderRadius: 2,
+              border: 'none',
+              background: 'transparent',
+              cursor: 'pointer',
+            }}
+            title="Export .diqc"
+          >
+            <Save size={9} />
+          </button>
+
+          <button
             onClick={() => setToolbarCollapsed(v => !v)}
             className="rounded-sm p-0 text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/55"
             style={{
@@ -1372,6 +1488,11 @@ export default function MiniChart({
                   {Object.keys(ind.params).length > 0 && (
                     <span style={{ color: '#484F58' }}>
                       ({Object.values(ind.params).join(',')})
+                    </span>
+                  )}
+                  {Object.keys(ind.textParams).length > 0 && (
+                    <span style={{ color: '#484F58' }}>
+                      [{Object.values(ind.textParams).join(',')}]
                     </span>
                   )}
                 </span>
@@ -1926,6 +2047,7 @@ export default function MiniChart({
           indicators={activeIndicators}
           activeScripts={emptyScripts}
           onUpdateParams={updateIndicatorParams}
+          onUpdateTextParams={updateIndicatorTextParams}
           onUpdateColor={updateIndicatorColor}
           onUpdateLineWidth={updateIndicatorLineWidth}
           onUpdateLineStyle={updateIndicatorLineStyle}

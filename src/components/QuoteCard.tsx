@@ -56,7 +56,7 @@ export default function QuoteCard({
   config,
   onConfigChange,
 }: QuoteCardProps) {
-  const symbol = (config.symbol as string) || "AAPL";
+  const symbol = typeof config.symbol === "string" ? config.symbol.trim().toUpperCase() : "";
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
@@ -148,7 +148,7 @@ export default function QuoteCard({
       className="flex h-full flex-col overflow-hidden rounded-none border border-white/[0.06] bg-panel"
     >
       {/* Header bar */}
-      <div className="flex h-7 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2">
+      <div className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2">
         <div className="flex items-center gap-1.5">
           {/* Search toggle */}
           <button
@@ -157,7 +157,7 @@ export default function QuoteCard({
           >
             <Search className="h-2.5 w-2.5" strokeWidth={1.5} />
           </button>
-          <span className="font-mono text-[10px] font-medium text-white/70">
+          <span className="font-mono text-[11px] font-medium text-white/80">
             {symbol}
           </span>
           {channelInfo && (

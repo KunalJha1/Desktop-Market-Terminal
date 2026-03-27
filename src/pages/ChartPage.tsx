@@ -14,8 +14,17 @@ import {
   loadChartState,
   saveChartState,
   type PersistedChartIndicator,
+  type PersistedChartScript,
   type ChartState,
 } from '../lib/chart-state';
+import {
+  chartStateToDailyIqChartConfig,
+  dailyIqChartConfigToChartState,
+} from '../lib/chart-config';
+import {
+  exportChartConfigToFile,
+  importChartConfigFromFile,
+} from '../lib/chart-config-storage';
 import { VOLUME_PANE_RATIO } from '../chart/constants';
 
 interface ChartPageProps {
@@ -28,13 +37,14 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   const chartOverlayRef = useRef<HTMLDivElement>(null);
   const makeDetachedPaneId = useCallback(() => `pane:${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, []);
   const defaultChartState: ChartState = {
-    symbol: 'AAPL',
+    symbol: '',
     timeframe: '1D',
     chartType: 'candlestick',
     linkChannel: 1,
     indicators: defaultIndicatorsRef.current,
     stopperPx: 80,
     indicatorColorDefaults: {},
+    scripts: [],
   };
   const [persisted, setPersisted] = useState<ChartState | null>(() => (tabId ? loadChartState(tabId) : null));
   const initialState = persisted ?? defaultChartState;
@@ -56,6 +66,8 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   const [scriptEditorWidth, setScriptEditorWidth] = useState(320);
   const [activeIndicators, setActiveIndicators] = useState<ActiveIndicator[]>([]);
   const [activeScripts, setActiveScripts] = useState<Map<string, ScriptResult>>(new Map());
+  const [activeScriptSources, setActiveScriptSources] = useState<PersistedChartScript[]>(initialState.scripts ?? []);
+  const [chartNotice, setChartNotice] = useState<string | null>(null);
   const [chartLayout, setChartLayout] = useState<ChartLayout | null>(null);
   const [dragState, setDragState] = useState<{ indicatorId: string; sourcePaneId: string } | null>(null);
   const [draggingMouse, setDraggingMouse] = useState<{ x: number; y: number } | null>(null);
@@ -102,6 +114,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
       name: indicator.name,
       paneId: indicator.paneId,
       params: { ...indicator.params },
+      textParams: { ...indicator.textParams },
       colors: { ...indicator.colors },
       lineWidths: indicator.lineWidths ? { ...indicator.lineWidths } : undefined,
       lineStyles: indicator.lineStyles ? { ...indicator.lineStyles } : undefined,
@@ -112,6 +125,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   const applySerializedIndicators = useCallback((
     engine: ChartEngine,
     serializedIndicators: PersistedChartIndicator[],
+    colorDefaults: Record<string, Record<string, string>> = indicatorColorDefaults,
   ) => {
     for (const indicator of [...engine.getActiveIndicators()]) {
       engine.removeIndicator(indicator.id);
@@ -124,8 +138,11 @@ export default function ChartPage({ tabId }: ChartPageProps) {
       if (Object.keys(serializedIndicator.params).length > 0) {
         engine.updateIndicatorParams(id, serializedIndicator.params);
       }
+      if (Object.keys(serializedIndicator.textParams ?? {}).length > 0) {
+        engine.updateIndicatorTextParams(id, serializedIndicator.textParams ?? {});
+      }
       const mergedColors = {
-        ...(indicatorColorDefaults[serializedIndicator.name] ?? {}),
+        ...(colorDefaults[serializedIndicator.name] ?? {}),
         ...serializedIndicator.colors,
       };
       for (const [outputKey, color] of Object.entries(mergedColors)) {
@@ -142,6 +159,38 @@ export default function ChartPage({ tabId }: ChartPageProps) {
       }
     }
   }, [indicatorColorDefaults]);
+
+  const applyChartState = useCallback((nextState: ChartState) => {
+    setPersisted(nextState);
+    setSymbol(nextState.symbol);
+    setTimeframe(nextState.timeframe);
+    setChartType(nextState.chartType);
+    setLinkChannel(nextState.linkChannel);
+    setStopperPx(nextState.stopperPx);
+    setIndicatorColorDefaults(nextState.indicatorColorDefaults);
+    setYScaleMode('auto');
+    setActiveScriptSources(nextState.scripts ?? []);
+    setActiveScripts(new Map());
+    setChartLayout(null);
+    setDragState(null);
+    setDraggingMouse(null);
+    setDragHoverPaneId(null);
+    const engine = engineRef.current;
+    if (!engine) {
+      restoredIndicatorsRef.current = false;
+      setActiveIndicators([]);
+      return;
+    }
+
+    restoredIndicatorsRef.current = true;
+    for (const indicator of [...engine.getActiveIndicators()]) {
+      engine.removeIndicator(indicator.id);
+    }
+    engine.clearAllScripts();
+    applySerializedIndicators(engine, nextState.indicators, nextState.indicatorColorDefaults);
+    setActiveIndicators([...engine.getActiveIndicators()]);
+    setChartLayout(engine.getLayout());
+  }, [applySerializedIndicators]);
 
   const serializedIndicatorsMatch = useCallback((
     serializedIndicators: PersistedChartIndicator[],
@@ -162,6 +211,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
       };
 
       return compareRecord(serializedIndicator.params, engineIndicator.params)
+        && compareRecord(serializedIndicator.textParams, engineIndicator.textParams)
         && compareRecord(serializedIndicator.colors, engineIndicator.colors)
         && compareRecord(serializedIndicator.lineWidths, engineIndicator.lineWidths)
         && compareRecord(serializedIndicator.lineStyles, engineIndicator.lineStyles);
@@ -248,18 +298,23 @@ export default function ChartPage({ tabId }: ChartPageProps) {
 
   useEffect(() => {
     const nextPersisted = tabId ? loadChartState(tabId) : null;
-    setPersisted(nextPersisted);
     const nextState = nextPersisted ?? defaultChartState;
+
+    setPersisted(nextPersisted);
     setSymbol(nextState.symbol);
     setTimeframe(nextState.timeframe);
     setChartType(nextState.chartType);
     setLinkChannel(nextState.linkChannel);
     setStopperPx(nextState.stopperPx);
     setIndicatorColorDefaults(nextState.indicatorColorDefaults);
+    setYScaleMode('auto');
     setActiveIndicators([]);
     setActiveScripts(new Map());
+    setActiveScriptSources(nextState.scripts ?? []);
     setChartLayout(null);
     setDragState(null);
+    setDraggingMouse(null);
+    setDragHoverPaneId(null);
     restoredIndicatorsRef.current = false;
 
     const engine = engineRef.current;
@@ -292,8 +347,9 @@ export default function ChartPage({ tabId }: ChartPageProps) {
       indicators: serializeIndicators(activeIndicators),
       stopperPx,
       indicatorColorDefaults,
+      scripts: activeScriptSources,
     });
-  }, [tabId, symbol, timeframe, chartType, linkChannel, activeIndicators, stopperPx, indicatorColorDefaults, serializeIndicators]);
+  }, [tabId, symbol, timeframe, chartType, linkChannel, activeIndicators, stopperPx, indicatorColorDefaults, activeScriptSources, serializeIndicators]);
 
   // Re-add persisted indicators once engine is ready
   useEffect(() => {
@@ -417,6 +473,13 @@ export default function ChartPage({ tabId }: ChartPageProps) {
     setActiveIndicators([...engine.getActiveIndicators()]);
   }, []);
 
+  const handleUpdateTextParams = useCallback((id: string, textParams: Record<string, string>) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.updateIndicatorTextParams(id, textParams);
+    setActiveIndicators([...engine.getActiveIndicators()]);
+  }, []);
+
   const handleToggleVisibility = useCallback((id: string) => {
     const engine = engineRef.current;
     if (!engine) return;
@@ -481,6 +544,11 @@ export default function ChartPage({ tabId }: ChartPageProps) {
         next.set(id, result);
         return next;
       });
+      setActiveScriptSources((prev) => {
+        const next = prev.filter((script) => script.id !== id);
+        next.push({ id, source: src });
+        return next;
+      });
     }
     return result;
   }, [bars]);
@@ -491,7 +559,75 @@ export default function ChartPage({ tabId }: ChartPageProps) {
       next.delete(id);
       return next;
     });
+    setActiveScriptSources((prev) => prev.filter((script) => script.id !== id));
   }, []);
+
+  useEffect(() => {
+    if (activeScriptSources.length === 0) {
+      setActiveScripts(new Map());
+      return;
+    }
+
+    const nextScripts = new Map<string, ScriptResult>();
+    for (const script of activeScriptSources) {
+      const result = interpretScript(script.source, bars);
+      if (result.errors.length === 0) {
+        nextScripts.set(script.id, result);
+      }
+    }
+    setActiveScripts(nextScripts);
+  }, [bars, activeScriptSources]);
+
+  useEffect(() => {
+    if (!chartNotice) return;
+    const timer = window.setTimeout(() => setChartNotice(null), 2400);
+    return () => window.clearTimeout(timer);
+  }, [chartNotice]);
+
+  const handleExportChart = useCallback(async () => {
+    const ok = await exportChartConfigToFile(chartStateToDailyIqChartConfig({
+      symbol,
+      timeframe,
+      chartType,
+      linkChannel,
+      indicators: serializeIndicators(activeIndicators),
+      stopperPx,
+      indicatorColorDefaults,
+      scripts: activeScriptSources,
+    }));
+    if (!ok) {
+      setChartNotice('Chart export failed.');
+    } else {
+      setChartNotice('Chart exported.');
+    }
+  }, [
+    symbol,
+    timeframe,
+    chartType,
+    linkChannel,
+    activeIndicators,
+    stopperPx,
+    indicatorColorDefaults,
+    activeScriptSources,
+    serializeIndicators,
+  ]);
+
+  const handleImportChart = useCallback(async () => {
+    const result = await importChartConfigFromFile();
+    if (result.status === 'canceled') {
+      return;
+    }
+    if (result.status !== 'success') {
+      setChartNotice(result.status === 'invalid' ? 'Invalid .diqc file.' : 'Chart import failed.');
+      return;
+    }
+    const importedState = dailyIqChartConfigToChartState(result.file.chart);
+    applyChartState(importedState);
+    if (tabId) {
+      saveChartState(tabId, importedState);
+    }
+    setChartNotice('Chart imported.');
+  }, [applyChartState, tabId]);
 
   const handleEngineReady = useCallback(() => {
     setEngineVersion(v => v + 1);
@@ -689,7 +825,17 @@ export default function ChartPage({ tabId }: ChartPageProps) {
         onZoomIn={() => engineRef.current?.zoomIn()}
         onZoomOut={() => engineRef.current?.zoomOut()}
         onZoomReset={() => engineRef.current?.resetZoom()}
+        onExportChart={() => { void handleExportChart(); }}
+        onImportChart={() => { void handleImportChart(); }}
       />
+
+      {chartNotice && (
+        <div className="pointer-events-none absolute left-1/2 top-[42px] z-20 -translate-x-1/2">
+          <div className="rounded-md border border-white/[0.08] bg-[#161B22] px-3 py-1.5 text-[10px] font-mono text-white/80 shadow-lg shadow-black/40">
+            {chartNotice}
+          </div>
+        </div>
+      )}
 
       <div ref={chartOverlayRef} className="flex flex-1 overflow-hidden relative">
         <ChartCanvas
@@ -977,6 +1123,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
           activeScripts={activeScripts}
           leftOffset={64}
           onUpdateParams={handleUpdateParams}
+          onUpdateTextParams={handleUpdateTextParams}
           onUpdateColor={handleUpdateColor}
           onUpdateLineWidth={handleUpdateLineWidth}
           onUpdateLineStyle={handleUpdateLineStyle}
@@ -1043,7 +1190,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
           }}
           onRunScript={handleRunScript}
           onStopScript={handleStopScript}
-          onScriptsChange={() => {}}
+          onScriptsChange={setActiveScriptSources}
           builtInViewer={builtInScriptViewer}
           onBuiltInViewerChange={setBuiltInScriptViewer}
           width={scriptEditorWidth}

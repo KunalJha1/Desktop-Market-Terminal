@@ -2,8 +2,9 @@
 
 import asyncio
 import logging
+import time
 from enum import Enum
-from typing import Callable
+from typing import Awaitable, Callable
 
 from ib_insync import IB
 
@@ -43,6 +44,7 @@ class ConnectionPool:
     def __init__(
         self,
         on_status_change: Callable[[int, str], None] | None = None,
+        probe_fn: Callable[[], Awaitable[tuple[str, int] | None]] | None = None,
     ):
         self._clients: dict[int, IB] = {}
         self._states: dict[int, ClientState] = {}
@@ -53,11 +55,29 @@ class ConnectionPool:
         self._host: str | None = None
         self._port: int | None = None
         self._on_status_change = on_status_change
+        self._probe_fn = probe_fn
         self._client_id_manager = IbkrClientIdManager(CLIENT_ID_START, CLIENT_ID_SCAN_LIMIT)
+        self._role_reconnect_meta: dict[str, dict] = {}
 
     def set_tws_address(self, host: str, port: int):
         self._host = host
         self._port = port
+
+    @staticmethod
+    def _now_ms() -> int:
+        return int(time.time() * 1000)
+
+    def _meta_for_role(self, role: str) -> dict:
+        meta = self._role_reconnect_meta.get(role)
+        if meta is None:
+            meta = {
+                "last_disconnect_at": None,
+                "last_reconnect_at": None,
+                "reconnect_attempts": 0,
+                "last_error": None,
+            }
+            self._role_reconnect_meta[role] = meta
+        return meta
 
     def get_state(self, client_id: int) -> ClientState:
         return self._states.get(client_id, ClientState.DISCONNECTED)
@@ -130,6 +150,10 @@ class ConnectionPool:
                     )
                     self._states[try_id] = ClientState.CONNECTED
                     self._notify(try_id)
+                    meta = self._meta_for_role(role)
+                    if meta["last_disconnect_at"] is not None:
+                        meta["last_reconnect_at"] = self._now_ms()
+                    meta["last_error"] = None
                     logger.info(
                         f"Client {try_id} connected to {self._host}:{self._port} for role {role}"
                     )
@@ -150,6 +174,8 @@ class ConnectionPool:
                             self._role_to_client_id.pop(role, None)
                         continue
 
+                    meta = self._meta_for_role(role)
+                    meta["last_error"] = str(e)
                     logger.error(f"Client {try_id} connection failed for role {role}: {e}")
                     raise
 
@@ -162,7 +188,15 @@ class ConnectionPool:
         self._notify(client_id)
         if not role:
             return
+        meta = self._meta_for_role(role)
+        meta["last_disconnect_at"] = self._now_ms()
+        meta["reconnect_attempts"] = 0
+        meta["last_error"] = None
         logger.warning(f"Client {client_id} for role {role} disconnected, scheduling reconnect")
+        # Clear the cached TWS address so the reconnect loop re-probes the port.
+        # This handles TWS restarting on a different port after a daily reset.
+        self._host = None
+        self._port = None
         task = self._reconnect_tasks.pop(role, None)
         if task:
             task.cancel()
@@ -172,14 +206,40 @@ class ConnectionPool:
     async def _reconnect_loop(self, role: str):
         delay = 1.0
         max_delay = 30.0
-        while role in self._role_to_client_id:
-            await asyncio.sleep(delay)
-            try:
-                logger.info(f"Reconnecting role {role} (delay={delay}s)")
-                await self.get_or_create(role)
-                return
-            except Exception:
-                delay = min(delay * 2, max_delay)
+        try:
+            while role in self._role_to_client_id:
+                meta = self._meta_for_role(role)
+                meta["reconnect_attempts"] += 1
+                await asyncio.sleep(delay)
+                # Re-probe TWS address if it was cleared on disconnect.
+                if self._host is None and self._probe_fn is not None:
+                    try:
+                        result = await self._probe_fn()
+                        if result:
+                            self._host, self._port = result
+                            logger.info(f"Re-probed TWS address: {self._host}:{self._port}")
+                        else:
+                            meta["last_error"] = "TWS probe returned no address"
+                            logger.warning("TWS probe returned no address, will retry")
+                            delay = min(delay * 2, max_delay)
+                            continue
+                    except Exception as exc:
+                        meta["last_error"] = str(exc)
+                        logger.warning(f"TWS probe failed during reconnect: {exc}")
+                        delay = min(delay * 2, max_delay)
+                        continue
+                try:
+                    logger.info(f"Reconnecting role {role} (delay={delay}s)")
+                    await self.get_or_create(role)
+                    return
+                except Exception as exc:
+                    meta["last_error"] = str(exc)
+                    delay = min(delay * 2, max_delay)
+        finally:
+            task = self._reconnect_tasks.get(role)
+            current = asyncio.current_task()
+            if task is current:
+                self._reconnect_tasks.pop(role, None)
 
     async def disconnect(self, key: int | str):
         if isinstance(key, str):
@@ -213,6 +273,22 @@ class ConnectionPool:
         roles = list(self._role_to_client_id.keys())
         for role in roles:
             await self.disconnect(role)
+
+    def get_role_status(self, role: str) -> dict:
+        client_id = self._role_to_client_id.get(role)
+        state = self._states.get(client_id, ClientState.DISCONNECTED) if client_id is not None else ClientState.DISCONNECTED
+        meta = self._meta_for_role(role)
+        return {
+            "connected": state == ClientState.CONNECTED,
+            "reconnecting": role in self._reconnect_tasks,
+            "state": state.value,
+            "host": self._host,
+            "port": self._port,
+            "lastDisconnectAt": meta["last_disconnect_at"],
+            "lastReconnectAt": meta["last_reconnect_at"],
+            "reconnectAttempts": meta["reconnect_attempts"],
+            "lastError": meta["last_error"],
+        }
 
     def _notify(self, client_id: int):
         if self._on_status_change:

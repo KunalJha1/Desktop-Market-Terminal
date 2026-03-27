@@ -52,30 +52,30 @@ function defaultSettings(): TwsSettings {
 
 export async function loadTwsSettings(): Promise<TwsSettings> {
   try {
+    const defaults = defaultSettings();
     const dir = await appDataDir();
     if (!(await exists(dir))) {
       await createDir(dir, { recursive: true });
-      return defaultSettings();
+      return defaults;
     }
     const content = await readTextFile(FILENAME, {
       dir: BaseDirectory.AppData,
     });
     const parsed = JSON.parse(content) as Partial<TwsSettings>;
-    if (typeof parsed.clientId !== "number") return defaultSettings();
     return {
-      tradingMode: parsed.tradingMode === "fa-group" ? "fa-group" : "account",
-      faGroup: typeof parsed.faGroup === "string" ? parsed.faGroup : "",
-      accountId: typeof parsed.accountId === "string" ? parsed.accountId : "",
+      tradingMode: parsed.tradingMode === "fa-group" ? "fa-group" : defaults.tradingMode,
+      faGroup: typeof parsed.faGroup === "string" ? parsed.faGroup : defaults.faGroup,
+      accountId: typeof parsed.accountId === "string" ? parsed.accountId : defaults.accountId,
       clientId:
-        parsed.clientId >= 1000 && parsed.clientId <= 9999
+        typeof parsed.clientId === "number" && parsed.clientId >= 1000 && parsed.clientId <= 9999
           ? parsed.clientId
-          : randomClientId(),
-      autoProbe: typeof parsed.autoProbe === "boolean" ? parsed.autoProbe : true,
+          : defaults.clientId,
+      autoProbe: typeof parsed.autoProbe === "boolean" ? parsed.autoProbe : defaults.autoProbe,
       intradayBackfillYears: normalizeIntradayBackfillYears(parsed.intradayBackfillYears),
       finnhubApiKey:
-        typeof parsed.finnhubApiKey === "string" ? parsed.finnhubApiKey : "",
+        typeof parsed.finnhubApiKey === "string" ? parsed.finnhubApiKey : defaults.finnhubApiKey,
       playbookMemory:
-        typeof parsed.playbookMemory === "string" ? parsed.playbookMemory : "",
+        typeof parsed.playbookMemory === "string" ? parsed.playbookMemory : defaults.playbookMemory,
       playbookMemoryEnabled:
         typeof parsed.playbookMemoryEnabled === "boolean"
           ? parsed.playbookMemoryEnabled

@@ -21,6 +21,46 @@ import {
 import { loadChartState, saveChartState } from "./chart-state";
 import { isTauriRuntime } from "./platform";
 
+function normalizeWorkspace(raw: WorkspaceFile): WorkspaceFile {
+  const tabs = raw.tabs.map((tab) => {
+    const layout = tab.layout ?? { columns: 12, rowHeight: 40, zoom: 0.9, components: [] };
+    const components = Array.isArray(layout.components) ? layout.components : [];
+    return {
+      ...tab,
+      locked: typeof tab.locked === "boolean" ? tab.locked : true,
+      linkChannel: tab.linkChannel ?? 1,
+      layout: {
+        columns: typeof layout.columns === "number" ? layout.columns : 12,
+        rowHeight: typeof layout.rowHeight === "number" ? layout.rowHeight : 40,
+        zoom: typeof layout.zoom === "number" ? layout.zoom : 0.9,
+        components: components.map((component) => ({
+          ...component,
+          x: typeof component.x === "number" ? component.x : 0,
+          y: typeof component.y === "number" ? component.y : 0,
+          w: typeof component.w === "number" ? component.w : 4,
+          h: typeof component.h === "number" ? component.h : 4,
+          linkChannel: component.linkChannel ?? 1,
+          config:
+            component.config && typeof component.config === "object"
+              ? component.config
+              : {},
+        })),
+      },
+    };
+  });
+
+  const fallbackActiveId = tabs[0]?.id ?? crypto.randomUUID();
+  const activeTabId = tabs.some((tab) => tab.id === raw.global?.activeTabId)
+    ? raw.global.activeTabId
+    : fallbackActiveId;
+
+  return {
+    ...raw,
+    global: { activeTabId },
+    tabs,
+  };
+}
+
 /**
  * Write any embedded chartState entries from a workspace into localStorage
  * so that ChartPage picks them up, then strip chartState from the tabs
@@ -110,36 +150,31 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const loaded = await loadWorkspace();
-      if (cancelled) return;
-      const raw = loaded ?? getDefaultWorkspace();
+      try {
+        const loaded = await loadWorkspace();
+        if (cancelled) return;
+        const raw = loaded ?? getDefaultWorkspace();
 
-      // Hydrate any embedded chart state into localStorage, then strip it
-      let ws = hydrateChartStates(raw);
+        // Hydrate any embedded chart state into localStorage, then strip it.
+        const ws = normalizeWorkspace(hydrateChartStates(raw));
+        setWorkspace(ws);
+        saveWorkspaceToLocalStorage(ws);
 
-      // Normalize: any tab or component with null linkChannel defaults to Link 1
-      ws = {
-        ...ws,
-        tabs: ws.tabs.map((t) => ({
-          ...t,
-          linkChannel: t.linkChannel ?? 1,
-          layout: {
-            ...t.layout,
-            components: t.layout.components.map((c) => ({
-              ...c,
-              linkChannel: c.linkChannel ?? 1,
-            })),
-          },
-        })),
-      };
-
-      setWorkspace(ws);
-      setReady(true);
-      saveWorkspaceToLocalStorage(ws);
-
-      // Write defaults on first launch
-      if (!loaded) {
-        await saveWorkspace(ws);
+        // Write defaults on first launch.
+        if (!loaded) {
+          await saveWorkspace(ws);
+        }
+      } catch (err) {
+        console.error("Failed to initialize workspace; restoring default workspace.", err);
+        const fallback = normalizeWorkspace(hydrateChartStates(getDefaultWorkspace()));
+        if (cancelled) return;
+        setWorkspace(fallback);
+        saveWorkspaceToLocalStorage(fallback);
+        await saveWorkspace(fallback);
+      } finally {
+        if (!cancelled) {
+          setReady(true);
+        }
       }
     })();
     return () => {

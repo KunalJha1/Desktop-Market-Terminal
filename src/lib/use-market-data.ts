@@ -12,8 +12,8 @@ const KNOWN_SYMBOLS: Set<string> = new Set([
 ]);
 
 const liveQuotes = new Map<string, QuoteData>();
-const storeListeners = new Set<() => void>();
-let storeVersion = 0;
+const symbolListeners = new Map<string, Set<() => void>>();
+let globalVersion = 0;
 const SNAPSHOT_POLL_MS = 5_000;
 const ACTIVE_SYMBOLS_REFRESH_MS = 90_000;
 const ACTIVE_SYMBOLS_STALE_MS = 90_000;
@@ -34,20 +34,79 @@ type PollerState = {
 
 const pollersByPort = new Map<number, PollerState>();
 
-function notifyStore() {
-  storeVersion++;
-  for (const listener of storeListeners) {
+function subscribeToSymbols(symbols: string[], listener: () => void): () => void {
+  const normalizedSymbols = normalizeSymbols(symbols);
+  if (normalizedSymbols.length === 0) {
+    return () => {};
+  }
+
+  for (const symbol of normalizedSymbols) {
+    let listeners = symbolListeners.get(symbol);
+    if (!listeners) {
+      listeners = new Set();
+      symbolListeners.set(symbol, listeners);
+    }
+    listeners.add(listener);
+  }
+
+  return () => {
+    for (const symbol of normalizedSymbols) {
+      const listeners = symbolListeners.get(symbol);
+      if (!listeners) continue;
+      listeners.delete(listener);
+      if (listeners.size === 0) {
+        symbolListeners.delete(symbol);
+      }
+    }
+  };
+}
+
+function notifySymbols(symbols: Iterable<string>) {
+  globalVersion++;
+  const listeners = new Set<() => void>();
+  for (const symbol of symbols) {
+    const symbolSet = symbolListeners.get(symbol);
+    if (!symbolSet) continue;
+    for (const listener of symbolSet) {
+      listeners.add(listener);
+    }
+  }
+  for (const listener of listeners) {
     listener();
   }
 }
 
-function subscribeToStore(listener: () => void): () => void {
-  storeListeners.add(listener);
-  return () => storeListeners.delete(listener);
-}
-
-function getStoreVersion(): number {
-  return storeVersion;
+function getSymbolsSnapshot(symbols: string[]): string {
+  const normalizedSymbols = normalizeSymbols(symbols);
+  if (normalizedSymbols.length === 0) {
+    return `empty:${globalVersion}`;
+  }
+  return normalizedSymbols
+    .map((symbol) => {
+      const quote = liveQuotes.get(symbol);
+      if (!quote) return `${symbol}:missing`;
+      return [
+        symbol,
+        quote.last,
+        quote.change,
+        quote.changePct,
+        quote.bid,
+        quote.ask,
+        quote.mid,
+        quote.volume,
+        quote.prevClose,
+        quote.high,
+        quote.low,
+        quote.open,
+        quote.spread,
+        quote.week52High,
+        quote.week52Low,
+        quote.trailingPE,
+        quote.forwardPE,
+        quote.marketCap,
+      ].join(":");
+    })
+    .join("|");
 }
 
 function normalizeSymbols(symbols: string[]): string[] {
@@ -247,8 +306,31 @@ export function updateLiveQuote(symbol: string, data: Record<string, unknown>): 
     forwardPE: _posNum(data.forwardPE) ?? existing?.forwardPE ?? null,
     marketCap: _posNum(data.marketCap) ?? existing?.marketCap ?? null,
   };
+  if (
+    existing &&
+    existing.name === quote.name &&
+    existing.last === quote.last &&
+    existing.change === quote.change &&
+    existing.changePct === quote.changePct &&
+    existing.bid === quote.bid &&
+    existing.mid === quote.mid &&
+    existing.ask === quote.ask &&
+    existing.open === quote.open &&
+    existing.high === quote.high &&
+    existing.low === quote.low &&
+    existing.prevClose === quote.prevClose &&
+    existing.volume === quote.volume &&
+    existing.spread === quote.spread &&
+    existing.week52High === quote.week52High &&
+    existing.week52Low === quote.week52Low &&
+    existing.trailingPE === quote.trailingPE &&
+    existing.forwardPE === quote.forwardPE &&
+    existing.marketCap === quote.marketCap
+  ) {
+    return;
+  }
   liveQuotes.set(symbol, quote);
-  notifyStore();
+  notifySymbols([symbol]);
 }
 
 export interface WatchlistDataResult {
@@ -263,7 +345,10 @@ export function useWatchlistData(symbols: string[]): WatchlistDataResult {
     return subscribeSymbols(sidecarPort, symbols);
   }, [sidecarPort, symbols]);
 
-  const version = useSyncExternalStore(subscribeToStore, getStoreVersion);
+  const snapshot = useSyncExternalStore(
+    (listener) => subscribeToSymbols(symbols, listener),
+    () => getSymbolsSnapshot(symbols),
+  );
 
   return useMemo(() => {
     const quotes = new Map<string, Quote>();
@@ -284,7 +369,7 @@ export function useWatchlistData(symbols: string[]): WatchlistDataResult {
     }
 
     return { quotes, status };
-  }, [symbols, version]);
+  }, [symbols, snapshot]);
 }
 
 export function useQuoteData(_quoteId: string, symbol: string): Quote | null {
@@ -295,9 +380,12 @@ export function useQuoteData(_quoteId: string, symbol: string): Quote | null {
     return subscribeSymbols(sidecarPort, [symbol]);
   }, [sidecarPort, symbol]);
 
-  const version = useSyncExternalStore(subscribeToStore, getStoreVersion);
+  const snapshot = useSyncExternalStore(
+    (listener) => subscribeToSymbols([symbol], listener),
+    () => getSymbolsSnapshot([symbol]),
+  );
 
   return useMemo(() => {
     return liveQuotes.get(symbol) ?? null;
-  }, [symbol, version]);
+  }, [symbol, snapshot]);
 }

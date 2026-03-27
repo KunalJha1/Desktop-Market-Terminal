@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import type { OHLCVBar } from '../types';
 import { getTimeframeMs, DEFAULT_BARS_VISIBLE } from '../constants';
-import { generateMockData } from '../mock-data';
 
 interface UseChartDataOptions {
   symbol: string;
@@ -14,7 +13,7 @@ type RawBarSize = '1m' | '5m' | '15m' | '1d';
 interface UseChartDataResult {
   bars: OHLCVBar[];
   loading: boolean;
-  source: 'tws' | 'yahoo' | 'cache' | 'mock';
+  source: 'tws' | 'yahoo' | 'cache' | 'offline';
   onViewportChange: (startIdx: number, endIdx: number) => void;
   pendingViewportShift: number;
   onViewportShiftApplied: () => void;
@@ -107,10 +106,11 @@ function getDisplayBars(rawBars: OHLCVBar[], rawBarSize: RawBarSize, timeframe: 
 }
 
 export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOptions): UseChartDataResult {
+  const normalizedSymbol = symbol.trim().toUpperCase();
   const [rawBars, setRawBars] = useState<OHLCVBar[]>([]);
   const [rawBarSize, setRawBarSize] = useState<RawBarSize>('1m');
   const [loading, setLoading] = useState(false);
-  const [source, setSource] = useState<'tws' | 'yahoo' | 'cache' | 'mock'>('mock');
+  const [source, setSource] = useState<'tws' | 'yahoo' | 'cache' | 'offline'>('offline');
   const [pendingViewportShift, setPendingViewportShift] = useState(0);
   const [updateMode, setUpdateMode] = useState<'full' | 'tail'>('full');
   const [tailChangeOffset, setTailChangeOffset] = useState(0);
@@ -143,8 +143,10 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
   // ── Daily: full fetch (unchanged behavior) ──────────────────────────
   // ── Intraday: windowed fetch with limit ─────────────────────────────
   useEffect(() => {
-    if (!sidecarPort) {
-      setSource('mock');
+    if (!sidecarPort || !normalizedSymbol) {
+      setRawBars([]);
+      setSource('offline');
+      setLoading(false);
       return;
     }
 
@@ -159,7 +161,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
     async function fetchBars() {
       try {
         const url = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
-        url.searchParams.set('symbol', symbol);
+        url.searchParams.set('symbol', normalizedSymbol);
         url.searchParams.set('bar_size', requestConfig.barSizeParam);
         url.searchParams.set('duration', requestConfig.duration);
 
@@ -181,14 +183,16 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
           setSource((payload.source as 'tws' | 'yahoo' | 'cache') || 'yahoo');
         } else {
           setRawBars([]);
-          setSource('mock');
+          setSource('offline');
         }
         setLoading(false);
       } catch {
         if (!cancelled) {
           // Don't clear bars on error — keep showing existing data.
           // A transient network failure shouldn't reset the viewport.
-          setSource('mock');
+          if (rawBarsRef.current.length === 0) {
+            setSource('offline');
+          }
           setLoading(false);
         }
       }
@@ -200,7 +204,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
       if (panFetchingRef.current) return;
       try {
         const url = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
-        url.searchParams.set('symbol', symbol);
+        url.searchParams.set('symbol', normalizedSymbol);
         url.searchParams.set('bar_size', requestConfig.barSizeParam);
         const currentBars = rawBarsRef.current;
         if (currentBars.length > 0) {
@@ -271,7 +275,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
       }
       intradayPollPendingRef.current = null;
     };
-  }, [symbol, sidecarPort, timeframe, useDaily, requestConfig]);
+  }, [normalizedSymbol, sidecarPort, timeframe, useDaily, requestConfig]);
 
   // ── Pan-triggered fetch: load older bars when scrolling left ─────────
   const onViewportChange = useCallback((startIdx: number, endIdx: number) => {
@@ -285,7 +289,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
     }
 
     // Only do pan-fetches for intraday
-    if (useDaily || !sidecarPort) return;
+    if (useDaily || !sidecarPort || !normalizedSymbol) return;
 
     // If user is near the left edge of cached bars, fetch older data
     const bufferThreshold = Math.max(10, (endIdx - startIdx) * 0.25);
@@ -303,7 +307,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
         panFetchingRef.current = true;
         try {
           const url = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
-          url.searchParams.set('symbol', symbol);
+          url.searchParams.set('symbol', normalizedSymbol);
           url.searchParams.set('bar_size', requestConfig.barSizeParam);
 
           const curBars = rawBarsRef.current;
@@ -345,17 +349,14 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
         }
       }, PAN_FETCH_DEBOUNCE);
     }
-  }, [useDaily, sidecarPort, symbol, initialLimit, timeframe, requestConfig]);
+  }, [useDaily, sidecarPort, normalizedSymbol, initialLimit, timeframe, requestConfig]);
 
   const bars = useMemo(() => {
     if (rawBars.length > 0) {
       return getDisplayBars(rawBars, rawBarSize, timeframe);
     }
-    if (!sidecarPort) {
-      return generateMockData(symbol, timeframe, 2000);
-    }
     return [];
-  }, [rawBars, rawBarSize, timeframe, symbol, sidecarPort]);
+  }, [rawBars, rawBarSize, timeframe]);
 
   displayBarsRef.current = bars;
 

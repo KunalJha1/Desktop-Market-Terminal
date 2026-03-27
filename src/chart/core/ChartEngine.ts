@@ -505,6 +505,7 @@ export class ChartEngine {
       name,
       paneId,
       params: { ...meta.defaultParams },
+      textParams: { ...(meta.defaultTextParams ?? {}) },
       colors,
       lineWidths,
       lineStyles,
@@ -526,6 +527,14 @@ export class ChartEngine {
     const ind = this.activeIndicators.find(i => i.id === id);
     if (!ind) return;
     ind.params = { ...ind.params, ...params };
+    this.computeSingleIndicator(ind);
+    this.markDirty();
+  }
+
+  updateIndicatorTextParams(id: string, textParams: Record<string, string>) {
+    const ind = this.activeIndicators.find(i => i.id === id);
+    if (!ind) return;
+    ind.textParams = { ...ind.textParams, ...textParams };
     this.computeSingleIndicator(ind);
     this.markDirty();
   }
@@ -857,6 +866,7 @@ export class ChartEngine {
     for (const ind of this.activeIndicators) {
       if (
         tailOnly &&
+        ind.name !== 'FVG Momentum' &&
         changeOffset > 0 &&
         changeOffset < this.bars.length &&
         ind.data?.length
@@ -869,7 +879,7 @@ export class ChartEngine {
   }
 
   private computeSingleIndicator(ind: ActiveIndicator) {
-    ind.data = computeIndicator(ind.name, this.bars, ind.params);
+    ind.data = computeIndicator(ind.name, this.bars, { ...ind.params, ...ind.textParams } as Record<string, number>);
   }
 
   // --- Render ---
@@ -2110,7 +2120,7 @@ export class ChartEngine {
     if (ind.name === 'Liquidity Sweep Signal') {
       this.renderLiquiditySweepBox(ind, toY, clipTop, clipBottom);
     }
-    if (ind.name === 'FVG Momentum') {
+    if (ind.name === 'FVG Momentum' || ind.name === 'FVG') {
       this.renderFvgBoxes(ind, toY, clipTop, clipBottom);
     }
 
@@ -2298,11 +2308,14 @@ export class ChartEngine {
     clipBottom: number,
   ) {
     const thresholdPercent = Math.max(0, ind.params.thresholdPercent ?? 0);
-    const zones = detectActiveFvgZones(this.bars, thresholdPercent, 80, true);
+    const extendBars = Math.max(5, Math.round(ind.params.extendBars ?? 80));
+    const requireNextBarReaction = (ind.params.requireNextBarReaction ?? 1) !== 0;
+    const sourceTimeframe = ind.textParams.sourceTimeframe ?? '';
+    const zones = detectActiveFvgZones(this.bars, thresholdPercent, extendBars, requireNextBarReaction, sourceTimeframe);
 
     for (const zone of zones) {
-      const leftX = this.viewport.barToPixelX(zone.leftIndex) - (this.viewport.getBarSlotWidth(zone.leftIndex) * 0.5);
-      const rightX = this.viewport.barToPixelX(zone.rightIndex) + (this.viewport.getBarSlotWidth(zone.rightIndex) * 0.5);
+      const leftX = this.timeToPixelX(zone.leftTime);
+      const rightX = this.timeToPixelX(zone.rightTime);
       const yTop = toY(zone.top);
       const yBottom = toY(zone.bottom);
       const rectTop = Math.max(clipTop, Math.min(yTop, yBottom));
@@ -2311,12 +2324,70 @@ export class ChartEngine {
       if (rectHeight <= 0) continue;
 
       const baseColor = zone.isBull
-        ? (ind.colors?.bullTop ?? indicatorRegistry[ind.name].outputs[0].color)
-        : (ind.colors?.bearTop ?? indicatorRegistry[ind.name].outputs[2].color);
+        ? (
+          ind.colors?.bullZone
+          ?? ind.colors?.bullTop
+          ?? indicatorRegistry[ind.name].outputs.find((output) => output.key === 'bullZone' || output.key === 'bullTop')?.color
+          ?? '#089981'
+        )
+        : (
+          ind.colors?.bearZone
+          ?? ind.colors?.bearTop
+          ?? indicatorRegistry[ind.name].outputs.find((output) => output.key === 'bearZone' || output.key === 'bearTop')?.color
+          ?? '#f23645'
+        );
 
       this.renderer.rect(leftX, rectTop, Math.max(1, rightX - leftX), rectHeight, this.withAlpha(baseColor, 0.18));
       this.renderer.rectStroke(leftX, rectTop, Math.max(1, rightX - leftX), rectHeight, this.withAlpha(baseColor, 0.55), 1);
     }
+  }
+
+  private timeToPixelX(timeMs: number): number {
+    const len = this.bars.length;
+    if (len === 0) return this.viewport.chartLeft;
+
+    const estimateLastMs = () => {
+      if (len > 1) {
+        const diff = this.bars[len - 1].time - this.bars[len - 2].time;
+        if (Number.isFinite(diff) && diff > 0) return diff;
+      }
+      return getTimeframeMs(String(this.scaleX.timeframe));
+    };
+
+    if (len === 1) {
+      const barMs = estimateLastMs() || 60_000;
+      const frac = (timeMs - this.bars[0].time) / barMs;
+      return this.viewport.barToPixelX(frac);
+    }
+
+    if (timeMs <= this.bars[0].time) {
+      const firstMs = this.bars[1].time - this.bars[0].time || estimateLastMs() || 60_000;
+      return this.viewport.barToPixelX((timeMs - this.bars[0].time) / firstMs);
+    }
+
+    if (timeMs >= this.bars[len - 1].time) {
+      const lastMs = estimateLastMs() || 60_000;
+      return this.viewport.barToPixelX((len - 1) + ((timeMs - this.bars[len - 1].time) / lastMs));
+    }
+
+    let lo = 0;
+    let hi = len - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const midTime = this.bars[mid].time;
+      if (midTime === timeMs) return this.viewport.barToPixelX(mid);
+      if (midTime < timeMs) lo = mid + 1;
+      else hi = mid - 1;
+    }
+
+    const lower = Math.max(0, hi);
+    const upper = Math.min(len - 1, lo);
+    if (lower === upper) return this.viewport.barToPixelX(lower);
+
+    const lowerTime = this.bars[lower].time;
+    const upperTime = this.bars[upper].time;
+    const frac = upperTime === lowerTime ? 0 : (timeMs - lowerTime) / (upperTime - lowerTime);
+    return this.viewport.barToPixelX(lower + frac);
   }
 
   private renderTechnicalScoreSeries(
@@ -2372,7 +2443,7 @@ export class ChartEngine {
     if (value >= 50) {
       const intensity = Math.min(1, Math.max(0, (value - 50) / 50));
       const alpha = 0.12 + intensity * 0.28;
-      return `rgba(16, 58, 138, ${alpha.toFixed(3)})`;
+      return `rgba(0, 200, 83, ${alpha.toFixed(3)})`;
     }
     const intensity = Math.min(1, Math.max(0, (50 - value) / 50));
     const alpha = 0.12 + intensity * 0.28;
@@ -2382,8 +2453,8 @@ export class ChartEngine {
   private technicalScoreStrokeColor(value: number): string {
     if (value >= 50) {
       const intensity = Math.min(1, Math.max(0, (value - 50) / 50));
-      const channel = Math.round(96 + intensity * 74);
-      return `rgb(29, 78, ${channel})`;
+      const channel = Math.round(128 + intensity * 72);
+      return `rgb(0, ${channel}, 53)`;
     }
     const intensity = Math.min(1, Math.max(0, (50 - value) / 50));
     const greenBlue = Math.round(82 - intensity * 52);

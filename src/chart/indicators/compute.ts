@@ -78,6 +78,7 @@ import { computeDailyIQTechScoreStrategy } from './overlays/dailyIQTechScoreStra
 import { computeStructureBreaks } from './overlays/structureBreaks';
 import { computeLiquidityLevelLines } from './overlays/liquidityLevels';
 import { computeLiquiditySweeps } from './overlays/liquiditySweeps';
+import { computeFVG } from './overlays/fvg';
 import { computeFVGMomentum } from './overlays/fvgMomentum';
 import { computeGapZones } from './overlays/gapZones';
 import { computeRSI } from './oscillators/rsi';
@@ -97,6 +98,7 @@ import { computeLinearRegressionSentiment } from './oscillators/linearRegression
 import { computeMarketStructureSentiment } from './oscillators/marketStructure';
 import { computeMarketSentiment } from './oscillators/marketSentiment';
 import { computeTrendAngle } from './oscillators/trendAngle';
+import { computeProbabilityEngine } from './oscillators/probabilityEngine';
 import { computeOBV } from './volume/obv';
 import { computeVolume } from './volume/volume';
 import { computeVolumeProfile } from './volume/volumeProfile';
@@ -123,6 +125,7 @@ const computeFns: Record<string, (bars: OHLCVBar[], params: Record<string, numbe
   'Structure Breaks': computeStructureBreaks,
   'Liquidity Levels': computeLiquidityLevelLines,
   'Liquidity Sweep Signal': computeLiquiditySweeps,
+  FVG: computeFVG,
   'FVG Momentum': computeFVGMomentum,
   'Gap Zones': computeGapZones,
   RSI: computeRSI,
@@ -144,6 +147,7 @@ const computeFns: Record<string, (bars: OHLCVBar[], params: Record<string, numbe
   'MACD Crossover': computeMACDCrossover,
   'Market Sentiment Signal': computeMarketSentimentStrategy,
   'Trend Angle': computeTrendAngle,
+  'Probability Engine': computeProbabilityEngine,
   ADL: computeADL,
   'ADL Crossover': computeADLCrossover,
   Volume: computeVolume,

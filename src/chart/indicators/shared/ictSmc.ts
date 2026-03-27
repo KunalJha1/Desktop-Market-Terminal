@@ -1,4 +1,5 @@
 import type { OHLCVBar } from '../../types';
+import { getTimeframeMs } from '../../constants';
 
 export function sma(values: number[], period: number): number[] {
   const result = new Array<number>(values.length).fill(NaN);
@@ -164,6 +165,8 @@ export function computeLiquidityLevels(bars: OHLCVBar[]) {
 export function detectFvg(
   bars: OHLCVBar[],
   thresholdPercent: number,
+  requireNextBarReaction: boolean = true,
+  sourceTimeframe: string = '',
 ): {
   bullTop: number[];
   bullBottom: number[];
@@ -174,124 +177,116 @@ export function detectFvg(
   bearPullback: number[];
   bearReject: number[];
 } {
+  const simulation = simulateFvgOnChart(bars, thresholdPercent, 80, requireNextBarReaction, sourceTimeframe);
   const len = bars.length;
-  const bullTop = new Array<number>(len).fill(NaN);
-  const bullBottom = new Array<number>(len).fill(NaN);
-  const bearTop = new Array<number>(len).fill(NaN);
-  const bearBottom = new Array<number>(len).fill(NaN);
-  const bullPullback = new Array<number>(len).fill(NaN);
-  const bullReject = new Array<number>(len).fill(NaN);
-  const bearPullback = new Array<number>(len).fill(NaN);
-  const bearReject = new Array<number>(len).fill(NaN);
-
-  let lastBullTop = NaN;
-  let lastBullBottom = NaN;
-  let lastBearTop = NaN;
-  let lastBearBottom = NaN;
-  let lastBullSize = NaN;
-  let lastBearSize = NaN;
-  const threshold = thresholdPercent / 100;
-  const closes = bars.map((bar) => bar.close);
-  const ema20 = ema(closes, 20);
-  const ema200 = ema(closes, 200);
-
-  for (let i = 2; i < len; i += 1) {
-    const bullGap = bars[i].low > bars[i - 2].high
-      && bars[i - 1].close > bars[i - 2].high
-      && ((bars[i].low - bars[i - 2].high) / bars[i - 2].high) > threshold;
-
-    const bearGap = bars[i].high < bars[i - 2].low
-      && bars[i - 1].close < bars[i - 2].low
-      && ((bars[i - 2].low - bars[i].high) / bars[i].high) > threshold;
-
-    if (bullGap) {
-      const nextBullTop = Math.max(bars[i].low, bars[i - 2].high);
-      const nextBullBottom = Math.min(bars[i].low, bars[i - 2].high);
-      const nextBullSize = nextBullTop - nextBullBottom;
-      if (Number.isNaN(lastBullTop) || Number.isNaN(lastBullBottom) || nextBullSize >= lastBullSize) {
-        lastBullTop = nextBullTop;
-        lastBullBottom = nextBullBottom;
-        lastBullSize = nextBullSize;
-      }
-    }
-    if (bearGap) {
-      const nextBearTop = Math.max(bars[i - 2].low, bars[i].high);
-      const nextBearBottom = Math.min(bars[i - 2].low, bars[i].high);
-      const nextBearSize = nextBearTop - nextBearBottom;
-      if (Number.isNaN(lastBearTop) || Number.isNaN(lastBearBottom) || nextBearSize >= lastBearSize) {
-        lastBearTop = nextBearTop;
-        lastBearBottom = nextBearBottom;
-        lastBearSize = nextBearSize;
-      }
-    }
-
-    if (!Number.isNaN(lastBullBottom) && bars[i].low <= lastBullBottom) {
-      lastBullTop = NaN;
-      lastBullBottom = NaN;
-      lastBullSize = NaN;
-    }
-
-    if (!Number.isNaN(lastBearTop) && bars[i].high >= lastBearTop) {
-      lastBearTop = NaN;
-      lastBearBottom = NaN;
-      lastBearSize = NaN;
-    }
-
-    bullTop[i] = lastBullTop;
-    bullBottom[i] = lastBullBottom;
-    bearTop[i] = lastBearTop;
-    bearBottom[i] = lastBearBottom;
-
-    const bullMomentum = !Number.isNaN(ema20[i]) && !Number.isNaN(ema200[i]) && ema20[i] > ema200[i] && bars[i].close > ema20[i];
-    const bearMomentum = !Number.isNaN(ema20[i]) && !Number.isNaN(ema200[i]) && ema20[i] < ema200[i] && bars[i].close < ema20[i];
-
-    if (!Number.isNaN(lastBullTop) && !Number.isNaN(lastBullBottom) && bullMomentum) {
-      const inZone = bars[i].high >= lastBullBottom && bars[i].low <= lastBullTop;
-      if (inZone && (bars[i].close > bars[i].open || bars[i].close > bars[i - 1].close)) {
-        bullPullback[i] = bars[i].low;
-      }
-      if (inZone && bars[i].close > lastBullTop) {
-        bullReject[i] = bars[i].low;
-      }
-    }
-
-    if (!Number.isNaN(lastBearTop) && !Number.isNaN(lastBearBottom) && bearMomentum) {
-      const inZone = bars[i].high >= lastBearBottom && bars[i].low <= lastBearTop;
-      if (inZone && (bars[i].close < bars[i].open || bars[i].close < bars[i - 1].close)) {
-        bearPullback[i] = bars[i].high;
-      }
-      if (inZone && bars[i].close < lastBearBottom) {
-        bearReject[i] = bars[i].high;
-      }
-    }
-  }
-
-  return { bullTop, bullBottom, bearTop, bearBottom, bullPullback, bullReject, bearPullback, bearReject };
+  return {
+    bullTop: simulation.bullTop.slice(0, len),
+    bullBottom: simulation.bullBottom.slice(0, len),
+    bearTop: simulation.bearTop.slice(0, len),
+    bearBottom: simulation.bearBottom.slice(0, len),
+    bullPullback: simulation.bullPullback.slice(0, len),
+    bullReject: simulation.bullReject.slice(0, len),
+    bearPullback: simulation.bearPullback.slice(0, len),
+    bearReject: simulation.bearReject.slice(0, len),
+  };
 }
 
 export interface ActiveFvgZone {
   leftIndex: number;
   rightIndex: number;
+  leftTime: number;
+  rightTime: number;
   top: number;
   bottom: number;
   isBull: boolean;
 }
 
-export function detectActiveFvgZones(
-  bars: OHLCVBar[],
-  thresholdPercent: number,
-  extendBars: number = 80,
-  requireNextBarReaction: boolean = true,
-): ActiveFvgZone[] {
-  const zones: Array<{
-    top: number;
-    bottom: number;
-    isBull: boolean;
-    createdIndex: number;
-    touched: boolean;
-    touchIndex: number;
-  }> = [];
+interface FvgZoneState {
+  top: number;
+  bottom: number;
+  isBull: boolean;
+  createdIndex: number;
+  createdTime: number;
+  rightTime: number;
+  touched: boolean;
+  touchIndex: number;
+}
+
+interface SourceFvgEvent {
+  top: number;
+  bottom: number;
+  isBull: boolean;
+  createdTime: number;
+  sourceIndex: number;
+}
+
+function normalizeFvgTimeframe(sourceTimeframe: string, bars: OHLCVBar[]): string {
+  const trimmed = sourceTimeframe.trim();
+  if (!trimmed || bars.length < 2) return '';
+  const estimatedChartMs = estimateBarMs(bars, bars.length - 1);
+  const requestedMs = getTimeframeMs(trimmed);
+  return requestedMs <= estimatedChartMs ? '' : trimmed;
+}
+
+function bucketForTimeframe(tsMs: number, timeframe: string): number {
+  if (timeframe === '1W') {
+    const mondayOffsetMs = 4 * 86_400_000;
+    return Math.floor((tsMs - mondayOffsetMs) / 604_800_000) * 604_800_000 + mondayOffsetMs;
+  }
+  if (timeframe === '1M' || timeframe === '3M' || timeframe === '6M' || timeframe === '12M') {
+    const d = new Date(tsMs);
+    const monthsPerBucket = timeframe === '3M' ? 3 : timeframe === '6M' ? 6 : timeframe === '12M' ? 12 : 1;
+    const bucketMonth = Math.floor(d.getUTCMonth() / monthsPerBucket) * monthsPerBucket;
+    return Date.UTC(d.getUTCFullYear(), bucketMonth, 1);
+  }
+  const ms = getTimeframeMs(timeframe);
+  return Math.floor(tsMs / ms) * ms;
+}
+
+function resampleBarsForTimeframe(bars: OHLCVBar[], timeframe: string): OHLCVBar[] {
+  if (!timeframe) return bars;
+  const result: OHLCVBar[] = [];
+  let current: OHLCVBar | null = null;
+  let currentBucket = -1;
+  let bucketHasSynthetic = false;
+
+  for (const bar of bars) {
+    const bucket = bucketForTimeframe(bar.time, timeframe);
+    if (bucket !== currentBucket || !current) {
+      if (current) {
+        if (bucketHasSynthetic) current.synthetic = true;
+        result.push(current);
+      }
+      currentBucket = bucket;
+      bucketHasSynthetic = !!bar.synthetic;
+      current = {
+        time: bucket,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        volume: bar.volume,
+      };
+    } else {
+      current.high = Math.max(current.high, bar.high);
+      current.low = Math.min(current.low, bar.low);
+      current.close = bar.close;
+      current.volume += bar.volume;
+      if (bar.synthetic) bucketHasSynthetic = true;
+    }
+  }
+
+  if (current) {
+    if (bucketHasSynthetic) current.synthetic = true;
+    result.push(current);
+  }
+
+  return result;
+}
+
+function buildSourceFvgEvents(bars: OHLCVBar[], thresholdPercent: number): SourceFvgEvent[] {
   const threshold = thresholdPercent / 100;
+  const events: SourceFvgEvent[] = [];
 
   for (let i = 2; i < bars.length; i += 1) {
     const bullGap = bars[i].low > bars[i - 2].high
@@ -303,55 +298,206 @@ export function detectActiveFvgZones(
       && ((bars[i - 2].low - bars[i].high) / bars[i].high) > threshold;
 
     if (bullGap) {
-      zones.push({
+      events.push({
         top: Math.max(bars[i].low, bars[i - 2].high),
         bottom: Math.min(bars[i].low, bars[i - 2].high),
         isBull: true,
-        createdIndex: i,
-        touched: false,
-        touchIndex: -1,
+        createdTime: bars[i].time,
+        sourceIndex: i,
       });
     }
-
     if (bearGap) {
-      zones.push({
+      events.push({
         top: Math.max(bars[i - 2].low, bars[i].high),
         bottom: Math.min(bars[i - 2].low, bars[i].high),
         isBull: false,
-        createdIndex: i,
-        touched: false,
-        touchIndex: -1,
+        createdTime: bars[i].time,
+        sourceIndex: i,
       });
     }
   }
 
-  const active = [...zones];
-  for (let i = 0; i < bars.length; i += 1) {
-    for (let zi = active.length - 1; zi >= 0; zi -= 1) {
-      const zone = active[zi];
-      if (i <= zone.createdIndex) continue;
+  return events;
+}
 
-      const touchedNow = bars[i].low <= zone.top && bars[i].high >= zone.bottom;
+function estimateBarMs(bars: OHLCVBar[], index: number): number {
+  const prev = index > 0 ? bars[index].time - bars[index - 1].time : NaN;
+  if (Number.isFinite(prev) && prev > 0) return prev;
+  const next = index + 1 < bars.length ? bars[index + 1].time - bars[index].time : NaN;
+  if (Number.isFinite(next) && next > 0) return next;
+  return 60_000;
+}
+
+function findSourceIndexForTime(sourceBars: OHLCVBar[], time: number): number {
+  let lo = 0;
+  let hi = sourceBars.length - 1;
+  let answer = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (sourceBars[mid].time <= time) {
+      answer = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return answer;
+}
+
+function isLastChartBarForSourceIndex(chartBars: OHLCVBar[], sourceBars: OHLCVBar[], chartIndex: number, sourceIndex: number): boolean {
+  const nextSourceTime = sourceIndex + 1 < sourceBars.length ? sourceBars[sourceIndex + 1].time : Infinity;
+  const nextChartTime = chartIndex + 1 < chartBars.length ? chartBars[chartIndex + 1].time : Infinity;
+  return nextChartTime >= nextSourceTime;
+}
+
+function simulateFvgOnChart(
+  chartBars: OHLCVBar[],
+  thresholdPercent: number,
+  extendBars: number,
+  requireNextBarReaction: boolean,
+  sourceTimeframe: string = '',
+): {
+  bullTop: number[];
+  bullBottom: number[];
+  bearTop: number[];
+  bearBottom: number[];
+  bullPullback: number[];
+  bullReject: number[];
+  bearPullback: number[];
+  bearReject: number[];
+  activeZones: ActiveFvgZone[];
+} {
+  const len = chartBars.length;
+  const bullTop = new Array<number>(len).fill(NaN);
+  const bullBottom = new Array<number>(len).fill(NaN);
+  const bearTop = new Array<number>(len).fill(NaN);
+  const bearBottom = new Array<number>(len).fill(NaN);
+  const bullPullback = new Array<number>(len).fill(NaN);
+  const bullReject = new Array<number>(len).fill(NaN);
+  const bearPullback = new Array<number>(len).fill(NaN);
+  const bearReject = new Array<number>(len).fill(NaN);
+
+  if (len === 0) {
+    return { bullTop, bullBottom, bearTop, bearBottom, bullPullback, bullReject, bearPullback, bearReject, activeZones: [] };
+  }
+
+  const normalizedTf = normalizeFvgTimeframe(sourceTimeframe, chartBars);
+  const sourceBars = normalizedTf ? resampleBarsForTimeframe(chartBars, normalizedTf) : chartBars;
+  const sourceEvents = buildSourceFvgEvents(sourceBars, thresholdPercent);
+  const eventsBySourceIndex = new Map<number, SourceFvgEvent[]>();
+  for (const event of sourceEvents) {
+    const bucket = eventsBySourceIndex.get(event.sourceIndex);
+    if (bucket) bucket.push(event);
+    else eventsBySourceIndex.set(event.sourceIndex, [event]);
+  }
+
+  const closes = chartBars.map((bar) => bar.close);
+  const ema20 = ema(closes, 20);
+  const ema200 = ema(closes, 200);
+  const zones: FvgZoneState[] = [];
+
+  for (let i = 0; i < len; i += 1) {
+    const sourceIndex = findSourceIndexForTime(sourceBars, chartBars[i].time);
+    if (sourceIndex >= 0 && isLastChartBarForSourceIndex(chartBars, sourceBars, i, sourceIndex)) {
+      for (const event of eventsBySourceIndex.get(sourceIndex) ?? []) {
+        zones.push({
+          top: event.top,
+          bottom: event.bottom,
+          isBull: event.isBull,
+          createdIndex: i,
+          createdTime: event.createdTime,
+          rightTime: chartBars[i].time + (estimateBarMs(chartBars, i) * extendBars),
+          touched: false,
+          touchIndex: -1,
+        });
+      }
+    }
+
+    const bullMomentum = !Number.isNaN(ema20[i]) && !Number.isNaN(ema200[i]) && ema20[i] > ema200[i] && chartBars[i].close > ema20[i];
+    const bearMomentum = !Number.isNaN(ema20[i]) && !Number.isNaN(ema200[i]) && ema20[i] < ema200[i] && chartBars[i].close < ema20[i];
+
+    for (const zone of zones) {
+      const inZone = chartBars[i].high >= zone.bottom && chartBars[i].low <= zone.top;
+      const closeInZone = chartBars[i].close <= zone.top && chartBars[i].close >= zone.bottom;
+
+      if (zone.isBull && bullMomentum) {
+        if ((inZone || closeInZone) && (chartBars[i].close > chartBars[i].open || (i > 0 && chartBars[i].close > chartBars[i - 1].close))) {
+          bullPullback[i] = chartBars[i].low;
+        }
+        if (inZone && chartBars[i].close > zone.top) {
+          bullReject[i] = chartBars[i].low;
+        }
+      }
+
+      if (!zone.isBull && bearMomentum) {
+        if ((inZone || closeInZone) && (chartBars[i].close < chartBars[i].open || (i > 0 && chartBars[i].close < chartBars[i - 1].close))) {
+          bearPullback[i] = chartBars[i].high;
+        }
+        if (inZone && chartBars[i].close < zone.bottom) {
+          bearReject[i] = chartBars[i].high;
+        }
+      }
+    }
+
+    for (let zi = zones.length - 1; zi >= 0; zi -= 1) {
+      const zone = zones[zi];
+      const touchedNow = chartBars[i].low <= zone.top && chartBars[i].high >= zone.bottom && chartBars[i].time > zone.createdTime;
       if (touchedNow && !zone.touched) {
         zone.touched = true;
         zone.touchIndex = i;
       }
 
       const afterTouchOk = zone.touched && (!requireNextBarReaction || i > zone.touchIndex);
-      const bullUsed = zone.isBull && afterTouchOk && bars[i].close > zone.top;
-      const bearUsed = !zone.isBull && afterTouchOk && bars[i].close < zone.bottom;
-
+      const bullUsed = zone.isBull && afterTouchOk && chartBars[i].close > zone.top;
+      const bearUsed = !zone.isBull && afterTouchOk && chartBars[i].close < zone.bottom;
       if (bullUsed || bearUsed) {
-        active.splice(zi, 1);
+        zones.splice(zi, 1);
       }
     }
+
+    let latestBull: FvgZoneState | undefined;
+    let latestBear: FvgZoneState | undefined;
+    for (const zone of zones) {
+      if (zone.isBull) {
+        if (!latestBull || zone.createdTime >= latestBull.createdTime) latestBull = zone;
+      } else if (!latestBear || zone.createdTime >= latestBear.createdTime) {
+        latestBear = zone;
+      }
+    }
+
+    bullTop[i] = latestBull?.top ?? NaN;
+    bullBottom[i] = latestBull?.bottom ?? NaN;
+    bearTop[i] = latestBear?.top ?? NaN;
+    bearBottom[i] = latestBear?.bottom ?? NaN;
   }
 
-  return active.map((zone) => ({
-    leftIndex: zone.createdIndex,
-    rightIndex: Math.min(bars.length - 1, zone.createdIndex + extendBars),
-    top: zone.top,
-    bottom: zone.bottom,
-    isBull: zone.isBull,
-  }));
+  return {
+    bullTop,
+    bullBottom,
+    bearTop,
+    bearBottom,
+    bullPullback,
+    bullReject,
+    bearPullback,
+    bearReject,
+    activeZones: zones.map((zone) => ({
+      leftIndex: zone.createdIndex,
+      rightIndex: Math.min(len - 1, zone.createdIndex + extendBars),
+      leftTime: zone.createdTime,
+      rightTime: zone.rightTime,
+      top: zone.top,
+      bottom: zone.bottom,
+      isBull: zone.isBull,
+    })),
+  };
+}
+
+export function detectActiveFvgZones(
+  bars: OHLCVBar[],
+  thresholdPercent: number,
+  extendBars: number = 80,
+  requireNextBarReaction: boolean = true,
+  sourceTimeframe: string = '',
+): ActiveFvgZone[] {
+  return simulateFvgOnChart(bars, thresholdPercent, extendBars, requireNextBarReaction, sourceTimeframe).activeZones;
 }

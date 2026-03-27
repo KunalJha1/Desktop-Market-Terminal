@@ -32,6 +32,8 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
     port,
     clientId,
     connectionType,
+    backendState,
+    backendMessage,
     settings,
     updateSettings,
     probe,
@@ -138,6 +140,10 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
       : status === "probing"
         ? "Probing ports..."
         : "Disconnected";
+  const backendStatusLabel =
+    backendState === "healthy"
+      ? "Backend healthy"
+      : backendMessage;
   const finnhubTesting = finnhubStatus === "testing";
   const intradayBackfillYears = Number.parseInt(intradayBackfillYearsDraft, 10);
   const intradayBackfillYearsValid =
@@ -221,6 +227,21 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
             <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-white/30">
               Connection (IBKR ONLY)
             </h3>
+
+            <div className="mb-3 flex items-center gap-2">
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${
+                  backendState === "healthy"
+                    ? "bg-green"
+                    : backendState === "starting" || backendState === "restarting" || backendState === "unhealthy"
+                      ? "bg-amber animate-pulse"
+                      : "bg-red/60"
+                }`}
+              />
+              <span className="font-mono text-[11px] text-white/50">
+                {backendStatusLabel}
+              </span>
+            </div>
 
             {/* Status */}
             <div className="mb-3 flex items-center gap-2">

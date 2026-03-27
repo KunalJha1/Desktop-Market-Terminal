@@ -17,6 +17,7 @@ import {
   TA_SCORE_TIMEFRAMES,
   type TaScoreTimeframe,
 } from "../lib/ta-score-timeframes";
+import { useTechScores } from "../lib/use-technicals";
 
 const SymbolLogo = memo(function SymbolLogo({ symbol }: { symbol: string }) {
   const [failed, setFailed] = useState(false);
@@ -66,7 +67,6 @@ interface TechScores {
   "5m": number | null;
   "15m": number | null;
   "1h": number | null;
-  "4h": number | null;
   "1d": number | null;
   "1w": number | null;
 }
@@ -96,6 +96,7 @@ type FilterType =
   | "bearish";
 
 const SCREENER_CUSTOM_STORAGE_KEY = "dailyiq.screener.customSymbols";
+const SCREENER_VISIBLE_TFS_STORAGE_KEY = "dailyiq.screener.visibleTimeframes";
 const CUSTOM_SYMBOL_INPUT_LIMIT = 100;
 
 function loadStoredCustomSymbols(): string[] {
@@ -129,12 +130,38 @@ function parseSymbolsFromInput(text: string, limit = CUSTOM_SYMBOL_INPUT_LIMIT):
 }
 
 const ALL_TIMEFRAMES: TaScoreTimeframe[] = [...TA_SCORE_TIMEFRAMES];
-const DEFAULT_VISIBLE_TFS: TaScoreTimeframe[] = ["5m", "15m"];
+const SCREENER_TIMEFRAMES: TaScoreTimeframe[] = ["5m", "15m", "1h", "1d", "1w"];
+const DEFAULT_VISIBLE_TFS: TaScoreTimeframe[] = ["1d", "1w"];
+
+function normalizeVisibleTimeframes(value: unknown): TaScoreTimeframe[] {
+  if (!Array.isArray(value)) return DEFAULT_VISIBLE_TFS;
+  const seen = new Set<TaScoreTimeframe>();
+  const normalized = value
+    .filter((tf): tf is TaScoreTimeframe => typeof tf === "string" && TA_SCORE_TIMEFRAMES.includes(tf as TaScoreTimeframe))
+    .filter((tf) => {
+      if (seen.has(tf)) return false;
+      seen.add(tf);
+      return true;
+    });
+  if (normalized.length === 0) return DEFAULT_VISIBLE_TFS;
+  return [...normalized].sort(
+    (a, b) => ALL_TIMEFRAMES.indexOf(a) - ALL_TIMEFRAMES.indexOf(b),
+  );
+}
+
+function loadStoredVisibleTimeframes(): TaScoreTimeframe[] {
+  try {
+    const raw = localStorage.getItem(SCREENER_VISIBLE_TFS_STORAGE_KEY);
+    if (!raw) return DEFAULT_VISIBLE_TFS;
+    return normalizeVisibleTimeframes(JSON.parse(raw) as unknown);
+  } catch {
+    return DEFAULT_VISIBLE_TFS;
+  }
+}
 
 const MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"];
 const VISIBLE_BATCH = 30;
 const DATA_POLL_MS = 5000;
-const SCORE_POLL_MS = 60_000;
 
 // ── Verdict logic (average of visible tech scores) ───────────────────
 
@@ -172,7 +199,7 @@ function SortArrow({ active, dir }: { active: boolean; dir: SortDir }) {
 function SkeletonRow({ delay, extraCols }: { delay: number; extraCols: number }) {
   return (
     <tr
-      className="border-b border-white/[0.04]"
+      className="border-b border-white/[0.06] bg-panel/70"
       style={{ animationDelay: `${delay}s` }}
     >
       <td className="px-3 py-2.5">
@@ -229,20 +256,20 @@ const ScreenerTableRow = memo(function ScreenerTableRow({
   const verdict = getVerdict(verdictScore);
 
   return (
-    <tr className="border-b border-white/[0.04] transition-colors duration-[80ms] hover:bg-white/[0.03]">
+    <tr className="border-b border-white/[0.06] bg-panel/70 transition-colors duration-[80ms] odd:bg-panel even:bg-base/80 hover:bg-white/[0.04]">
       {/* Symbol */}
-      <td className="w-[150px] max-w-[150px] px-3 py-2">
+      <td className="w-[200px] min-w-[200px] px-3 py-2">
         <div className="flex items-center gap-2.5">
           <SymbolLogo symbol={row.symbol} />
           <div className="min-w-0 flex-1">
             <p className="font-mono text-[15px] font-semibold leading-none text-white/90">
               {row.symbol}
             </p>
-            <p className="mt-0.5 truncate text-[13px] leading-none text-white/35">
+            <p className="mt-0.5 text-[13px] leading-none text-white/35">
               {row.name}
             </p>
             {row.sector && (
-              <p className="mt-0.5 truncate text-[12px] leading-none text-white/20">
+              <p className="mt-0.5 text-[12px] leading-none text-white/20">
                 {row.sector}
               </p>
             )}
@@ -323,14 +350,11 @@ export default function ScreenerPage() {
 
   // Data
   const [tiles, setTiles] = useState<HeatmapTile[]>([]);
-  const [techScoresMap, setTechScoresMap] = useState<
-    Map<string, TechScores>
-  >(new Map());
   const [loading, setLoading] = useState(true);
 
   // Filters & sorting
   const [filter, setFilter] = useState<FilterType>("all");
-  const [visibleTfs, setVisibleTfs] = useState<TaScoreTimeframe[]>(DEFAULT_VISIBLE_TFS);
+  const [visibleTfs, setVisibleTfs] = useState<TaScoreTimeframe[]>(loadStoredVisibleTimeframes);
   const [sortKey, setSortKey] = useState<SortKey>("verdict");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [searchQuery, setSearchQuery] = useState("");
@@ -392,50 +416,7 @@ export default function ScreenerPage() {
     if (filter === "watchlist") return watchlistSymbols;
     return tiles.map((tile) => tile.symbol);
   }, [customSymbols, filter, tiles, watchlistSymbols]);
-
-  // Fetch detailed tech scores for the active screener universe
-  useEffect(() => {
-    if (!sidecarPort) return;
-    if (symbolsForScores.length === 0) {
-      setTechScoresMap(new Map());
-      return;
-    }
-    let cancelled = false;
-
-    async function fetchScores() {
-      try {
-        const syms = symbolsForScores.join(",");
-        const res = await fetch(
-          `http://127.0.0.1:${sidecarPort}/technicals/scores?symbols=${syms}`,
-        );
-        if (!res.ok) return;
-        const data = (await res.json()) as Array<Record<string, unknown>>;
-        if (cancelled) return;
-        const map = new Map<string, TechScores>();
-        for (const row of data) {
-          map.set(row.symbol as string, {
-            "1m": (row["1m"] as number) ?? null,
-            "5m": (row["5m"] as number) ?? null,
-            "15m": (row["15m"] as number) ?? null,
-            "1h": (row["1h"] as number) ?? null,
-            "4h": (row["4h"] as number) ?? null,
-            "1d": (row["1d"] as number) ?? null,
-            "1w": (row["1w"] as number) ?? null,
-          });
-        }
-        setTechScoresMap(map);
-      } catch {
-        // transient
-      }
-    }
-
-    fetchScores();
-    const id = setInterval(fetchScores, SCORE_POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [sidecarPort, symbolsForScores]);
+  const technicals = useTechScores(symbolsForScores, ALL_TIMEFRAMES);
 
   // ── Click outside to close search ────────────────────────────────
 
@@ -480,16 +461,16 @@ export default function ScreenerPage() {
 
   const getTechScoreForTf = useCallback(
     (row: ScreenerRow, tf: TaScoreTimeframe): number | null => {
-      const detailed = techScoresMap.get(row.symbol);
+      const detailed = technicals.get(row.symbol);
       if (detailed) {
-        const val = detailed[tf as keyof TechScores];
+        const val = detailed.get(tf)?.score;
         if (val !== null && val !== undefined) return val;
       }
       if (tf === "1d") return row.techScore1d;
       if (tf === "1w") return row.techScore1w;
       return null;
     },
-    [techScoresMap],
+    [technicals],
   );
 
   // ── Compute verdict score: average of all visible TF scores ──────
@@ -513,9 +494,16 @@ export default function ScreenerPage() {
     () =>
       tiles.map((t) => ({
         ...t,
-        techScores: techScoresMap.get(t.symbol) ?? null,
+        techScores: {
+          "1m": technicals.get(t.symbol)?.get("1m")?.score ?? null,
+          "5m": technicals.get(t.symbol)?.get("5m")?.score ?? null,
+          "15m": technicals.get(t.symbol)?.get("15m")?.score ?? null,
+          "1h": technicals.get(t.symbol)?.get("1h")?.score ?? null,
+          "1d": technicals.get(t.symbol)?.get("1d")?.score ?? t.techScore1d ?? null,
+          "1w": technicals.get(t.symbol)?.get("1w")?.score ?? t.techScore1w ?? null,
+        },
       })),
-    [tiles, techScoresMap],
+    [tiles, technicals],
   );
 
   // ── Filter & Sort ────────────────────────────────────────────────
@@ -640,6 +628,17 @@ export default function ScreenerPage() {
     }
   }, [filter, customSymbols]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        SCREENER_VISIBLE_TFS_STORAGE_KEY,
+        JSON.stringify(visibleTfs),
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [visibleTfs]);
+
   // Reset visible count when filter/sort changes
   useEffect(() => {
     setVisibleCount(VISIBLE_BATCH);
@@ -672,10 +671,11 @@ export default function ScreenerPage() {
   // ── Render ───────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-base text-white">
-      {/* Header bar */}
-      <div className="shrink-0 border-b border-white/[0.06] bg-base">
-        <div className="flex h-11 items-center justify-between px-3">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-base px-3 py-3 text-white">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden border border-white/[0.06] bg-panel shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+        {/* Header bar */}
+        <div className="shrink-0 border-b border-white/[0.06] bg-[linear-gradient(180deg,#141922_0%,#10151C_100%)]">
+          <div className="flex h-11 items-center justify-between px-3">
           <div className="flex items-center gap-3">
             <span className="font-mono text-[15px] font-semibold uppercase tracking-[0.18em] text-white">
               Market Screener
@@ -746,8 +746,8 @@ export default function ScreenerPage() {
           </div>
         </div>
 
-        {/* Filters row */}
-        <div className="flex items-center gap-2 border-t border-white/[0.04] px-3 py-1.5">
+          {/* Filters row */}
+          <div className="flex items-center gap-2 border-t border-white/[0.06] bg-[#0f141b] px-3 py-1.5">
           {/* Category pills */}
           <div className="flex items-center gap-1">
             {(
@@ -767,10 +767,10 @@ export default function ScreenerPage() {
                   setFilter(key);
                   if (key === "movers") handleSort("change");
                 }}
-                className={`rounded-btn px-3 py-1 font-mono text-[12px] font-medium tracking-wide transition-colors ${
+                className={`rounded-btn border border-transparent px-3 py-1 font-mono text-[12px] font-medium tracking-wide transition-colors ${
                   filter === key
-                    ? "bg-blue/20 text-blue"
-                    : "text-white hover:bg-white/[0.06] hover:text-white"
+                    ? "border-blue-400/30 bg-blue-400/[0.12] text-blue-400"
+                    : "text-white/72 hover:border-white/[0.08] hover:bg-white/[0.05] hover:text-white"
                 }`}
               >
                 {label}
@@ -785,16 +785,16 @@ export default function ScreenerPage() {
             <span className="mr-1 text-[11px] uppercase tracking-[0.14em] text-white/50">
               Columns
             </span>
-            {ALL_TIMEFRAMES.map((tf) => {
+            {SCREENER_TIMEFRAMES.map((tf) => {
               const active = visibleTfs.includes(tf);
               return (
                 <button
                   key={tf}
                   onClick={() => toggleTf(tf)}
-                  className={`rounded-btn px-2.5 py-1 font-mono text-[12px] font-medium transition-colors ${
+                  className={`rounded-btn border border-transparent px-2.5 py-1 font-mono text-[12px] font-medium transition-colors ${
                     active
-                      ? "bg-purple/20 text-purple"
-                      : "text-white hover:bg-white/[0.06] hover:text-white"
+                      ? "border-blue-400/30 bg-blue-400/[0.12] text-blue-400"
+                      : "text-white/72 hover:border-white/[0.08] hover:bg-white/[0.05] hover:text-white"
                   }`}
                 >
                   {TA_SCORE_TF_LABELS[tf]}
@@ -802,10 +802,10 @@ export default function ScreenerPage() {
               );
             })}
           </div>
-        </div>
+          </div>
 
-        {filter === "custom" && (
-          <div className="flex flex-col gap-1.5 border-t border-white/[0.04] px-3 py-2">
+          {filter === "custom" && (
+            <div className="flex flex-col gap-1.5 border-t border-white/[0.06] bg-[#101722] px-3 py-2">
             <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-white/50">
               Custom universe — comma, space, or newline (max {CUSTOM_SYMBOL_INPUT_LIMIT})
             </span>
@@ -844,17 +844,17 @@ export default function ScreenerPage() {
             <p className="font-mono text-[11px] text-white/25">
               Symbols register with the data worker for quotes; rows show pending until data arrives.
             </p>
-          </div>
-        )}
-      </div>
+            </div>
+          )}
+        </div>
 
-      {/* Table */}
-      <div className="flex-1 overflow-auto scrollbar-dark">
-        <table className="w-full border-collapse">
-          <thead className="sticky top-0 z-10 bg-base">
-            <tr className="border-b border-white/[0.08]">
+        {/* Table */}
+        <div className="min-h-0 flex-1 overflow-auto scrollbar-dark">
+          <table className="w-full border-collapse">
+            <thead className="sticky top-0 z-10 bg-[#131925]">
+              <tr className="border-b border-white/[0.06]">
               <th
-                className="w-[150px] min-w-[150px] max-w-[150px] cursor-pointer px-3 py-2 text-left"
+                className="w-[200px] min-w-[200px] cursor-pointer px-3 py-2 text-left"
                 onClick={() => handleSort("symbol")}
               >
                 <span className="flex items-center font-mono text-[12px] uppercase tracking-[0.14em] text-white">
@@ -944,32 +944,33 @@ export default function ScreenerPage() {
                   />
                 ))}
           </tbody>
-        </table>
+          </table>
 
-        {/* Load more */}
-        {!loading && visibleRows.length < filtered.length && (
-          <div className="py-3 text-center">
-            <button
-              onClick={() => setVisibleCount((p) => p + VISIBLE_BATCH)}
-              className="rounded-btn border border-white/[0.08] px-4 py-1.5 font-mono text-[12px] text-white/30 transition-colors hover:bg-white/[0.06] hover:text-white/60"
-            >
-              Load More ({filtered.length - visibleRows.length} remaining)
-            </button>
-          </div>
-        )}
-        <div ref={sentinelRef} style={{ height: 1 }} />
+          {/* Load more */}
+          {!loading && visibleRows.length < filtered.length && (
+            <div className="border-t border-white/[0.06] bg-[#10151C] py-3 text-center">
+              <button
+                onClick={() => setVisibleCount((p) => p + VISIBLE_BATCH)}
+                className="rounded-btn border border-white/[0.08] bg-white/[0.02] px-4 py-1.5 font-mono text-[12px] text-white/40 transition-colors hover:bg-white/[0.06] hover:text-white/70"
+              >
+                Load More ({filtered.length - visibleRows.length} remaining)
+              </button>
+            </div>
+          )}
+          <div ref={sentinelRef} style={{ height: 1 }} />
 
-        {!loading && filtered.length === 0 && (
-          <div className="flex h-40 items-center justify-center px-4 text-center">
-            <p className="font-mono text-[13px] text-white/20">
-              {selectedSymbol
-                ? `No data for ${selectedSymbol}`
-                : filter === "custom" && customSymbols.length === 0
-                  ? "Add tickers above and click Apply to run a custom screener."
-                  : "No symbols match the current filter."}
-            </p>
-          </div>
-        )}
+          {!loading && filtered.length === 0 && (
+            <div className="flex h-40 items-center justify-center px-4 text-center">
+              <p className="font-mono text-[13px] text-white/24">
+                {selectedSymbol
+                  ? `No data for ${selectedSymbol}`
+                  : filter === "custom" && customSymbols.length === 0
+                    ? "Add tickers above and click Apply to run a custom screener."
+                    : "No symbols match the current filter."}
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

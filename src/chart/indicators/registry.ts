@@ -27,6 +27,7 @@ import crossoverStrategyScript from './scripts/crossoverStrategy.diq?raw';
 import ema520StrategyScript from './scripts/ema520Strategy.diq?raw';
 import rsiStrategyScript from './scripts/rsiStrategy.diq?raw';
 import macdCrossoverStrategyScript from './scripts/macdCrossoverStrategy.diq?raw';
+import fvgScript from './scripts/fvg.diq?raw';
 
 const C = INDICATOR_COLORS;
 
@@ -243,17 +244,43 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     ],
   },
 
+  FVG: {
+    name: 'FVG',
+    shortName: 'FVG',
+    category: 'overlay',
+    defaultParams: { thresholdPercent: 0, extendBars: 30, requireNextBarReaction: 1 },
+    defaultTextParams: { sourceTimeframe: '' },
+    paramLabels: {
+      thresholdPercent: 'Gap Threshold %',
+      extendBars: 'Extend Bars',
+      requireNextBarReaction: 'Require Next Bar Reaction 1/0',
+    },
+    textParamLabels: {
+      sourceTimeframe: 'FVG Timeframe (blank = chart)',
+    },
+    outputs: [
+      { key: 'bullZone', label: 'Bull FVG', color: C[3], style: 'markers' },
+      { key: 'bearZone', label: 'Bear FVG', color: C[4], style: 'markers' },
+    ],
+    scriptSource: fvgScript,
+  },
+
   'FVG Momentum': {
     name: 'FVG Momentum',
     shortName: 'FVG',
     category: 'overlay',
-    defaultParams: { thresholdPercent: 0 },
-    paramLabels: { thresholdPercent: 'Gap Threshold %' },
+    defaultParams: { thresholdPercent: 0, extendBars: 30, requireNextBarReaction: 1 },
+    defaultTextParams: { sourceTimeframe: '' },
+    paramLabels: {
+      thresholdPercent: 'Gap Threshold %',
+      extendBars: 'Extend Bars',
+      requireNextBarReaction: 'Require Next Bar Reaction 1/0',
+    },
+    textParamLabels: {
+      sourceTimeframe: 'FVG Timeframe (blank = chart)',
+    },
+    scriptSource: fvgScript,
     outputs: [
-      { key: 'bullTop', label: 'Bull FVG Top', color: C[3], style: 'line', lineWidth: 1 },
-      { key: 'bullBottom', label: 'Bull FVG Bot', color: C[3], style: 'line', lineWidth: 1 },
-      { key: 'bearTop', label: 'Bear FVG Top', color: C[4], style: 'line', lineWidth: 1 },
-      { key: 'bearBottom', label: 'Bear FVG Bot', color: C[4], style: 'line', lineWidth: 1 },
       { key: 'bull', label: 'BUY', color: C[3], style: 'markers' },
       { key: 'bear', label: 'SELL', color: C[4], style: 'markers' },
     ],
@@ -588,6 +615,37 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'angle', label: 'Angle', color: C[1], style: 'line', lineWidth: 1.5 },
       { key: 'longOk', label: 'LONG', color: C[3], style: 'markers' },
       { key: 'strongDown', label: 'DOWN', color: C[4], style: 'markers' },
+    ],
+  },
+
+  'Probability Engine': {
+    name: 'Probability Engine',
+    shortName: 'ProbEng',
+    category: 'oscillator',
+    defaultParams: {
+      source: 0,
+      buckets: 9,
+      alpha: 0.15,
+      minObs: 30,
+      useBody: 1,
+    },
+    paramLabels: {
+      source: 'Source (0=TrendAngle 1=EMA5-20 2=Close-EMA20 3=RSI14 4=BBPos)',
+      buckets: 'Buckets',
+      alpha: 'EWMA Alpha',
+      minObs: 'Min Observations',
+      useBody: 'Use Body (1=body 0=close)',
+    },
+    paneRange: { min: 0, max: 100 },
+    guideLines: [
+      { value: 70, color: '#00C853', style: 'dashed' },
+      { value: 50, color: '#8B949E', style: 'dashed' },
+      { value: 30, color: '#FF3D71', style: 'dashed' },
+    ],
+    outputs: [
+      { key: 'prob1', label: 'P(Bull) 1-bar',  color: '#00C853', style: 'line', lineWidth: 1.5 },
+      { key: 'prob3', label: 'P(Bull) 3-bar',  color: '#1A56DB', style: 'line', lineWidth: 1.5 },
+      { key: 'mid',   label: 'Midline (50)',    color: '#8B949E', style: 'line', lineWidth: 1 },
     ],
   },
 

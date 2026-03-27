@@ -70,6 +70,8 @@ export interface IndicatorMeta {
   category: 'overlay' | 'oscillator' | 'volume';
   defaultParams: Record<string, number>;
   paramLabels: Record<string, string>;
+  defaultTextParams?: Record<string, string>;
+  textParamLabels?: Record<string, string>;
   outputs: IndicatorOutput[];
   guideLines?: IndicatorGuideLine[];
   paneRange?: {
@@ -102,6 +104,7 @@ export interface ActiveIndicator {
   name: string;
   paneId: string;
   params: Record<string, number>;
+  textParams: Record<string, string>;
   colors: Record<string, string>;  // per-output color overrides keyed by output.key
   lineWidths?: Record<string, number>;  // per-output lineWidth overrides
   lineStyles?: Record<string, 'solid' | 'dashed' | 'dotted'>;  // per-output line style

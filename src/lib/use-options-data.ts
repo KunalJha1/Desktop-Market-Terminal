@@ -78,7 +78,7 @@ export function useDefaultOptionsSymbol(): string {
   const { symbols } = useWatchlist();
   return useMemo(() => {
     const firstWatchlist = symbols.find((symbol) => symbol.trim());
-    return normalizeSymbol(firstWatchlist || "AAPL");
+    return normalizeSymbol(firstWatchlist || "");
   }, [symbols]);
 }
 

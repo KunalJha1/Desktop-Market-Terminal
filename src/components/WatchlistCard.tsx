@@ -706,6 +706,32 @@ export default function WatchlistCard({
     };
   }, [settingsOpen]);
 
+  // ── Font size control ──
+  const fontSize = (config.fontSize as number | undefined) ?? 11;
+  const [fontSizeOpen, setFontSizeOpen] = useState(false);
+  const fontSizeRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!fontSizeOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (fontSizeRef.current && !fontSizeRef.current.contains(e.target as Node))
+        setFontSizeOpen(false);
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFontSizeOpen(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [fontSizeOpen]);
+
+  const updateFontSize = useCallback((size: number) => {
+    persistConfig({ fontSize: size });
+  }, [persistConfig]);
+
   const updateFixedPaneCount = useCallback(
     (n: number | undefined) => {
       const next = { ...config };
@@ -1110,10 +1136,10 @@ export default function WatchlistCard({
       className="flex h-full flex-col overflow-hidden border border-white/[0.06] bg-panel"
     >
       {/* Header */}
-      <div className="flex h-7 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2">
+      <div className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2">
         <div className="flex items-center gap-1.5">
-          <span className="text-[10px] font-medium text-white/60">Watchlist</span>
-          <span className="font-mono text-[9px] text-white/25">
+          <span className="text-[11px] font-medium text-white/75">Watchlist</span>
+          <span className="font-mono text-[10px] text-white/40">
             {nonEmptySymbols.length} symbol{nonEmptySymbols.length !== 1 ? "s" : ""}
           </span>
           {sortCol && (
@@ -1162,6 +1188,42 @@ export default function WatchlistCard({
                 }}
                 onClose={() => setTaPopoverOpen(false)}
               />
+            )}
+          </div>
+          {/* Font size control */}
+          <div ref={fontSizeRef} className="relative">
+            <button
+              onClick={() => setFontSizeOpen((v) => !v)}
+              className={`flex h-3.5 items-center justify-center gap-[1px] rounded-sm px-0.5 leading-none transition-colors duration-75 ${
+                fontSizeOpen
+                  ? "bg-white/[0.06] text-white/80"
+                  : "text-white/30 hover:bg-white/[0.06] hover:text-white/50"
+              }`}
+              title="Font size"
+            >
+              <span className="text-[8px] font-medium">a</span>
+              <span className="text-[11px] font-medium">A</span>
+            </button>
+            {fontSizeOpen && (
+              <div className="absolute right-0 top-full z-[100] mt-1 w-[150px] rounded-md border border-white/[0.08] bg-[#1C2128] p-2.5 shadow-xl shadow-black/40">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[9px] uppercase tracking-wider text-white/25">Font Size</span>
+                  <span className="font-mono text-[9px] text-white/40">{fontSize}px</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[9px] text-white/25">S</span>
+                  <input
+                    type="range"
+                    min={9}
+                    max={15}
+                    step={1}
+                    value={fontSize}
+                    onChange={(e) => updateFontSize(Number(e.target.value))}
+                    className="flex-1 accent-blue"
+                  />
+                  <span className="font-mono text-[12px] text-white/25">L</span>
+                </div>
+              </div>
             )}
           </div>
           {/* Settings cog */}
@@ -1434,6 +1496,7 @@ export default function WatchlistCard({
                 insertBeforeIdx={insertBeforeIdx}
                 startRowDrag={startRowDrag}
                 colOrder={effectiveColOrder}
+                fontSize={fontSize}
               />
             </div>
           ))}
@@ -1750,6 +1813,7 @@ interface WatchlistRowProps {
   insertLineBefore: boolean;
   onGripMouseDown: (e: React.MouseEvent) => void;
   colOrder: string[];
+  fontSize: number;
 }
 
 interface WatchlistPaneRowsProps {
@@ -1778,6 +1842,7 @@ interface WatchlistPaneRowsProps {
   insertBeforeIdx: number | null;
   startRowDrag: (e: React.MouseEvent, globalIdx: number, symbol: string) => void;
   colOrder: string[];
+  fontSize: number;
 }
 
 function WatchlistPaneRows({
@@ -1806,6 +1871,7 @@ function WatchlistPaneRows({
   insertBeforeIdx,
   startRowDrag,
   colOrder,
+  fontSize,
 }: WatchlistPaneRowsProps) {
   const localRowsRef = useRef<HTMLDivElement | null>(null);
 
@@ -1857,6 +1923,7 @@ function WatchlistPaneRows({
               showGrip={showGrip && !!sym}
               reserveGripSpace={showGrip}
               insertLineBefore={insertBeforeIdx === globalIdx}
+              fontSize={fontSize}
               onGripMouseDown={(e) => startRowDrag(e, globalIdx, sym)}
               colOrder={colOrder}
             />
@@ -1891,6 +1958,7 @@ function WatchlistRow({
   insertLineBefore,
   onGripMouseDown,
   colOrder,
+  fontSize,
 }: WatchlistRowProps) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
@@ -2256,7 +2324,8 @@ function WatchlistRow({
             <div
               key={colId}
               ref={symbolCellRef}
-              className={`min-w-0 truncate px-1.5 font-mono text-[12px] font-medium ${borderClass} ${isError ? "text-red/80" : "text-white/80"}`}
+              className={`min-w-0 truncate px-1.5 font-mono font-medium ${borderClass} ${isError ? "text-red/80" : "text-white/80"}`}
+              style={{ fontSize }}
               onMouseEnter={() => setHovered(true)}
               onMouseLeave={() => setHovered(false)}
             >
@@ -2266,21 +2335,21 @@ function WatchlistRow({
         }
         if (colId === "b:last") {
           return (
-            <div key={colId} className={`min-w-0 truncate px-1.5 text-right font-mono text-[11px] ${borderClass} ${isError ? "text-red/40" : "text-white/70"}`}>
+            <div key={colId} className={`min-w-0 truncate px-1.5 text-right font-mono ${borderClass} ${isError ? "text-red/40" : "text-white/70"}`} style={{ fontSize }}>
               {quote ? quote.last.toFixed(2) : isError ? "ERR" : "—"}
             </div>
           );
         }
         if (colId === "b:change") {
           return (
-            <div key={colId} className={`min-w-0 truncate px-1.5 text-right font-mono text-[11px] font-medium ${borderClass} ${isError ? "text-red/40" : quote ? changeColor(quote.change) : "text-white/30"}`}>
+            <div key={colId} className={`min-w-0 truncate px-1.5 text-right font-mono font-medium ${borderClass} ${isError ? "text-red/40" : quote ? changeColor(quote.change) : "text-white/30"}`} style={{ fontSize }}>
               {quote ? `${quote.change >= 0 ? "+" : ""}${quote.change.toFixed(2)}` : isError ? "—" : "—"}
             </div>
           );
         }
         if (colId === "b:changePct") {
           return (
-            <div key={colId} className={`min-w-0 truncate px-1.5 text-right font-mono text-[11px] font-medium ${borderClass} ${isError ? "text-red/40" : quote ? changeColor(quote.changePct) : "text-white/30"}`}>
+            <div key={colId} className={`min-w-0 truncate px-1.5 text-right font-mono font-medium ${borderClass} ${isError ? "text-red/40" : quote ? changeColor(quote.changePct) : "text-white/30"}`} style={{ fontSize }}>
               {quote ? `${quote.changePct >= 0 ? "+" : ""}${quote.changePct.toFixed(2)}%` : "—"}
             </div>
           );
@@ -2302,7 +2371,7 @@ function WatchlistRow({
             colorClass = (val as number) > 50 ? "text-green font-medium" : (val as number) < 50 ? "text-red font-medium" : "text-white/50";
           }
           return (
-            <div key={colId} className={`min-w-0 truncate px-1.5 font-mono text-[11px] ${isCrossover ? "text-center" : "text-right"} ${colorClass} ${borderClass}`}>
+            <div key={colId} className={`min-w-0 truncate px-1.5 font-mono ${isCrossover ? "text-center" : "text-right"} ${colorClass} ${borderClass}`} style={{ fontSize }}>
               {displayValue}
             </div>
           );
@@ -2314,7 +2383,8 @@ function WatchlistRow({
           return (
             <div
               key={colId}
-              className={`min-w-0 truncate px-1 text-center font-mono text-[11px] font-medium ${borderClass} ${score === null ? "text-white/15" : score > 60 ? "text-green" : score < 40 ? "text-red" : "text-white/40"}`}
+              className={`min-w-0 truncate px-1 text-center font-mono font-medium ${borderClass} ${score === null ? "text-white/15" : score > 60 ? "text-green" : score < 40 ? "text-red" : "text-white/40"}`}
+              style={{ fontSize }}
               title={describeTechScoreCell(tf, cell)}
             >
               {score === null ? "—" : score}

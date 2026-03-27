@@ -6,6 +6,7 @@ const HEATMAP_POLL_MS = 5_000;
 
 type HeatmapStore = {
   tiles: HeatmapTile[];
+  asOf: number | null;
   intervalId: number | null;
   inFlight: boolean;
   subscriberCount: number;
@@ -37,6 +38,7 @@ function getOrCreateStore(sidecarPort: number): HeatmapStore {
 
   const created: HeatmapStore = {
     tiles: [],
+    asOf: null,
     intervalId: null,
     inFlight: false,
     subscriberCount: 0,
@@ -54,6 +56,7 @@ async function fetchHeatmap(sidecarPort: number, store: HeatmapStore): Promise<v
     if (!res.ok) return;
     const payload = await res.json();
     store.tiles = (payload.tiles as HeatmapTile[]) ?? [];
+    store.asOf = typeof payload.asOf === "number" ? payload.asOf : null;
     notifyStore();
   } catch {
     // Ignore transport failures; next poll retries.
@@ -93,6 +96,10 @@ function subscribeHeatmap(sidecarPort: number): () => void {
 }
 
 export function useSp500HeatmapData(): HeatmapTile[] {
+  return useSp500HeatmapStore().tiles;
+}
+
+export function useSp500HeatmapStore(): { tiles: HeatmapTile[]; asOf: number | null } {
   const { sidecarPort } = useTws();
 
   useEffect(() => {
@@ -103,7 +110,11 @@ export function useSp500HeatmapData(): HeatmapTile[] {
   const version = useSyncExternalStore(subscribeToStore, getStoreVersion);
 
   return useMemo(() => {
-    if (!sidecarPort) return [];
-    return storesByPort.get(sidecarPort)?.tiles ?? [];
+    if (!sidecarPort) return { tiles: [], asOf: null };
+    const store = storesByPort.get(sidecarPort);
+    return {
+      tiles: store?.tiles ?? [],
+      asOf: store?.asOf ?? null,
+    };
   }, [sidecarPort, version]);
 }

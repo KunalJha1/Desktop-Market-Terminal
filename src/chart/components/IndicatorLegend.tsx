@@ -335,6 +335,49 @@ function NumericInput({
   );
 }
 
+function TextInput({
+  value,
+  onChange,
+  width = 88,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  width?: number;
+}) {
+  const [text, setText] = useState(value);
+
+  useEffect(() => {
+    setText(value);
+  }, [value]);
+
+  const commit = () => {
+    onChange(text.trim());
+  };
+
+  return (
+    <input
+      type="text"
+      value={text}
+      onChange={e => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') commit(); }}
+      style={{
+        width,
+        backgroundColor: '#1C2128',
+        color: '#E6EDF3',
+        fontSize: 10,
+        fontFamily: "'JetBrains Mono', monospace",
+        textAlign: 'center',
+        border: '1px solid #21262D',
+        borderRadius: 2,
+        outline: 'none',
+        padding: '1px 4px',
+      }}
+      onFocus={e => (e.currentTarget.style.borderColor = '#1A56DB')}
+    />
+  );
+}
+
 function TogglePill({
   active,
   onClick,
@@ -367,6 +410,7 @@ interface IndicatorLegendProps {
   indicators: ActiveIndicator[];
   activeScripts: Map<string, ScriptResult>;
   onUpdateParams: (id: string, params: Record<string, number>) => void;
+  onUpdateTextParams?: (id: string, textParams: Record<string, string>) => void;
   onUpdateColor: (id: string, outputKey: string, color: string) => void;
   onUpdateLineWidth?: (id: string, outputKey: string, width: number) => void;
   onUpdateLineStyle?: (id: string, outputKey: string, style: 'solid' | 'dashed' | 'dotted') => void;
@@ -385,6 +429,7 @@ export default function IndicatorLegend({
   indicators,
   activeScripts,
   onUpdateParams,
+  onUpdateTextParams,
   onUpdateColor,
   onUpdateLineWidth,
   onUpdateLineStyle,
@@ -666,6 +711,31 @@ export default function IndicatorLegend({
                           />
                         </label>
                       )
+                    ))}
+                  </div>
+                )}
+                {Object.keys(ind.textParams).length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                    {Object.entries(ind.textParams).map(([key, value]) => (
+                      <label
+                        key={key}
+                        style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                      >
+                        <span
+                          style={{
+                            fontSize: 9,
+                            color: '#484F58',
+                            fontFamily: "'JetBrains Mono', monospace",
+                          }}
+                        >
+                          {meta.textParamLabels?.[key] ?? key}
+                        </span>
+                        <TextInput
+                          value={value}
+                          onChange={v => onUpdateTextParams?.(ind.id, { [key]: v })}
+                          width={96}
+                        />
+                      </label>
                     ))}
                   </div>
                 )}

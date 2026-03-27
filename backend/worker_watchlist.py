@@ -47,7 +47,7 @@ logging.basicConfig(
 logger = logging.getLogger("watchlist-worker")
 logging.getLogger("ib_insync.client").setLevel(logging.CRITICAL)
 
-WATCHLIST_REFRESH_S = 2.0
+WATCHLIST_REFRESH_S = 5.0
 YAHOO_POLL_S = 600.0
 YAHOO_SYMBOL_SLEEP_S = 3.0
 YAHOO_VALUATION_SYMBOL_SLEEP_S = 60.0
@@ -56,11 +56,12 @@ FINNHUB_WATCHLIST_SYMBOL_SLEEP_S = 1.5
 FINNHUB_UNIVERSE_SYMBOL_SLEEP_S = 4.0
 FINNHUB_HTTP_TIMEOUT_S = 10.0
 TICK_THROTTLE_S = 3.0
-ACTIVE_REFRESH_S = 3.0
+ACTIVE_REFRESH_S = 5.0
 ACTIVE_TTL_S = 120
 STATUS_SUMMARY_S = 30.0
 UNIVERSE_REFRESH_S = 300.0
-SNAPSHOT_LOOP_SLEEP_S = 5.0
+SNAPSHOT_LOOP_SLEEP_S = 10.0
+SNAPSHOT_REFRESH_MIN_INTERVAL_S = 30.0
 SNAPSHOT_STALE_S = 300.0
 UNIVERSE_BATCH_SIZE = 8
 YAHOO_HISTORICAL_REQUEST_SLEEP_S = 5.0
@@ -1763,6 +1764,7 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
 
     async def snapshot_loop():
         cursor = 0
+        last_snapshot_refresh: Dict[str, float] = {}
         while True:
             await asyncio.sleep(SNAPSHOT_LOOP_SLEEP_S)
             symbols = list(dict.fromkeys(active_symbols + watchlist + universe_symbols))
@@ -1775,8 +1777,12 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                 batch += symbols[:UNIVERSE_BATCH_SIZE - len(batch)]
             cursor = (cursor + UNIVERSE_BATCH_SIZE) % max(len(symbols), 1)
             for sym in batch:
+                now = time.monotonic()
+                if now - last_snapshot_refresh.get(sym, 0.0) < SNAPSHOT_REFRESH_MIN_INTERVAL_S:
+                    continue
                 try:
                     await asyncio.to_thread(refresh_snapshot_from_db, sym)
+                    last_snapshot_refresh[sym] = now
                 except Exception as exc:
                     logger.debug(f"Snapshot refresh failed for {sym}: {exc}")
 

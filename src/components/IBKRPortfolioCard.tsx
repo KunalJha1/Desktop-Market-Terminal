@@ -835,11 +835,11 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
     <div className="relative flex h-full flex-col overflow-hidden border border-white/[0.06] bg-panel">
 
       {/* ── Title bar ── */}
-      <div className="flex h-7 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2">
+      <div className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] font-medium text-white/75">Portfolio</span>
+          <span className="text-[11px] font-medium text-white/85">Portfolio</span>
           {channelInfo ? <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: channelInfo.color }} /> : null}
-          <span className={`rounded-sm px-1.5 py-[1px] text-[9px] font-mono ${connected ? "bg-green/10 text-green" : "bg-white/[0.05] text-white/35"}`}>
+          <span className={`rounded-sm px-1.5 py-[1px] text-[9px] font-mono ${connected ? "bg-green/10 text-green" : "bg-white/[0.05] text-white/50"}`}>
             {connected ? "LIVE" : loading ? "LOADING" : "OFFLINE"}
           </span>
           {manualAccounts.length ? (
@@ -855,7 +855,7 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
               ref={colPickerButtonRef}
               type="button"
               onClick={openColPicker}
-              className={`flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[9px] font-mono transition-colors ${colPickerOpen ? "bg-blue/[0.14] text-blue" : "text-white/35 hover:bg-white/[0.06] hover:text-white/70"}`}
+              className={`flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[9px] font-mono transition-colors ${colPickerOpen ? "bg-blue/[0.14] text-blue" : "text-white/50 hover:bg-white/[0.06] hover:text-white/80"}`}
             >
               <Columns3 className="h-2.5 w-2.5" strokeWidth={1.5} />
               Cols

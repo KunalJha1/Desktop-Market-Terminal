@@ -10,7 +10,7 @@ import MiniHeatmapCard from "../components/MiniHeatmapCard";
 import { useTabs } from "../lib/tabs";
 import { useLayout } from "../lib/layout";
 import type { LayoutComponent } from "../lib/layout-types";
-import { DEFAULT_WATCHLIST_SYMBOLS, useWatchlist } from "../lib/watchlist";
+import { useWatchlist } from "../lib/watchlist";
 
 const COMPONENT_TYPES = [
   { type: "quote", label: "Quote Card", defaultW: 4, defaultH: 8 },
@@ -102,7 +102,7 @@ export default function DashboardPage() {
     };
   }, [showAddMenu]);
 
-  // Seed a default watchlist on first run (when the tab has no components)
+  // Preserve saved user state, but don't seed default symbols on first run.
   const seededRef = useRef(false);
   useEffect(() => {
     if (!tabsReady || !layoutReady || !watchlistReady || seededRef.current) return;
@@ -113,8 +113,6 @@ export default function DashboardPage() {
       : [];
     if (symbols.length === 0 && legacySymbols.length > 0) {
       setSymbols(legacySymbols);
-    } else if (symbols.length === 0) {
-      setSymbols(DEFAULT_WATCHLIST_SYMBOLS);
     }
     if (layout.components.length === 0) {
       addComponent(activeTabId, "watchlist", {
@@ -130,9 +128,9 @@ export default function DashboardPage() {
     if (!spec) return;
 
     const defaultConfigs: Record<string, Record<string, unknown>> = {
-      quote: { symbol: "AAPL" },
+      quote: {},
       watchlist: {},
-      minichart: { symbol: "AAPL", timeframe: "1D", chartType: "candlestick" },
+      minichart: { timeframe: "1D", chartType: "candlestick" },
       "ibkr-portfolio": {},
       "mini-screener": {},
       "mini-heatmap": {},

@@ -22,12 +22,33 @@ type TwsConnectionType =
   | "gateway-live"
   | "gateway-paper";
 
-type SidecarStatus = "connected" | "disconnected";
+type SidecarStatus = "connected" | "degraded" | "disconnected";
 type FinnhubStatus = "connected" | "disconnected" | "testing";
+type IbStatus = "connected" | "reconnecting" | "disconnected";
+type BackendState =
+  | "starting"
+  | "healthy"
+  | "unhealthy"
+  | "restarting"
+  | "stopped"
+  | "failed";
+
+const IB_STATUS_TIMEOUT_MS = 4000;
+const SIDECAR_POLL_INTERVAL_MS = 3000;
 
 interface ProbeResult {
   port: number;
   connection_type: TwsConnectionType;
+}
+
+interface BackendStatusResponse {
+  state: BackendState;
+  sidecar_port: number | null;
+  last_healthy_at: number | null;
+  last_restart_reason: string | null;
+  restart_count: number;
+  logs_available: boolean;
+  log_path: string | null;
 }
 
 interface FinnhubStatusResponse {
@@ -45,6 +66,18 @@ interface FinnhubValidateResponse {
   validatedAt: number | null;
 }
 
+interface TwsStatusResponse {
+  connected: boolean;
+  reconnecting: boolean;
+  state: string;
+  host: string | null;
+  port: number | null;
+  lastDisconnectAt: number | null;
+  lastReconnectAt: number | null;
+  reconnectAttempts: number;
+  lastError: string | null;
+}
+
 interface TwsContextValue {
   status: TwsStatus;
   port: number | null;
@@ -60,6 +93,10 @@ interface TwsContextValue {
   finnhubMessage: string;
   finnhubHasKey: boolean;
   validateFinnhubKey: (apiKey: string) => Promise<FinnhubValidateResponse>;
+  ibStatus: IbStatus;
+  backendState: BackendState;
+  backendMessage: string;
+  restartBackend: () => Promise<void>;
 }
 
 export const TwsContext = createContext<TwsContextValue | null>(null);
@@ -96,6 +133,9 @@ export function TwsProvider({ children }: { children: ReactNode }) {
   const [finnhubStatus, setFinnhubStatus] = useState<FinnhubStatus>("disconnected");
   const [finnhubMessage, setFinnhubMessage] = useState("No API key saved");
   const [finnhubHasKey, setFinnhubHasKey] = useState(false);
+  const [ibStatus, setIbStatus] = useState<IbStatus>("disconnected");
+  const [backendState, setBackendState] = useState<BackendState>("stopped");
+  const [backendMessage, setBackendMessage] = useState("Backend stopped");
 
   const reloadSettings = useCallback(async () => {
     const loaded = await loadTwsSettings();
@@ -131,43 +171,82 @@ export function TwsProvider({ children }: { children: ReactNode }) {
     });
   }, [probe, reloadSettings]);
 
-  const refreshSidecarPort = useCallback(async () => {
+  const refreshBackendStatus = useCallback(async () => {
     try {
-      const p = await invoke<number | null>("get_sidecar_port");
-      if (!p) {
-        setSidecarPort(null);
-        setSidecarStatus("disconnected");
-        return;
-      }
-      // Verify the sidecar process is actually responding, not just that
-      // the port number is stored in Rust state (process may have crashed).
-      const res = await fetch(`http://127.0.0.1:${p}/health`, {
-        signal: AbortSignal.timeout(2000),
-      });
-      if (res.ok) {
-        setSidecarPort(p);
+      const payload = await invoke<BackendStatusResponse>("get_backend_status");
+      setBackendState(payload.state);
+      setBackendMessage(
+        payload.last_restart_reason
+          ? `${payload.state}: ${payload.last_restart_reason}`
+          : payload.state === "healthy"
+            ? "Backend healthy"
+            : `Backend ${payload.state}`,
+      );
+      const nextPort = payload.sidecar_port;
+      if (payload.state === "healthy" && nextPort) {
+        setSidecarPort(nextPort);
         setSidecarStatus("connected");
+      } else if (
+        payload.state === "starting" ||
+        payload.state === "restarting" ||
+        payload.state === "unhealthy"
+      ) {
+        setSidecarPort(nextPort);
+        setSidecarStatus("degraded");
       } else {
         setSidecarPort(null);
         setSidecarStatus("disconnected");
       }
+      if (payload.state === "failed" || payload.state === "stopped") {
+        setIbStatus("disconnected");
+      }
     } catch {
-      setSidecarPort(null);
-      setSidecarStatus("disconnected");
+      setBackendState("unhealthy");
+      setBackendMessage("Backend status unavailable");
+      setSidecarStatus((prev) => (prev === "connected" ? "degraded" : prev));
     }
   }, []);
 
   useEffect(() => {
-    refreshSidecarPort();
-    const id = setInterval(refreshSidecarPort, 3000);
+    refreshBackendStatus();
+    const id = setInterval(refreshBackendStatus, SIDECAR_POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [refreshSidecarPort]);
+  }, [refreshBackendStatus]);
+
+  const restartBackend = useCallback(async () => {
+    setBackendState("restarting");
+    setBackendMessage("Backend restarting...");
+    setSidecarStatus("degraded");
+    try {
+      await invoke<number>("restart_sidecar");
+    } catch {
+      // Watchdog will pick up the failed state; refresh immediately to show latest status
+    }
+    await refreshBackendStatus();
+  }, [refreshBackendStatus]);
+
+  // Auto-trigger a restart when the backend transitions into "failed" state.
+  // The Rust watchdog also handles this but has a 20 s backoff; one immediate
+  // attempt from the frontend fills that gap without conflicting.
+  const prevBackendStateRef = useRef<BackendState>(backendState);
+  useEffect(() => {
+    const prev = prevBackendStateRef.current;
+    prevBackendStateRef.current = backendState;
+    if (prev !== "failed" && backendState === "failed") {
+      restartBackend();
+    }
+  }, [backendState, restartBackend]);
 
   const refreshFinnhubStatus = useCallback(async () => {
-    if (!sidecarPort) {
+    const localHasKey = settingsRef.current.finnhubApiKey.trim().length > 0;
+    if (!sidecarPort || backendState !== "healthy") {
       setFinnhubStatus("disconnected");
-      setFinnhubMessage("Sidecar disconnected");
-      setFinnhubHasKey(false);
+      setFinnhubMessage(
+        backendState === "restarting" || backendState === "starting"
+          ? "Backend restarting"
+          : "Backend disconnected",
+      );
+      setFinnhubHasKey(localHasKey);
       return;
     }
     try {
@@ -182,9 +261,9 @@ export function TwsProvider({ children }: { children: ReactNode }) {
     } catch {
       setFinnhubStatus("disconnected");
       setFinnhubMessage("Finnhub status unavailable");
-      setFinnhubHasKey(false);
+      setFinnhubHasKey(localHasKey);
     }
-  }, [sidecarPort]);
+  }, [backendState, sidecarPort]);
 
   useEffect(() => {
     refreshFinnhubStatus();
@@ -192,6 +271,39 @@ export function TwsProvider({ children }: { children: ReactNode }) {
     const id = setInterval(refreshFinnhubStatus, 5000);
     return () => clearInterval(id);
   }, [sidecarPort, refreshFinnhubStatus]);
+
+  const refreshIbStatus = useCallback(async () => {
+    if (!sidecarPort || backendState !== "healthy") {
+      setIbStatus("disconnected");
+      return;
+    }
+    try {
+      const res = await fetch(`http://127.0.0.1:${sidecarPort}/tws-status`, {
+        signal: AbortSignal.timeout(IB_STATUS_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        setIbStatus("disconnected");
+        return;
+      }
+      const payload = (await res.json()) as TwsStatusResponse;
+      if (payload.connected) {
+        setIbStatus("connected");
+      } else if (payload.reconnecting) {
+        setIbStatus("reconnecting");
+      } else {
+        setIbStatus("disconnected");
+      }
+    } catch {
+      setIbStatus("disconnected");
+    }
+  }, [backendState, sidecarPort]);
+
+  useEffect(() => {
+    refreshIbStatus();
+    if (!sidecarPort) return;
+    const id = setInterval(refreshIbStatus, 5000);
+    return () => clearInterval(id);
+  }, [sidecarPort, refreshIbStatus]);
 
   useEffect(() => {
     if (status !== "disconnected" || !settings.autoProbe) return;
@@ -212,11 +324,11 @@ export function TwsProvider({ children }: { children: ReactNode }) {
 
   const validateFinnhubKey = useCallback(
     async (apiKey: string): Promise<FinnhubValidateResponse> => {
-      if (!sidecarPort) {
+      if (!sidecarPort || backendState !== "healthy") {
         return {
           ok: false,
           status: "disconnected",
-          message: "Sidecar not connected",
+          message: "Backend not ready",
           hasKey: false,
           validatedAt: null,
         };
@@ -244,7 +356,7 @@ export function TwsProvider({ children }: { children: ReactNode }) {
         };
       }
     },
-    [reloadSettings, refreshFinnhubStatus, sidecarPort],
+    [backendState, reloadSettings, refreshFinnhubStatus, sidecarPort],
   );
 
   const value = useMemo(
@@ -263,6 +375,10 @@ export function TwsProvider({ children }: { children: ReactNode }) {
       finnhubMessage,
       finnhubHasKey,
       validateFinnhubKey,
+      ibStatus,
+      backendState,
+      backendMessage,
+      restartBackend,
     }),
     [
       status,
@@ -278,6 +394,10 @@ export function TwsProvider({ children }: { children: ReactNode }) {
       finnhubMessage,
       finnhubHasKey,
       validateFinnhubKey,
+      ibStatus,
+      backendState,
+      backendMessage,
+      restartBackend,
     ],
   );
 

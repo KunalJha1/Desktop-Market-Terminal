@@ -16,7 +16,7 @@ import {
   squarify,
 } from "../lib/heatmap-utils";
 import { formatMarketCap } from "../lib/market-data";
-import { useTws } from "../lib/tws";
+import { useSp500HeatmapStore } from "../lib/use-sp500-heatmap";
 
 const HEATMAP_METRIC_STORAGE_KEY = "dailyiq-heatmap-metric";
 
@@ -76,38 +76,11 @@ function formatAsOf(asOf: number | null): string {
 }
 
 export default function HeatmapPage() {
-  const { sidecarPort } = useTws();
-  const [tiles, setTiles] = useState<HeatmapTile[]>([]);
-  const [asOf, setAsOf] = useState<number | null>(null);
+  const { tiles, asOf } = useSp500HeatmapStore();
   const [hovered, setHovered] = useState<HeatmapTile | null>(null);
   const [metricMode, setMetricMode] = useState<HeatmapMetricMode>(() => loadStoredMetricMode());
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
-
-  useEffect(() => {
-    if (!sidecarPort) return;
-    let cancelled = false;
-
-    async function fetchHeatmap() {
-      try {
-        const res = await fetch(`http://127.0.0.1:${sidecarPort}/heatmap/sp500`);
-        if (!res.ok) return;
-        const payload = await res.json();
-        if (cancelled) return;
-        setTiles((payload.tiles as HeatmapTile[]) ?? []);
-        setAsOf((payload.asOf as number) ?? null);
-      } catch {
-        // Ignore transient sidecar issues.
-      }
-    }
-
-    fetchHeatmap();
-    const id = setInterval(fetchHeatmap, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [sidecarPort]);
 
   useEffect(() => {
     try {

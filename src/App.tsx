@@ -9,13 +9,26 @@ import SignUp from "./pages/auth/SignUp";
 import Terms from "./pages/auth/Terms";
 import Dashboard from "./pages/Dashboard";
 import DetachedWindow from "./pages/DetachedWindow";
+import TestWindow from "./pages/TestWindow";
 import { LayoutProvider, useLayout } from "./lib/layout";
 import { TwsProvider } from "./lib/tws";
 import { TabProvider, useTabs } from "./lib/tabs";
 import { appWindow } from "@tauri-apps/api/window";
 import { WatchlistProvider, useWatchlist } from "./lib/watchlist";
 import { isTauriRuntime } from "./lib/platform";
-import { isDetachedWindow } from "./lib/detached";
+import { isDetachedWindow, isTestWindowLabel, setMainWindowClosing } from "./lib/detached";
+
+type WindowMode = "main" | "detached" | "test";
+
+function isTestWindow(): boolean {
+  return isTestWindowLabel();
+}
+
+function resolveWindowMode(): WindowMode {
+  if (isTestWindow()) return "test";
+  if (isDetachedWindow()) return "detached";
+  return "main";
+}
 
 function SplashScreen({ label }: { label: string }) {
   return (
@@ -45,11 +58,17 @@ function CloseGuard() {
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
+    if (!isDetachedWindow()) {
+      setMainWindowClosing(false);
+    }
 
     const unlisten = appWindow.onCloseRequested(async (event) => {
       if (isClosing) return;
       isClosing = true;
       event.preventDefault();
+      if (!isDetachedWindow()) {
+        setMainWindowClosing(true);
+      }
       await Promise.all([flushLayout(), flushTabs(), flushWatchlist()]);
       await appWindow.close();
     });
@@ -63,19 +82,6 @@ function CloseGuard() {
 
 function AppRoutes() {
   const { session, loading, authError } = useAuth();
-
-  // Detached tab windows skip the full layout/tab infrastructure
-  if (isDetachedWindow()) {
-    if (loading) return <SplashScreen label="Loading" />;
-    if (!session) return <SplashScreen label="Session expired — reopen from main window" />;
-    return (
-      <WatchlistProvider>
-        <TwsProvider>
-          <DetachedWindow />
-        </TwsProvider>
-      </WatchlistProvider>
-    );
-  }
 
   if (loading) return <SplashScreen label="Starting app" />;
 
@@ -119,6 +125,28 @@ function AppRoutes() {
 }
 
 function App() {
+  const windowMode = resolveWindowMode();
+
+  if (windowMode === "test") {
+    return (
+      <ErrorBoundary>
+        <TestWindow />
+      </ErrorBoundary>
+    );
+  }
+
+  if (windowMode === "detached") {
+    return (
+      <ErrorBoundary>
+        <WatchlistProvider>
+          <TwsProvider>
+            <DetachedWindow />
+          </TwsProvider>
+        </WatchlistProvider>
+      </ErrorBoundary>
+    );
+  }
+
   return (
     <ErrorBoundary>
       <AuthProvider>

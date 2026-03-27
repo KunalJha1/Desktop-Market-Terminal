@@ -2,20 +2,19 @@ import { useEffect, useMemo, useRef, useState, memo } from "react";
 import { GripVertical, X } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
 import CircularGauge from "./CircularGauge";
-import { useTws } from "../lib/tws";
 import { useWatchlist } from "../lib/watchlist";
 import { LOGO_SYMBOLS } from "../lib/logo-symbols";
 import type { HeatmapTile } from "../lib/heatmap-utils";
 import { formatMarketCap } from "../lib/market-data";
 import { linkBus } from "../lib/link-bus";
 import { useSp500HeatmapData } from "../lib/use-sp500-heatmap";
+import { useTechScores } from "../lib/use-technicals";
 import {
   TA_SCORE_TIMEFRAMES,
   TA_SCORE_TF_LABELS,
   type TaScoreTimeframe,
 } from "../lib/ta-score-timeframes";
 
-const SCORE_POLL_MS = 60_000;
 const ROW_HEIGHT = 46;
 
 type BuiltInColumnId =
@@ -40,7 +39,6 @@ interface TechScores {
   "5m": number | null;
   "15m": number | null;
   "1h": number | null;
-  "4h": number | null;
   "1d": number | null;
   "1w": number | null;
 }
@@ -172,10 +170,8 @@ export default function MiniScreenerCard({
   onConfigChange,
   onSymbolSelect,
 }: MiniScreenerCardProps) {
-  const { sidecarPort } = useTws();
   const { symbols: watchlistSymbols } = useWatchlist();
   const tiles = useSp500HeatmapData();
-  const [techScoresMap, setTechScoresMap] = useState<Map<string, TechScores>>(new Map());
   const containerRef = useRef<HTMLDivElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
   const configuredVisibleColumns = useMemo(() => readVisibleColumns(config), [config]);
@@ -230,6 +226,7 @@ export default function MiniScreenerCard({
   };
 
   const visibleTimeframes = useMemo(() => getVisibleTimeframes(visibleColumns), [visibleColumns]);
+  const technicals = useTechScores(watchlistSymbols, visibleTimeframes);
 
   useEffect(() => {
     const sortStillVisible =
@@ -359,48 +356,15 @@ export default function MiniScreenerCard({
     window.addEventListener("mouseup", onUp);
   };
 
-  useEffect(() => {
-    if (!sidecarPort || watchlistSymbols.length === 0) return;
-    let cancelled = false;
-
-    async function fetchScores() {
-      try {
-        const syms = watchlistSymbols.join(",");
-        const res = await fetch(`http://127.0.0.1:${sidecarPort}/technicals/scores?symbols=${syms}`);
-        if (!res.ok) return;
-        const data: Record<string, TechScores>[] = await res.json();
-        if (cancelled) return;
-        const map = new Map<string, TechScores>();
-        if (Array.isArray(data)) {
-          for (const entry of data) {
-            const sym = (entry as Record<string, unknown>).symbol as string;
-            if (sym) map.set(sym, entry as unknown as TechScores);
-          }
-        }
-        setTechScoresMap(map);
-      } catch {
-        // ignore transport failures; next poll retries
-      }
-    }
-
-    fetchScores();
-    const id = setInterval(fetchScores, SCORE_POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [sidecarPort, watchlistSymbols]);
-
   const rows = useMemo(() => {
     const enriched: ScreenerRow[] = tiles.map((tile) => {
-      const detailed = techScoresMap.get(tile.symbol);
+      const detailed = technicals.get(tile.symbol);
       const techScores: TechScores = {
-        "5m": detailed?.["5m"] ?? null,
-        "15m": detailed?.["15m"] ?? null,
-        "1h": detailed?.["1h"] ?? null,
-        "4h": detailed?.["4h"] ?? null,
-        "1d": detailed?.["1d"] ?? tile.techScore1d ?? null,
-        "1w": detailed?.["1w"] ?? tile.techScore1w ?? null,
+        "5m": detailed?.get("5m")?.score ?? null,
+        "15m": detailed?.get("15m")?.score ?? null,
+        "1h": detailed?.get("1h")?.score ?? null,
+        "1d": detailed?.get("1d")?.score ?? tile.techScore1d ?? null,
+        "1w": detailed?.get("1w")?.score ?? tile.techScore1w ?? null,
       };
       return {
         ...tile,
@@ -446,7 +410,7 @@ export default function MiniScreenerCard({
     });
 
     return enriched;
-  }, [tiles, techScoresMap, visibleTimeframes, sortDir, sortKey]);
+  }, [tiles, technicals, visibleTimeframes, sortDir, sortKey]);
 
   const gridTemplateColumns = useMemo(
     () =>
@@ -470,8 +434,8 @@ export default function MiniScreenerCard({
     <div className="flex h-full flex-col overflow-hidden border border-white/[0.06] bg-panel">
       <div className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-medium text-white/70">Screener</span>
-          <span className="font-mono text-[11px] text-white/25">
+          <span className="text-[11px] font-medium text-white/80">Screener</span>
+          <span className="font-mono text-[11px] text-white/40">
             {tiles.length > 0 ? `${rows.length}/${tiles.length}` : ""}
           </span>
         </div>

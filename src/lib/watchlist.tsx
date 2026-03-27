@@ -16,10 +16,6 @@ import {
 import { appDataDir, join } from "@tauri-apps/api/path";
 import { invoke } from "@tauri-apps/api/tauri";
 
-export const DEFAULT_WATCHLIST_SYMBOLS = [
-  "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD",
-];
-
 const WATCHLIST_FILENAME = "watchlist.json";
 const SAVE_DEBOUNCE_MS = 800;
 const LS_KEY = "dailyiq-watchlist-symbols";
@@ -125,7 +121,7 @@ async function fileSaveSymbols(syms: string[]) {
 
 export function WatchlistProvider({ children }: { children: ReactNode }) {
   const [symbols, setSymbolsState] = useState<string[]>(
-    () => readLocalStorageSymbols() ?? DEFAULT_WATCHLIST_SYMBOLS,
+    () => readLocalStorageSymbols() ?? [],
   );
   const ready = true;
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -52,6 +52,9 @@ FINNHUB_HTTP_TIMEOUT_S = 10.0
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+SIDECAR_STARTED_AT_MS = _now_ms()
 
 
 def _manual_account_ref(account_id: str) -> str:
@@ -149,6 +152,10 @@ _portfolio_cache_lock: asyncio.Lock | None = None
 _portfolio_cache: dict | None = None
 _portfolio_cache_time: float = 0.0
 _portfolio_last_good: dict | None = None
+SP500_HEATMAP_CACHE_TTL_S = 5.0
+_sp500_heatmap_cache_lock: asyncio.Lock | None = None
+_sp500_heatmap_cache_payload: dict | None = None
+_sp500_heatmap_cache_time: float = 0.0
 
 
 async def _ensure_pool_configured(pool: ConnectionPool) -> bool:
@@ -1014,13 +1021,18 @@ def create_app() -> FastAPI:
     )
     ticker_metadata = _load_ticker_metadata()
 
+    async def _probe_tws() -> tuple[str, int] | None:
+        port = await probe_tws_port(DEFAULT_TWS_HOST, DEFAULT_TWS_PORTS)
+        return (DEFAULT_TWS_HOST, port) if port is not None else None
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        global _portfolio_cache_lock
+        global _portfolio_cache_lock, _sp500_heatmap_cache_lock
         # Create asyncio primitives inside the running event loop to avoid
         # "Future attached to a different loop" errors on Windows (ProactorEventLoop).
         _portfolio_cache_lock = asyncio.Lock()
-        pool = ConnectionPool()
+        _sp500_heatmap_cache_lock = asyncio.Lock()
+        pool = ConnectionPool(probe_fn=_probe_tws)
 
         scorer.set_symbols(await run_db(read_watchlist_symbols))
         sp500_symbols = [
@@ -1062,8 +1074,33 @@ def create_app() -> FastAPI:
     )
 
     @app.get("/health")
-    async def health():
-        return {"status": "ok", "finnhub": _current_finnhub_status()}
+    async def health(request: Request):
+        pool: ConnectionPool = request.app.state.pool
+        ib_status = pool.get_role_status(PORTFOLIO_ROLE)
+        now_ms = _now_ms()
+        return {
+            "status": "ok",
+            "now": now_ms,
+            "startedAt": SIDECAR_STARTED_AT_MS,
+            "uptimeMs": now_ms - SIDECAR_STARTED_AT_MS,
+            "ib": ib_status,
+            "finnhub": _current_finnhub_status(),
+        }
+
+    @app.get("/healthz")
+    async def healthz():
+        now_ms = _now_ms()
+        return {
+            "status": "ok",
+            "now": now_ms,
+            "startedAt": SIDECAR_STARTED_AT_MS,
+            "uptimeMs": now_ms - SIDECAR_STARTED_AT_MS,
+        }
+
+    @app.get("/tws-status")
+    async def tws_status(request: Request):
+        pool: ConnectionPool = request.app.state.pool
+        return pool.get_role_status(PORTFOLIO_ROLE)
 
     @app.get("/settings/finnhub/status")
     async def finnhub_status():
@@ -1648,10 +1685,20 @@ def create_app() -> FastAPI:
 
     @app.get("/heatmap/sp500")
     async def get_sp500_heatmap():
+        global _sp500_heatmap_cache_payload, _sp500_heatmap_cache_time
         sp500_symbols = [
             sym for sym, meta in ticker_metadata.items()
             if meta.get("enabled") and float(meta.get("sp500Weight") or 0) > 0
         ]
+
+        now = time.monotonic()
+        if _sp500_heatmap_cache_lock is not None:
+            async with _sp500_heatmap_cache_lock:
+                if (
+                    _sp500_heatmap_cache_payload is not None and
+                    (now - _sp500_heatmap_cache_time) < SP500_HEATMAP_CACHE_TTL_S
+                ):
+                    return _sp500_heatmap_cache_payload
 
         def _read():
             if not sp500_symbols:
@@ -1684,12 +1731,17 @@ def create_app() -> FastAPI:
                 return tiles
 
         tiles = await run_db(_read)
-        return {
+        payload = {
             "asOf": int(time.time() * 1000),
             "universe": "sp500",
             "count": len(tiles),
             "tiles": tiles,
         }
+        if _sp500_heatmap_cache_lock is not None:
+            async with _sp500_heatmap_cache_lock:
+                _sp500_heatmap_cache_payload = payload
+                _sp500_heatmap_cache_time = time.monotonic()
+        return payload
 
     @app.get("/heatmap/custom")
     async def get_custom_heatmap(symbols: str = ""):

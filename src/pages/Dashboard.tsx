@@ -40,15 +40,35 @@ const CONNECTION_LABELS: Record<string, string> = {
 export default function Dashboard() {
   const { session } = useAuth();
   const { tabs, activeTabId } = useTabs();
-  const { status, port, clientId, connectionType, sidecarStatus, finnhubStatus } = useTws();
+  const {
+    status,
+    port,
+    clientId,
+    connectionType,
+    sidecarStatus,
+    finnhubStatus,
+    finnhubHasKey,
+    ibStatus,
+    backendState,
+    backendMessage,
+    restartBackend,
+  } = useTws();
   const { isMac } = usePlatform();
 
   // Derive active data provider for status bar
   const dataProvider = status === "connected"
     ? "live" as const
-    : sidecarStatus === "connected"
+    : sidecarStatus !== "disconnected"
       ? "yahoo" as const
       : "offline" as const;
+  const finnhubIndicatorState =
+    finnhubStatus === "connected"
+      ? "connected"
+      : finnhubStatus === "testing"
+        ? "testing"
+        : finnhubHasKey
+          ? "saved"
+          : "off";
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [appVersion, setAppVersion] = useState("");
@@ -80,8 +100,8 @@ export default function Dashboard() {
     <div className="flex h-screen flex-col bg-base">
       {/* Top bar — draggable titlebar */}
       <header
-        className={`flex h-8 shrink-0 items-center border-b border-white/[0.06] bg-[#10151C] px-3 ${
-          isMac ? "justify-end pl-[70px]" : "justify-between"
+        className={`flex h-8 shrink-0 items-center border-b border-white/[0.06] bg-[#10151C] ${
+          isMac ? "justify-end pl-[70px]" : "justify-between pl-3"
         }`}
         onMouseDown={async (e) => {
           if (!canDragWindow) return;
@@ -212,49 +232,88 @@ export default function Dashboard() {
             </span>
           </div>
           <span className="text-white/10">|</span>
-          {/* TWS connection */}
+          {/* Backend status — clickable restart when not healthy */}
+          {backendState === "healthy" ? (
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-green" />
+              <span>BACKEND</span>
+            </div>
+          ) : (
+            <button
+              onClick={restartBackend}
+              title={backendMessage || "Click to restart backend"}
+              className={`flex items-center gap-1.5 rounded px-1 transition-colors duration-120 ${
+                backendState === "restarting" || backendState === "starting"
+                  ? "cursor-default text-amber"
+                  : "cursor-pointer text-red/70 hover:text-red hover:bg-red/10"
+              }`}
+              disabled={backendState === "restarting" || backendState === "starting"}
+            >
+              <span
+                className={`inline-block h-1.5 w-1.5 rounded-full ${
+                  backendState === "starting" || backendState === "restarting" || backendState === "unhealthy"
+                    ? "bg-amber animate-pulse"
+                    : "bg-red/60"
+                }`}
+              />
+              <span>
+                {backendState === "starting"
+                  ? "BACKEND STARTING"
+                  : backendState === "restarting"
+                    ? "BACKEND RESTARTING"
+                    : backendState === "unhealthy"
+                      ? "BACKEND UNHEALTHY ↻"
+                      : "BACKEND OFFLINE ↻"}
+              </span>
+            </button>
+          )}
+          <span className="text-white/10">|</span>
           <div className="flex items-center gap-1.5">
             <span
               className={`inline-block h-1.5 w-1.5 rounded-full ${
-                status === "connected"
+                status === "connected" && ibStatus === "connected"
                   ? "bg-green"
-                  : status === "probing"
+                  : status === "probing" || ibStatus === "reconnecting"
                     ? "bg-amber animate-pulse"
                     : "bg-red/60"
               }`}
             />
             <span>
-              {status === "connected" && connectionType
+              {status === "connected" && ibStatus === "connected" && connectionType
                 ? CONNECTION_LABELS[connectionType]
-                : status === "probing"
-                  ? "Probing..."
-                  : "Disconnected"}
+                : ibStatus === "reconnecting"
+                  ? "Reconnecting..."
+                  : status === "probing"
+                    ? "Probing..."
+                    : "Disconnected"}
             </span>
           </div>
           <span className="text-white/10">|</span>
           <div className="flex items-center gap-1.5">
             <span
               className={`inline-block h-1.5 w-1.5 rounded-full ${
-                finnhubStatus === "connected"
+                finnhubIndicatorState === "connected"
                   ? "bg-green"
-                  : finnhubStatus === "testing"
+                  : finnhubIndicatorState === "testing" || finnhubIndicatorState === "saved"
                     ? "bg-amber animate-pulse"
                     : "bg-red/60"
               }`}
             />
             <span
               className={
-                finnhubStatus === "connected"
+                finnhubIndicatorState === "connected"
                   ? "text-green"
-                  : finnhubStatus === "testing"
+                  : finnhubIndicatorState === "testing" || finnhubIndicatorState === "saved"
                     ? "text-amber"
                     : "text-red/60"
               }
             >
-              {finnhubStatus === "connected"
+              {finnhubIndicatorState === "connected"
                 ? "FINNHUB"
-                : finnhubStatus === "testing"
+                : finnhubIndicatorState === "testing"
                   ? "FINNHUB TESTING"
+                  : finnhubIndicatorState === "saved"
+                    ? "FINNHUB SAVED"
                   : "FINNHUB OFF"}
             </span>
           </div>
