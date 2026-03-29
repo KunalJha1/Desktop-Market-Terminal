@@ -23,7 +23,7 @@
 
 ---
 
-<img src="public/dailyiq-brand-resources/preview-v-0.1.0.png" alt="DailyIQ platform preview" width="100%" />
+<img src="public/dailyiq-brand-resources/dashboard-preview-v-0.2.0.png" alt="DailyIQ platform preview" width="100%" />
 
 ---
 
@@ -103,6 +103,8 @@ graph TD
 - Historical bars are cached locally in SQLite across intraday and daily tables.
 - Chart data can come from live IBKR flow or local cached history populated through the sidecar workers.
 
+<img src="public/dailyiq-brand-resources/chart-preview-v-0.2.0.png" alt="DailyIQ charting preview" width="100%" />
+
 ### Technical analysis and scoring
 
 - Technical scoring pipeline computes normalized 0-100 scores for `5m`, `15m`, `1h`, `4h`, `1d`, and `1w`.
@@ -131,6 +133,8 @@ graph TD
 - Hover detail panels expose price move, sector, industry, valuation, and technical score context.
 - Screener view supports search, symbol drill-in, market-cap sorting, valuation sorting, technical timeframe toggles, and verdict labels.
 - Filters include watchlist, MAG 7, movers, bullish, and bearish sets.
+
+<img src="public/dailyiq-brand-resources/heatmap-preview-v-0.2.0.png" alt="DailyIQ heatmap preview" width="100%" />
 
 ### Authentication and local-first storage
 
