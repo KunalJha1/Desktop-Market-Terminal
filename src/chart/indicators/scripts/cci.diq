@@ -1,8 +1,11 @@
 //@version=1
 indicator("CCI", overlay=false)
 length = input.int(20, "Length")
+maLength = input.int(14, "MA Length")
 cciVal = ta.cci(hlc3, length)
+cciMa = ta.sma(cciVal, maLength)
 plot(cciVal, "CCI", color=#F59E0B)
+plot(cciMa, "MA", color=#FF3D71)
 hline(200, color=#FF3D71, style=dashed)
 hline(100, color=#F59E0B, style=dashed)
 hline(0, color=#484F58, style=solid)

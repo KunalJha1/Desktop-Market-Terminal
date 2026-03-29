@@ -14,6 +14,7 @@ interface UseChartDataResult {
   bars: OHLCVBar[];
   loading: boolean;
   source: 'tws' | 'yahoo' | 'cache' | 'offline';
+  datasetKey: string;
   onViewportChange: (startIdx: number, endIdx: number) => void;
   pendingViewportShift: number;
   onViewportShiftApplied: () => void;
@@ -98,6 +99,17 @@ function trimIntradayTail(bars: OHLCVBar[]): OHLCVBar[] {
   return bars.slice(bars.length - MAX_INTRADAY_RAW_BARS);
 }
 
+function canUseTailUpdate(existingBars: OHLCVBar[], nextBars: OHLCVBar[], changeOffset: number): boolean {
+  if (existingBars.length === 0 || nextBars.length === 0) return false;
+  if (!Number.isFinite(changeOffset) || changeOffset < 0) return false;
+  if (changeOffset > existingBars.length || changeOffset > nextBars.length) return false;
+  if (nextBars.length < existingBars.length) return false;
+  for (let i = 0; i < changeOffset; i++) {
+    if (existingBars[i]?.time !== nextBars[i]?.time) return false;
+  }
+  return true;
+}
+
 function getDisplayBars(rawBars: OHLCVBar[], rawBarSize: RawBarSize, timeframe: string): OHLCVBar[] {
   if ((rawBarSize === '1d' && timeframe === '1D') || timeframe === rawBarSize) {
     return rawBars;
@@ -127,12 +139,17 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
   const viewportAnchorRef = useRef<{ startIdx: number; anchorTime: number } | null>(null);
   const intradayPollRafRef = useRef<number | null>(null);
   const intradayPollPendingRef = useRef<{ bars: OHLCVBar[]; source: 'tws' | 'yahoo' | 'cache' } | null>(null);
+  const activeDatasetKeyRef = useRef('');
 
   // Keep ref in sync for async access
   rawBarsRef.current = rawBars;
 
   const useDaily = isDailyTimeframe(timeframe);
   const requestConfig = useMemo(() => getHistoricalRequestConfig(timeframe), [timeframe]);
+  const datasetKey = useMemo(
+    () => `${normalizedSymbol}::${timeframe}::${requestConfig.rawBarSize}`,
+    [normalizedSymbol, timeframe, requestConfig.rawBarSize],
+  );
 
   // How many raw 1m bars to fetch for the initial load
   const initialLimit = useMemo(() => {
@@ -143,8 +160,39 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
   // ── Daily: full fetch (unchanged behavior) ──────────────────────────
   // ── Intraday: windowed fetch with limit ─────────────────────────────
   useEffect(() => {
-    if (!sidecarPort || !normalizedSymbol) {
+    const datasetChanged = activeDatasetKeyRef.current !== datasetKey;
+    activeDatasetKeyRef.current = datasetKey;
+
+    if (panDebounceRef.current) {
+      clearTimeout(panDebounceRef.current);
+      panDebounceRef.current = null;
+    }
+    if (intradayPollRafRef.current != null) {
+      cancelAnimationFrame(intradayPollRafRef.current);
+      intradayPollRafRef.current = null;
+    }
+    intradayPollPendingRef.current = null;
+    panFetchingRef.current = false;
+    setUpdateMode('full');
+    setTailChangeOffset(0);
+    setPendingViewportShift(0);
+    viewportAnchorRef.current = null;
+
+    if (datasetChanged) {
+      rawBarsRef.current = [];
+      displayBarsRef.current = [];
       setRawBars([]);
+      setRawBarSize(requestConfig.rawBarSize);
+    }
+
+    if (!normalizedSymbol) {
+      setRawBars([]);
+      setSource('offline');
+      setLoading(false);
+      return;
+    }
+    if (!sidecarPort) {
+      // Port temporarily offline (sidecar restarting) — keep existing bars visible
       setSource('offline');
       setLoading(false);
       return;
@@ -153,8 +201,6 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
     const requestId = ++requestIdRef.current;
     setLoading(true);
     serverExtentRef.current = null;
-    setPendingViewportShift(0);
-    viewportAnchorRef.current = null;
 
     let cancelled = false;
 
@@ -246,12 +292,20 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
               const changeIdx = prevBars.length > 0
                 ? prevBars.findIndex(b => b.time >= firstNewTs)
                 : 0;
-              setTailChangeOffset(Math.max(0, changeIdx === -1 ? prevBars.length : changeIdx));
-              setUpdateMode('tail');
+              let resolvedUpdateMode: 'full' | 'tail' = 'full';
+              let resolvedTailChangeOffset = 0;
               setRawBars(prev => {
                 const merged = mergeBarsByTime(prev, incoming);
-                return requestConfig.rawBarSize === '1d' ? merged : trimIntradayTail(merged);
+                const nextBars = requestConfig.rawBarSize === '1d' ? merged : trimIntradayTail(merged);
+                const offset = Math.max(0, changeIdx === -1 ? prevBars.length : changeIdx);
+                if (canUseTailUpdate(prev, nextBars, offset)) {
+                  resolvedUpdateMode = 'tail';
+                  resolvedTailChangeOffset = offset;
+                }
+                return nextBars;
               });
+              setTailChangeOffset(resolvedTailChangeOffset);
+              setUpdateMode(resolvedUpdateMode);
               setRawBarSize(requestConfig.rawBarSize);
               setSource(pack.source);
             });
@@ -275,7 +329,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
       }
       intradayPollPendingRef.current = null;
     };
-  }, [normalizedSymbol, sidecarPort, timeframe, useDaily, requestConfig]);
+  }, [datasetKey, normalizedSymbol, sidecarPort, timeframe, useDaily, requestConfig]);
 
   // ── Pan-triggered fetch: load older bars when scrolling left ─────────
   const onViewportChange = useCallback((startIdx: number, endIdx: number) => {
@@ -364,7 +418,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
     setPendingViewportShift(0);
   }, []);
 
-  return { bars, loading, source, onViewportChange, pendingViewportShift, onViewportShiftApplied, updateMode, tailChangeOffset };
+  return { bars, loading, source, datasetKey, onViewportChange, pendingViewportShift, onViewportShiftApplied, updateMode, tailChangeOffset };
 }
 
 function bucketFor(tsMs: number, timeframe: string): number {

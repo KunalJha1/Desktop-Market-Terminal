@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -46,21 +47,58 @@ class FinnhubFallbackTests(unittest.TestCase):
     def test_watchlist_fallback_uses_yahoo_when_finnhub_fails(self) -> None:
         yahoo_quotes = [{"symbol": "AAPL", "last": 100.0, "source": "yahoo"}]
         with patch.object(worker_watchlist, "_load_finnhub_api_key", return_value="bad-key"):
-            with patch.object(
-                worker_watchlist,
-                "fetch_quotes_from_finnhub",
-                side_effect=RuntimeError("HTTP 401"),
+            with patch(
+                "dailyiq_provider.fetch_watchlist_quotes_from_dailyiq",
+                return_value=[],
             ):
                 with patch.object(
                     worker_watchlist,
-                    "fetch_watchlist_quotes_from_yahoo",
-                    return_value=yahoo_quotes,
-                ) as yahoo_mock:
-                    source, quotes = worker_watchlist.fetch_watchlist_quotes_with_fallback(["AAPL"])
+                    "fetch_quotes_from_finnhub",
+                    side_effect=RuntimeError("HTTP 401"),
+                ):
+                    with patch.object(
+                        worker_watchlist,
+                        "fetch_watchlist_quotes_from_yahoo",
+                        return_value=yahoo_quotes,
+                    ) as yahoo_mock:
+                        source, quotes = worker_watchlist.fetch_watchlist_quotes_with_fallback(["AAPL"])
 
         self.assertEqual(source, "yahoo")
         self.assertEqual(quotes, yahoo_quotes)
         yahoo_mock.assert_called_once_with(["AAPL"])
+
+    def test_watchlist_prefers_dailyiq_when_available(self) -> None:
+        diq_quotes = [{"symbol": "AAPL", "last": 101.0, "source": "dailyiq"}]
+        with patch.dict(os.environ, {"DAILYIQ_API_KEY": "test-key"}, clear=False):
+            with patch.object(worker_watchlist, "_load_finnhub_api_key", return_value="bad-key"):
+                with patch(
+                    "dailyiq_provider.fetch_watchlist_quotes_from_dailyiq",
+                    return_value=diq_quotes,
+                ):
+                    with patch.object(worker_watchlist, "fetch_watchlist_quotes_from_yahoo") as yahoo_mock:
+                        source, quotes = worker_watchlist.fetch_watchlist_quotes_with_fallback(["AAPL"])
+
+        self.assertEqual(source, "dailyiq")
+        self.assertEqual(quotes, diq_quotes)
+        yahoo_mock.assert_not_called()
+
+    def test_watchlist_logs_when_dailyiq_key_missing(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(worker_watchlist, "_load_finnhub_api_key", return_value=""):
+                with patch(
+                    "dailyiq_provider.fetch_watchlist_quotes_from_dailyiq",
+                    return_value=[],
+                ):
+                    with patch.object(worker_watchlist, "fetch_watchlist_quotes_from_yahoo", return_value=[]):
+                        with self.assertLogs("watchlist-worker", level="INFO") as logs:
+                            source, quotes = worker_watchlist.fetch_watchlist_quotes_with_fallback(["AAPL"])
+
+        self.assertEqual(source, "yahoo")
+        self.assertEqual(quotes, [])
+        self.assertTrue(
+            any("DAILYIQ_API_KEY is not set" in message for message in logs.output),
+            logs.output,
+        )
 
 
 if __name__ == "__main__":

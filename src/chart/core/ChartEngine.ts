@@ -36,16 +36,20 @@ import type { Timeframe } from '../types';
 const BRANDING_ASSETS: Record<Exclude<ChartBrandingMode, 'none'>, { src: string; opacity: number }> = {
   fullLogo: {
     src: '/dailyiq-brand-resources/daily-iq-topbar-logo.svg',
-    opacity: 0.2,
+    opacity: 0.34,
   },
   icon: {
     src: '/dailyiq-brand-resources/daily-iq-topbar-favicon.svg',
-    opacity: 0.26,
+    opacity: 0.4,
   },
 };
 
 const brandingImageCache = new Map<string, HTMLImageElement>();
 const brandingImageFailures = new Set<string>();
+
+function isProbEngWidgetIndicator(indicator: ActiveIndicator): boolean {
+  return indicator.name === 'Probability Engine';
+}
 
 /** Single formatter for session tinting — avoid constructing Intl.DateTimeFormat per bar per frame. */
 const CHART_ET_DATE_FORMAT = new Intl.DateTimeFormat('en-US', {
@@ -71,6 +75,22 @@ function etDatePartsFromMs(tsMs: number): { year: number; month: number; day: nu
     hour: getPart('hour'),
     minute: getPart('minute'),
   };
+}
+
+function sameUtcDay(a: number, b: number): boolean {
+  const left = new Date(a);
+  const right = new Date(b);
+  return left.getUTCFullYear() === right.getUTCFullYear()
+    && left.getUTCMonth() === right.getUTCMonth()
+    && left.getUTCDate() === right.getUTCDate();
+}
+
+function formatLiquidityPrice(price: number): string {
+  if (!Number.isFinite(price)) return 'n/a';
+  if (Math.abs(price) >= 10000) return price.toFixed(0);
+  if (Math.abs(price) >= 1000) return price.toFixed(2);
+  if (Math.abs(price) >= 1) return price.toFixed(2);
+  return price.toFixed(4);
 }
 
 export class ChartEngine {
@@ -173,6 +193,8 @@ export class ChartEngine {
     const prevLength = this.bars.length;
     const wasNearEnd = this.liveMode && this.viewport.isNearEnd(2);
     this.bars = bars;
+    this.lastNotifiedViewportStart = null;
+    this.lastNotifiedViewportEnd = null;
     this.viewport.setRightOffsetBars(this.computeRightOffsetBars());
     this.viewport.setTotalBars(bars.length);
     this.recomputeIndicators(false);
@@ -187,6 +209,10 @@ export class ChartEngine {
    * Skips onViewportChange to avoid triggering pan-fetch cascades.
    */
   updateTail(bars: OHLCVBar[], changeOffset: number) {
+    if (!this.canApplyTailUpdate(bars, changeOffset)) {
+      this.setData(bars);
+      return;
+    }
     const prevLength = this.bars.length;
     const wasNearEnd = this.liveMode && this.viewport.isNearEnd(2);
     this.bars = bars;
@@ -203,6 +229,17 @@ export class ChartEngine {
     }
 
     this.dirty = true;
+  }
+
+  private canApplyTailUpdate(nextBars: OHLCVBar[], changeOffset: number): boolean {
+    if (this.bars.length === 0 || nextBars.length === 0) return false;
+    if (!Number.isFinite(changeOffset) || changeOffset < 0) return false;
+    if (changeOffset > this.bars.length || changeOffset > nextBars.length) return false;
+    if (nextBars.length < this.bars.length) return false;
+    for (let i = 0; i < changeOffset; i++) {
+      if (this.bars[i]?.time !== nextBars[i]?.time) return false;
+    }
+    return true;
   }
 
   setOnViewportChange(cb: ((startIdx: number, endIdx: number) => void) | null) {
@@ -324,6 +361,11 @@ export class ChartEngine {
     if (wasNearEnd) {
       this.viewport.scrollToEnd();
     }
+    this.markDirty();
+  }
+
+  setTooltipFields(fields: Record<string, boolean>) {
+    this.tooltip.setVisibleFields(fields);
     this.markDirty();
   }
 
@@ -805,7 +847,7 @@ export class ChartEngine {
     const paneMap = new Map<string, string[]>();
 
     for (const ind of this.activeIndicators) {
-      if (!ind.visible || ind.paneId === 'main') continue;
+      if (!ind.visible || ind.paneId === 'main' || isProbEngWidgetIndicator(ind)) continue;
       if (!paneMap.has(ind.paneId)) {
         paneMap.set(ind.paneId, []);
         paneOrder.push(ind.paneId);
@@ -1443,7 +1485,14 @@ export class ChartEngine {
     const end = Math.min(this.bars.length, Math.ceil(this.viewport.endIndex));
 
     for (const ind of this.activeIndicators) {
-      if (!ind.visible || ind.paneId !== 'main' || ind.name === 'Volume' || ind.name === 'MACD' || ind.name === 'Technical Score') continue;
+      if (
+        !ind.visible ||
+        ind.paneId !== 'main' ||
+        ind.name === 'Volume' ||
+        ind.name === 'MACD' ||
+        ind.name === 'Technical Score' ||
+        isProbEngWidgetIndicator(ind)
+      ) continue;
       this.renderIndicatorSeries(
         ind,
         (value) => this.viewport.priceToPixelY(value),
@@ -1454,7 +1503,7 @@ export class ChartEngine {
       );
     }
 
-    // Script overlay plots
+    // Script overlay plots/shapes
     for (const [, result] of this.scriptResults) {
       for (const plot of result.plots) {
         const points: [number, number][] = [];
@@ -1469,6 +1518,17 @@ export class ChartEngine {
           if (avg > this.viewport.priceMin * 0.5 && avg < this.viewport.priceMax * 2) {
             this.renderer.polyline(points, plot.color, plot.lineWidth);
           }
+        }
+      }
+
+      for (const shape of result.shapes) {
+        const direction = shape.text.toUpperCase().includes('BUY') ? 'up' : 'down';
+        for (let i = start; i < end; i += 1) {
+          if (i >= shape.values.length || isNaN(shape.values[i])) continue;
+          const x = this.viewport.barToPixelX(i);
+          const y = this.viewport.priceToPixelY(shape.values[i]);
+          if (y < this.viewport.chartTop - 32 || y > this.viewport.chartTop + this.viewport.chartHeight + 32) continue;
+          this.renderSignalMarker(x, y, shape.text, shape.color, direction);
         }
       }
     }
@@ -2110,13 +2170,16 @@ export class ChartEngine {
     max?: number,
   ) {
     const meta = indicatorRegistry[ind.name];
-    if (!meta) return;
+    if (!meta || isProbEngWidgetIndicator(ind)) return;
 
     if (ind.name === 'Volume Profile') {
       this.renderVolumeProfile(ind, toY, clipTop, clipBottom);
       return;
     }
 
+    if (ind.name === 'Liquidity Sweep (ICT/SMC)') {
+      this.renderLiquiditySweepIctSmc(ind, toY, clipTop, clipBottom);
+    }
     if (ind.name === 'Liquidity Sweep Signal') {
       this.renderLiquiditySweepBox(ind, toY, clipTop, clipBottom);
     }
@@ -2245,6 +2308,261 @@ export class ChartEngine {
     }
   }
 
+  private estimateLiquidityTickSize(): number {
+    let best = Infinity;
+    const consider = (value: number) => {
+      if (!Number.isFinite(value) || value <= 0) return;
+      const rounded = Math.round(value * 1e8) / 1e8;
+      if (rounded > 0) best = Math.min(best, rounded);
+    };
+
+    for (let i = 1; i < this.bars.length; i += 1) {
+      consider(Math.abs(this.bars[i].open - this.bars[i - 1].open));
+      consider(Math.abs(this.bars[i].high - this.bars[i - 1].high));
+      consider(Math.abs(this.bars[i].low - this.bars[i - 1].low));
+      consider(Math.abs(this.bars[i].close - this.bars[i - 1].close));
+      consider(Math.abs(this.bars[i].high - this.bars[i].low));
+    }
+
+    if (best !== Infinity) return best;
+    const fallback = Math.abs((this.bars[0]?.close ?? 0) / 10000);
+    return fallback > 0 ? fallback : 0.01;
+  }
+
+  private getCurrentDayStartIndex(): number {
+    if (this.bars.length === 0) return 0;
+    const lastTime = this.bars[this.bars.length - 1].time;
+    let start = this.bars.length - 1;
+    while (start > 0 && sameUtcDay(this.bars[start - 1].time, lastTime)) {
+      start -= 1;
+    }
+    return start;
+  }
+
+  private liquiditySourceName(code: number, isBull: boolean): string {
+    if (code === 1) return isBull ? 'DL' : 'DH';
+    if (code === 2) return isBull ? 'PDL' : 'PDH';
+    if (code === 3) return isBull ? 'PWL' : 'PWH';
+    if (code === 4) return isBull ? 'PML' : 'PMH';
+    return isBull ? 'DL' : 'DH';
+  }
+
+  private drawLiquidityTextBox(
+    lines: string[],
+    x: number,
+    y: number,
+    bgColor: string,
+    textColor: string,
+    clipTop: number,
+    clipBottom: number,
+  ): { left: number; top: number; right: number; bottom: number } | null {
+    const rect = this.measureLiquidityTextBox(lines, x, y, clipTop, clipBottom);
+    if (!rect) return null;
+    const paddingX = 8;
+    const lineHeight = 13;
+    const width = rect.right - rect.left;
+    const height = rect.bottom - rect.top;
+    this.renderer.rect(rect.left, rect.top, width, height, this.withAlpha(bgColor, 0.88));
+    this.renderer.rectStroke(rect.left, rect.top, width, height, this.withAlpha(bgColor, 1), 1);
+    this.renderer.textBlock(lines, rect.left + paddingX, rect.top + (height / 2), textColor, 'left', FONT_MONO_SMALL, lineHeight);
+    return rect;
+  }
+
+  private measureLiquidityTextBox(
+    lines: string[],
+    x: number,
+    y: number,
+    clipTop: number,
+    clipBottom: number,
+  ): { left: number; top: number; right: number; bottom: number } | null {
+    if (lines.length === 0) return null;
+    const paddingX = 8;
+    const paddingY = 6;
+    const lineHeight = 13;
+    const width = lines.reduce((max, line) => Math.max(max, this.renderer.measureText(line, FONT_MONO_SMALL).width), 0) + paddingX * 2;
+    const height = (lines.length * lineHeight) + paddingY * 2;
+    const chartLeft = this.viewport.chartLeft + 4;
+    const chartRight = this.viewport.chartLeft + this.viewport.chartWidth - 4;
+    const left = Math.min(Math.max(x, chartLeft), Math.max(chartLeft, chartRight - width));
+    const top = Math.min(Math.max(y - height / 2, clipTop), Math.max(clipTop, clipBottom - height));
+    return { left, top, right: left + width, bottom: top + height };
+  }
+
+  private boxesOverlap(
+    a: { left: number; top: number; right: number; bottom: number } | null,
+    b: { left: number; top: number; right: number; bottom: number } | null,
+  ): boolean {
+    if (!a || !b) return false;
+    return !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+  }
+
+  private shiftLiquidityBoxY(
+    desiredY: number,
+    lines: string[],
+    x: number,
+    clipTop: number,
+    clipBottom: number,
+    avoid: { left: number; top: number; right: number; bottom: number } | null,
+    preferBelow: boolean,
+  ): number {
+    if (!avoid || lines.length === 0) return desiredY;
+
+    const current = this.measureLiquidityTextBox(lines, x, desiredY, clipTop, clipBottom);
+    if (!current) return desiredY;
+    if (!this.boxesOverlap(current, avoid)) return desiredY;
+
+    const gap = 8;
+    const height = current.bottom - current.top;
+    const belowCenter = avoid.bottom + gap + (height / 2);
+    const aboveCenter = avoid.top - gap - (height / 2);
+    const candidates = preferBelow ? [belowCenter, aboveCenter] : [aboveCenter, belowCenter];
+
+    for (const candidate of candidates) {
+      const shifted = this.measureLiquidityTextBox(lines, x, candidate, clipTop, clipBottom);
+      if (!shifted) continue;
+      if (!this.boxesOverlap(shifted, avoid)) {
+        return (shifted.top + shifted.bottom) / 2;
+      }
+    }
+
+    return desiredY;
+  }
+
+  private renderLiquiditySweepIctSmc(
+    ind: ActiveIndicator,
+    toY: (value: number) => number,
+    clipTop: number,
+    clipBottom: number,
+  ) {
+    if (this.bars.length === 0) return;
+
+    const currentDayStart = this.getCurrentDayStartIndex();
+    const tickSize = this.estimateLiquidityTickSize();
+    const textColor = '#111827';
+
+    const buy = ind.data[8] ?? [];
+    const sell = ind.data[9] ?? [];
+    const bullTop = ind.data[10] ?? [];
+    const bullBottom = ind.data[11] ?? [];
+    const bearTop = ind.data[12] ?? [];
+    const bearBottom = ind.data[13] ?? [];
+    const bullSourceCode = ind.data[14] ?? [];
+    const bearSourceCode = ind.data[15] ?? [];
+
+    const showSweepLabel = (ind.params.liqShowSweepLabel ?? 1) >= 0.5;
+    const showAction = (ind.params.liqShowAction ?? 1) >= 0.5;
+    const showRange = (ind.params.liqShowRange ?? 1) >= 0.5;
+    const extendBars = Math.max(10, Math.round(ind.params.liqExtend ?? 120));
+    const labelXBars = Math.max(0, Math.round(ind.params.liqLabelXBars ?? 8));
+    const labelYOffsetTicks = Math.max(0, Math.round(ind.params.liqLabelYOffsetTicks ?? 20));
+    const actionXBars = Math.max(0, Math.round(ind.params.liqActionXBars ?? 2));
+    const actionYOffsetTicks = Math.max(0, Math.round(ind.params.liqActionYOffsetTicks ?? 10));
+
+    let latestBullIndex = -1;
+    for (let i = this.bars.length - 1; i >= currentDayStart; i -= 1) {
+      if (!Number.isNaN(bullTop[i]) && !Number.isNaN(bullBottom[i])) {
+        latestBullIndex = i;
+        break;
+      }
+    }
+
+    let latestBearIndex = -1;
+    for (let i = this.bars.length - 1; i >= currentDayStart; i -= 1) {
+      if (!Number.isNaN(bearTop[i]) && !Number.isNaN(bearBottom[i])) {
+        latestBearIndex = i;
+        break;
+      }
+    }
+
+    const latestIndex = Math.max(latestBullIndex, latestBearIndex);
+    if (latestIndex >= 0) {
+      const visibleStart = Math.floor(this.viewport.startIndex);
+      const visibleEnd = Math.ceil(this.viewport.endIndex);
+      if (latestIndex < visibleStart || latestIndex >= visibleEnd) {
+        return;
+      }
+
+      const isBull = latestIndex === latestBullIndex && latestBullIndex >= latestBearIndex;
+      const top = isBull ? bullTop[latestIndex] : bearTop[latestIndex];
+      const bottom = isBull ? bullBottom[latestIndex] : bearBottom[latestIndex];
+      const baseColor = isBull
+        ? (ind.colors?.buy ?? indicatorRegistry[ind.name].outputs.find((output) => output.key === 'buy')?.color ?? '#EAB308')
+        : (ind.colors?.sell ?? indicatorRegistry[ind.name].outputs.find((output) => output.key === 'sell')?.color ?? '#D946EF');
+
+      const leftX = this.viewport.barToPixelX(latestIndex);
+      const rightX = this.viewport.barToPixelX(latestIndex + extendBars);
+      const yTop = toY(Math.max(top, bottom));
+      const yBottom = toY(Math.min(top, bottom));
+      const rectTop = Math.max(clipTop, Math.min(yTop, yBottom));
+      const rectBottom = Math.min(clipBottom, Math.max(yTop, yBottom));
+      const rectHeight = rectBottom - rectTop;
+
+      if (rectHeight > 0) {
+        this.renderer.rect(leftX, rectTop, Math.max(1, rightX - leftX), rectHeight, this.withAlpha(baseColor, 0.25));
+        this.renderer.rectStroke(leftX, rectTop, Math.max(1, rightX - leftX), rectHeight, this.withAlpha(baseColor, 0.9), 1.5);
+      }
+
+      const sweepRange = top - bottom;
+      const sourceCode = isBull ? bullSourceCode[latestIndex] : bearSourceCode[latestIndex];
+      const sourceName = this.liquiditySourceName(sourceCode, isBull);
+      const labelX = this.viewport.barToPixelX(latestIndex + labelXBars);
+      const actionX = this.viewport.barToPixelX(latestIndex + actionXBars);
+      const actionLines = isBull
+        ? [
+          'ACTION: BUY',
+          `Entry: ${formatLiquidityPrice(top)}`,
+          `Stop Loss: ${formatLiquidityPrice(this.bars[latestIndex].low)}`,
+        ]
+        : [
+          'ACTION: SELL',
+          `Entry: ${formatLiquidityPrice(bottom)}`,
+          `Stop Loss: ${formatLiquidityPrice(this.bars[latestIndex].high)}`,
+        ];
+      const actionAnchorY = isBull
+        ? toY(bottom - (tickSize * actionYOffsetTicks))
+        : toY(top + (tickSize * actionYOffsetTicks));
+      let actionRect: { left: number; top: number; right: number; bottom: number } | null = null;
+
+      if (showSweepLabel) {
+        const pctBase = isBull ? top : bottom;
+        const sweepPct = pctBase !== 0 ? (sweepRange / pctBase) * 100 : NaN;
+        const lines = showRange
+          ? [
+            `${isBull ? 'Bullish' : 'Bearish'} Liquidity Sweep (${sourceName})`,
+            `Sweep Range: ${formatLiquidityPrice(sweepRange)}`,
+            `${isBull ? 'Sweep Low' : 'Sweep High'}: ${formatLiquidityPrice(isBull ? bottom : top)}`,
+            `${isBull ? 'Reclaim Level' : 'Reject Level'}: ${formatLiquidityPrice(isBull ? top : bottom)}`,
+            `Sweep %: ${Number.isFinite(sweepPct) ? sweepPct.toFixed(2) : 'n/a'}%`,
+          ]
+          : [`${isBull ? 'Bullish' : 'Bearish'} Liquidity Sweep (${sourceName})`];
+        const anchorY = isBull
+          ? toY(top + (tickSize * labelYOffsetTicks))
+          : toY(bottom - (tickSize * labelYOffsetTicks));
+        if (showAction) {
+          actionRect = this.measureLiquidityTextBox(actionLines, actionX, actionAnchorY, clipTop, clipBottom);
+          const adjustedAnchorY = this.shiftLiquidityBoxY(
+            anchorY,
+            lines,
+            labelX,
+            clipTop,
+            clipBottom,
+            actionRect,
+            !isBull,
+          );
+          this.drawLiquidityTextBox(actionLines, actionX, actionAnchorY, baseColor, textColor, clipTop, clipBottom);
+          this.drawLiquidityTextBox(lines, labelX, adjustedAnchorY, baseColor, textColor, clipTop, clipBottom);
+        } else {
+          this.drawLiquidityTextBox(lines, labelX, anchorY, baseColor, textColor, clipTop, clipBottom);
+        }
+      } else if (showAction) {
+        this.drawLiquidityTextBox(actionLines, actionX, actionAnchorY, baseColor, textColor, clipTop, clipBottom);
+      }
+    }
+
+    void buy;
+    void sell;
+  }
+
   private renderLiquiditySweepBox(
     ind: ActiveIndicator,
     toY: (value: number) => number,
@@ -2310,10 +2628,12 @@ export class ChartEngine {
     const thresholdPercent = Math.max(0, ind.params.thresholdPercent ?? 0);
     const extendBars = Math.max(5, Math.round(ind.params.extendBars ?? 80));
     const requireNextBarReaction = (ind.params.requireNextBarReaction ?? 1) !== 0;
+    const maxVisibleFvgs = Math.max(1, Math.round(ind.params.maxVisibleFvgs ?? 3));
     const sourceTimeframe = ind.textParams.sourceTimeframe ?? '';
     const zones = detectActiveFvgZones(this.bars, thresholdPercent, extendBars, requireNextBarReaction, sourceTimeframe);
+    const visibleZones = zones.slice(-maxVisibleFvgs);
 
-    for (const zone of zones) {
+    for (const zone of visibleZones) {
       const leftX = this.timeToPixelX(zone.leftTime);
       const rightX = this.timeToPixelX(zone.rightTime);
       const yTop = toY(zone.top);
@@ -2482,19 +2802,27 @@ export class ChartEngine {
     x: number,
     y: number,
     label: string,
-    color: string,
+    _color: string,
     direction: 'up' | 'down',
   ) {
-    const verticalOffset = direction === 'up' ? -18 : 18;
-    const stemEndY = y + (direction === 'up' ? -6 : 6);
-    const textY = y + verticalOffset;
-    const textWidth = Math.max(18, this.ctx.measureText(label).width + 8);
+    const badgeFill = direction === 'up' ? '#0B3B52' : '#4A2310';
+    const badgeStroke = direction === 'up' ? '#38BDF8' : '#FB923C';
+    const textColor = '#F8FAFC';
+    const stemEndY = y + (direction === 'up' ? -14 : 14);
+    const textY = y + (direction === 'up' ? -26 : 26);
+    const textWidth = Math.max(28, Math.ceil(this.renderer.measureText(label, FONT_MONO_SMALL).width) + 12);
+    const boxHeight = 14;
     const boxX = x - textWidth / 2;
-    const boxY = textY - 5;
+    const boxY = textY - boxHeight / 2;
+    const minY = this.viewport.chartTop + 4;
+    const maxY = this.viewport.chartTop + this.viewport.chartHeight - PRICE_AXIS_CONTROL_HEIGHT - boxHeight - 4;
+    const clampedBoxY = Math.min(Math.max(boxY, minY), Math.max(minY, maxY));
+    const clampedTextY = clampedBoxY + boxHeight / 2;
 
-    this.renderer.line(x, y, x, stemEndY, color);
-    this.renderer.rect(boxX, boxY, textWidth, 10, color);
-    this.renderer.textSmall(label, x, textY, COLORS.bgBase, 'center');
+    this.renderer.line(x, y, x, stemEndY, badgeStroke, 1.25);
+    this.renderer.rect(boxX, clampedBoxY, textWidth, boxHeight, badgeFill);
+    this.renderer.rectStroke(boxX, clampedBoxY, textWidth, boxHeight, badgeStroke, 1);
+    this.renderer.textSmall(label, x, clampedTextY, textColor, 'center');
   }
 
   private renderScriptSubPane(pane: SubPaneLayout, chartAreaWidth: number, result: ScriptResult, _scriptId: string) {

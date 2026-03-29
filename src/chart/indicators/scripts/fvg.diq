@@ -4,6 +4,7 @@ indicator("Fair Value Gap", overlay=true)
 thresholdPercent = input.float(0.0, "Gap Threshold %")
 extendBars = input.int(30, "Extend Bars")
 requireNextBarReaction = input.bool(true, "Require Next Bar Reaction")
+maxVisibleFvgs = input.int(3, "Visible FVG Count")
 sourceTimeframe = input.string("", "FVG Timeframe (blank = chart)")
 
 // Detection logic used by the built-in renderer:
@@ -26,6 +27,7 @@ sourceTimeframe = input.string("", "FVG Timeframe (blank = chart)")
 // Active box lifecycle:
 //   1. Create the rectangle when an FVG is confirmed.
 //   2. Extend it right by `extendBars`.
+//   2a. Only the most recent `maxVisibleFvgs` active boxes are rendered.
 //   3. Mark first touch when candle overlaps the zone after creation.
 //   4. Delete the zone only when it is "used":
 //      bullish used => close > top

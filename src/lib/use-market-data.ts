@@ -13,7 +13,10 @@ const KNOWN_SYMBOLS: Set<string> = new Set([
 
 const liveQuotes = new Map<string, QuoteData>();
 const symbolListeners = new Map<string, Set<() => void>>();
+const sourceListeners = new Set<() => void>();
 let globalVersion = 0;
+let globalSourceVersion = 0;
+let latestObservedSource: string | null = null;
 const SNAPSHOT_POLL_MS = 5_000;
 const ACTIVE_SYMBOLS_REFRESH_MS = 90_000;
 const ACTIVE_SYMBOLS_STALE_MS = 90_000;
@@ -76,6 +79,20 @@ function notifySymbols(symbols: Iterable<string>) {
   }
 }
 
+function notifySourceListeners() {
+  globalSourceVersion++;
+  for (const listener of sourceListeners) {
+    listener();
+  }
+}
+
+function setLatestObservedSource(source: unknown) {
+  const normalized = typeof source === "string" && source.trim() ? source.trim().toLowerCase() : null;
+  if (normalized === latestObservedSource) return;
+  latestObservedSource = normalized;
+  notifySourceListeners();
+}
+
 function getSymbolsSnapshot(symbols: string[]): string {
   const normalizedSymbols = normalizeSymbols(symbols);
   if (normalizedSymbols.length === 0) {
@@ -104,6 +121,7 @@ function getSymbolsSnapshot(symbols: string[]): string {
         quote.trailingPE,
         quote.forwardPE,
         quote.marketCap,
+        quote.source,
       ].join(":");
     })
     .join("|");
@@ -285,6 +303,9 @@ function _posNum(v: unknown): number | null {
 
 export function updateLiveQuote(symbol: string, data: Record<string, unknown>): void {
   const existing = liveQuotes.get(symbol);
+  const nextSource = typeof data.source === "string" && data.source.trim()
+    ? data.source.trim().toLowerCase()
+    : existing?.source ?? null;
   const quote: QuoteData = {
     symbol,
     name: (data.name as string) ?? existing?.name ?? symbol,
@@ -305,6 +326,7 @@ export function updateLiveQuote(symbol: string, data: Record<string, unknown>): 
     trailingPE: _posNum(data.trailingPE) ?? existing?.trailingPE ?? null,
     forwardPE: _posNum(data.forwardPE) ?? existing?.forwardPE ?? null,
     marketCap: _posNum(data.marketCap) ?? existing?.marketCap ?? null,
+    source: nextSource,
   };
   if (
     existing &&
@@ -325,12 +347,28 @@ export function updateLiveQuote(symbol: string, data: Record<string, unknown>): 
     existing.week52Low === quote.week52Low &&
     existing.trailingPE === quote.trailingPE &&
     existing.forwardPE === quote.forwardPE &&
-    existing.marketCap === quote.marketCap
+    existing.marketCap === quote.marketCap &&
+    existing.source === quote.source
   ) {
     return;
   }
   liveQuotes.set(symbol, quote);
+  setLatestObservedSource(nextSource);
   notifySymbols([symbol]);
+}
+
+export function useObservedMarketDataSource(): string | null {
+  useSyncExternalStore(
+    (listener) => {
+      sourceListeners.add(listener);
+      return () => {
+        sourceListeners.delete(listener);
+      };
+    },
+    () => `${globalSourceVersion}:${latestObservedSource ?? ""}`,
+  );
+
+  return latestObservedSource;
 }
 
 export interface WatchlistDataResult {

@@ -12,6 +12,7 @@
  */
 
 import type { OHLCVBar } from '../types';
+import { calculateVwapSeries } from '../indicators/shared/vwap';
 
 export type StdlibFunction = (
   args: number[][],
@@ -217,17 +218,8 @@ function taBbLower(args: number[][], barCount: number): number[] {
 // ─── VWAP ─────────────────────────────────────────────────────────────────
 
 function taVwap(_args: number[][], barCount: number, bars?: OHLCVBar[]): number[] {
-  const out = fillNaN(barCount);
-  if (!bars) return out;
-  let cumPV = 0;
-  let cumV = 0;
-  for (let i = 0; i < barCount; i++) {
-    const tp = (bars[i].high + bars[i].low + bars[i].close) / 3;
-    cumPV += tp * bars[i].volume;
-    cumV += bars[i].volume;
-    out[i] = cumV > 0 ? cumPV / cumV : NaN;
-  }
-  return out;
+  if (!bars) return fillNaN(barCount);
+  return calculateVwapSeries(bars);
 }
 
 // ─── CCI ──────────────────────────────────────────────────────────────────

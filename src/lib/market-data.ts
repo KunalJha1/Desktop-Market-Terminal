@@ -21,6 +21,7 @@ export interface QuoteData {
   trailingPE: number | null;
   forwardPE: number | null;
   marketCap: number | null;
+  source?: string | null;
 }
 
 export const DEMO_QUOTES: Record<string, QuoteData> = {
@@ -32,6 +33,7 @@ export const DEMO_QUOTES: Record<string, QuoteData> = {
     prevClose: 588.60, volume: 42_300_000, spread: 0.03,
     week52High: 612.50, week52Low: 410.20,
     trailingPE: 33.2, forwardPE: 30.1, marketCap: 3.6e12,
+    source: "tws",
   },
   MSFT: {
     symbol: "MSFT", name: "Microsoft Corp.",
@@ -41,6 +43,7 @@ export const DEMO_QUOTES: Record<string, QuoteData> = {
     prevClose: 443.89, volume: 18_700_000, spread: 0.05,
     week52High: 468.35, week52Low: 362.90,
     trailingPE: 36.8, forwardPE: 32.5, marketCap: 3.3e12,
+    source: "tws",
   },
   NVDA: {
     symbol: "NVDA", name: "NVIDIA Corp.",
@@ -50,6 +53,7 @@ export const DEMO_QUOTES: Record<string, QuoteData> = {
     prevClose: 135.58, volume: 67_400_000, spread: 0.04,
     week52High: 152.89, week52Low: 75.61,
     trailingPE: 65.4, forwardPE: 40.2, marketCap: 3.4e12,
+    source: "tws",
   },
   SPY: {
     symbol: "SPY", name: "SPDR S&P 500 ETF",
@@ -59,6 +63,7 @@ export const DEMO_QUOTES: Record<string, QuoteData> = {
     prevClose: 573.76, volume: 55_200_000, spread: 0.04,
     week52High: 589.63, week52Low: 482.10,
     trailingPE: null, forwardPE: null, marketCap: null,
+    source: "tws",
   },
   TSLA: {
     symbol: "TSLA", name: "Tesla Inc.",
@@ -68,6 +73,7 @@ export const DEMO_QUOTES: Record<string, QuoteData> = {
     prevClose: 277.83, volume: 38_900_000, spread: 0.10,
     week52High: 414.50, week52Low: 138.80,
     trailingPE: 95.2, forwardPE: 78.4, marketCap: 870e9,
+    source: "tws",
   },
   AMZN: {
     symbol: "AMZN", name: "Amazon.com Inc.",
@@ -77,6 +83,7 @@ export const DEMO_QUOTES: Record<string, QuoteData> = {
     prevClose: 209.53, volume: 31_500_000, spread: 0.04,
     week52High: 215.90, week52Low: 151.61,
     trailingPE: 58.3, forwardPE: 38.7, marketCap: 2.2e12,
+    source: "tws",
   },
   GOOGL: {
     symbol: "GOOGL", name: "Alphabet Inc. CL A",
@@ -86,6 +93,7 @@ export const DEMO_QUOTES: Record<string, QuoteData> = {
     prevClose: 177.23, volume: 22_800_000, spread: 0.04,
     week52High: 191.75, week52Low: 131.10,
     trailingPE: 24.1, forwardPE: 21.8, marketCap: 2.2e12,
+    source: "tws",
   },
   META: {
     symbol: "META", name: "Meta Platforms Inc.",
@@ -95,6 +103,7 @@ export const DEMO_QUOTES: Record<string, QuoteData> = {
     prevClose: 603.85, volume: 15_600_000, spread: 0.06,
     week52High: 638.40, week52Low: 414.50,
     trailingPE: 28.5, forwardPE: 24.3, marketCap: 1.55e12,
+    source: "tws",
   },
   AMD: {
     symbol: "AMD", name: "Advanced Micro Devices",
@@ -104,6 +113,7 @@ export const DEMO_QUOTES: Record<string, QuoteData> = {
     prevClose: 197.74, volume: 28_400_000, spread: 0.06,
     week52High: 227.30, week52Low: 120.58,
     trailingPE: 48.2, forwardPE: 28.6, marketCap: 312e9,
+    source: "tws",
   },
   QQQ: {
     symbol: "QQQ", name: "Invesco QQQ Trust",
@@ -113,6 +123,7 @@ export const DEMO_QUOTES: Record<string, QuoteData> = {
     prevClose: 497.26, volume: 42_100_000, spread: 0.04,
     week52High: 510.67, week52Low: 402.38,
     trailingPE: null, forwardPE: null, marketCap: null,
+    source: "tws",
   },
   JPM: {
     symbol: "JPM", name: "JPMorgan Chase & Co.",
@@ -122,6 +133,7 @@ export const DEMO_QUOTES: Record<string, QuoteData> = {
     prevClose: 246.75, volume: 8_900_000, spread: 0.04,
     week52High: 256.80, week52Low: 182.15,
     trailingPE: 12.8, forwardPE: 11.5, marketCap: 710e9,
+    source: "tws",
   },
   NFLX: {
     symbol: "NFLX", name: "Netflix Inc.",
@@ -131,6 +143,7 @@ export const DEMO_QUOTES: Record<string, QuoteData> = {
     prevClose: 1013.10, volume: 5_200_000, spread: 0.10,
     week52High: 1064.50, week52Low: 560.30,
     trailingPE: 52.1, forwardPE: 38.6, marketCap: 440e9,
+    source: "tws",
   },
 };
 

@@ -5,6 +5,7 @@ import asyncio
 from collections import defaultdict
 import json
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -13,6 +14,10 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
+
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -740,17 +745,17 @@ def _enrich_with_tech_scores(conn, payloads: list[dict]) -> None:
     try:
         rows = conn.execute(
             f"""
-            SELECT symbol, score_1m, score_5m, score_15m, score_1h, score_4h,
+            SELECT symbol, score_1m, score_5m, score_15m, score_1h,
                    score_1d, score_1w
             FROM technical_scores
             WHERE symbol IN ({placeholders})
             """,
             symbols,
         ).fetchall()
-        score_map = {r[0]: r[1:8] for r in rows}
+        score_map = {r[0]: r[1:7] for r in rows}
     except Exception:
         score_map = {}
-    tf_keys = ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
+    tf_keys = ("1m", "5m", "15m", "1h", "1d", "1w")
     for p in payloads:
         tup = score_map.get(p["symbol"])
         if tup is None:
@@ -758,9 +763,10 @@ def _enrich_with_tech_scores(conn, payloads: list[dict]) -> None:
             p["techScore1d"] = None
             p["techScore1w"] = None
             continue
-        p["techScores"] = {tf_keys[i]: tup[i] for i in range(7)}
-        p["techScore1d"] = tup[5]
-        p["techScore1w"] = tup[6]
+        padded = tuple(tup[: len(tf_keys)]) + (None,) * max(0, len(tf_keys) - len(tup))
+        p["techScores"] = {tf_keys[i]: padded[i] for i in range(len(tf_keys))}
+        p["techScore1d"] = padded[4]
+        p["techScore1w"] = padded[5]
 
 
 def _format_option_expiration_label(expiration_ms: int) -> str:
@@ -1849,6 +1855,41 @@ def create_app() -> FastAPI:
             return {sym: {} for sym in sym_list}
         from technicals import compute_indicators_for_symbols
         return await run_db(compute_indicators_for_symbols, sym_list, indicator_specs)
+
+    @app.get("/technicals/liquidity-sweeps")
+    async def get_liquidity_sweeps(
+        symbols: str = "",
+        timeframe: str = "15m",
+        lookback_bars: int = 3,
+    ):
+        if not symbols:
+            return {}
+        sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()][:10]
+        if not sym_list:
+            return {}
+        safe_lookback = max(1, min(lookback_bars, 10))
+        from technicals import detect_liquidity_sweeps_for_symbols
+        raw = await run_db(
+            detect_liquidity_sweeps_for_symbols,
+            sym_list,
+            timeframe,
+            safe_lookback,
+            None,
+        )
+        now_ms = _now_ms()
+        payload: dict[str, dict[str, int | str | None]] = {}
+        for sym in sym_list:
+            status = raw.get(sym, {})
+            event_ts = status.get("eventTs")
+            event_ts_int = int(event_ts) if isinstance(event_ts, (int, float)) else None
+            payload[sym] = {
+                "direction": status.get("direction") if isinstance(status.get("direction"), str) else None,
+                "eventTs": event_ts_int,
+                "ageBars": int(status["ageBars"]) if isinstance(status.get("ageBars"), (int, float)) else None,
+                "ageMinutes": max(0, (now_ms - event_ts_int) // 60000) if event_ts_int is not None else None,
+                "source": status.get("source") if isinstance(status.get("source"), str) else None,
+            }
+        return payload
 
     @app.get("/historical")
     async def get_historical(

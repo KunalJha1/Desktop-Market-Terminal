@@ -62,6 +62,38 @@ export class Renderer {
     this.text(text, x, y, color, align, FONT_MONO_SMALL);
   }
 
+  measureText(text: string, font?: string): TextMetrics {
+    const ctx = this.ctx;
+    ctx.save();
+    if (font) ctx.font = font;
+    const metrics = ctx.measureText(text);
+    ctx.restore();
+    return metrics;
+  }
+
+  textBlock(
+    lines: string[],
+    x: number,
+    y: number,
+    color: string,
+    align: CanvasTextAlign = 'left',
+    font?: string,
+    lineHeight: number = 13,
+  ) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.font = font || FONT_MONO;
+    ctx.textAlign = align;
+    ctx.textBaseline = 'middle';
+    const totalHeight = Math.max(0, lines.length - 1) * lineHeight;
+    const startY = y - totalHeight / 2;
+    for (let i = 0; i < lines.length; i += 1) {
+      ctx.fillText(lines[i], x, startY + (i * lineHeight));
+    }
+    ctx.restore();
+  }
+
   fillArea(points: [number, number][], fillColor: string) {
     if (points.length < 2) return;
     const ctx = this.ctx;

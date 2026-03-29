@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import random
 import time
 from collections import deque
@@ -16,6 +17,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
+from dotenv import load_dotenv
 from ib_insync import IB, Stock, Ticker
 from yahooquery import Ticker as YahooTicker
 
@@ -39,6 +41,8 @@ from ibkr_utils import (
 )
 from runtime_paths import data_dir, resource_path
 
+load_dotenv()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -50,6 +54,7 @@ logging.getLogger("ib_insync.client").setLevel(logging.CRITICAL)
 WATCHLIST_REFRESH_S = 5.0
 YAHOO_POLL_S = 600.0
 YAHOO_SYMBOL_SLEEP_S = 3.0
+DAILYIQ_VALUATION_SYMBOL_SLEEP_S = 3.0
 YAHOO_VALUATION_SYMBOL_SLEEP_S = 60.0
 FINNHUB_WATCHLIST_POLL_S = 600.0
 FINNHUB_WATCHLIST_SYMBOL_SLEEP_S = 1.5
@@ -375,6 +380,23 @@ def fetch_universe_quotes_from_yahoo(symbols: List[str]) -> List[dict]:
 def fetch_watchlist_quotes_with_fallback(symbols: List[str]) -> tuple[str, List[dict]]:
     api_key = _load_finnhub_api_key()
     regular_hours = _is_regular_market_hours()
+    dailyiq_api_key = os.getenv("DAILYIQ_API_KEY")
+
+    # DailyIQ first — works for both regular and extended hours
+    try:
+        from dailyiq_provider import fetch_watchlist_quotes_from_dailyiq
+        diq_quotes = fetch_watchlist_quotes_from_dailyiq(symbols)
+        if diq_quotes:
+            return "dailyiq", diq_quotes
+        if dailyiq_api_key:
+            logger.info(
+                "DailyIQ watchlist quotes returned no usable payloads for %d symbol(s); falling through",
+                len(symbols),
+            )
+        else:
+            logger.info("DailyIQ watchlist quotes unavailable: DAILYIQ_API_KEY is not set")
+    except Exception as exc:
+        logger.warning("DailyIQ watchlist quotes failed, falling through: %s", exc)
 
     if regular_hours:
         # Regular hours: TWS already handled upstream; Finnhub → Yahoo
@@ -416,6 +438,23 @@ def fetch_watchlist_quotes_with_fallback(symbols: List[str]) -> tuple[str, List[
 def fetch_universe_quotes_with_fallback(symbols: List[str]) -> tuple[str, List[dict]]:
     api_key = _load_finnhub_api_key()
     regular_hours = _is_regular_market_hours()
+    dailyiq_api_key = os.getenv("DAILYIQ_API_KEY")
+
+    # DailyIQ first — works for both regular and extended hours
+    try:
+        from dailyiq_provider import fetch_watchlist_quotes_from_dailyiq
+        diq_quotes = fetch_watchlist_quotes_from_dailyiq(symbols)
+        if diq_quotes:
+            return "dailyiq", diq_quotes
+        if dailyiq_api_key:
+            logger.info(
+                "DailyIQ universe quotes returned no usable payloads for %d symbol(s); falling through",
+                len(symbols),
+            )
+        else:
+            logger.info("DailyIQ universe quotes unavailable: DAILYIQ_API_KEY is not set")
+    except Exception as exc:
+        logger.warning("DailyIQ universe quotes failed, falling through: %s", exc)
 
     if regular_hours:
         # Regular hours: TWS already handled upstream; Finnhub → Yahoo
@@ -454,17 +493,59 @@ def fetch_universe_quotes_with_fallback(symbols: List[str]) -> tuple[str, List[d
         return "yahoo", []
 
 
-def refresh_watchlist_valuations_from_yahoo(
+def refresh_symbol_valuations_with_fallback(
     symbols: List[str],
     log: logging.Logger | None = None,
+    *,
+    set_valuation_ts: bool = True,
 ) -> None:
-    """Fetch Yahoo valuation fields one symbol at a time with a long pause."""
+    """Fetch valuation fields per symbol: DailyIQ first, Yahoo fallback."""
     _log = log if log is not None else logger
     total = len(symbols)
+    dailyiq_api_key = os.getenv("DAILYIQ_API_KEY")
+
+    # Try to import DailyIQ provider (graceful if unavailable)
+    _diq_fetch = None
+    try:
+        from dailyiq_provider import fetch_fundamentals_from_dailyiq
+        _diq_fetch = fetch_fundamentals_from_dailyiq
+    except Exception:
+        pass
+    if _diq_fetch is None or not dailyiq_api_key:
+        fallback_msg = "DailyIQ valuations unavailable; using Yahoo fallback"
+        print(fallback_msg, flush=True)
+        _log.info(fallback_msg)
+
     for idx, sym in enumerate(symbols, start=1):
         msg = f"[Valuation loop] symbol {idx}/{total}: {sym}"
         print(msg, flush=True)
         _log.info(msg)
+
+        # DailyIQ first
+        if _diq_fetch is not None:
+            try:
+                trailing_pe, forward_pe, market_cap = _diq_fetch(sym)
+                if trailing_pe is not None or market_cap is not None:
+                    upsert_quote_valuation(
+                        sym,
+                        trailing_pe,
+                        forward_pe,
+                        market_cap,
+                        set_valuation_ts=set_valuation_ts,
+                        source="dailyiq",
+                    )
+                    cap_str = f"${market_cap/1e9:.2f}B" if market_cap else "N/A"
+                    valuation_msg = f"[Valuation] {sym} (DailyIQ): P/E={trailing_pe}, MktCap={cap_str}"
+                    print(valuation_msg, flush=True)
+                    _log.info(valuation_msg)
+                    if idx < total:
+                        time.sleep(DAILYIQ_VALUATION_SYMBOL_SLEEP_S)
+                    continue
+            except Exception as exc:
+                print(f"[Valuation] {sym} DailyIQ failed, trying Yahoo: {exc}", flush=True)
+                _log.warning("DailyIQ valuation failed for %s, trying Yahoo: %s", sym, exc)
+
+        # Yahoo fallback
         try:
             ticker = YahooTicker(sym, asynchronous=False)
             summary_data = ticker.summary_detail
@@ -475,15 +556,31 @@ def refresh_watchlist_valuations_from_yahoo(
                 data if isinstance(data, dict) else {},
                 pd if isinstance(pd, dict) else None,
             )
-            upsert_quote_valuation(sym, trailing_pe, forward_pe, market_cap)
-            cap_str = f"${market_cap/1e9:.2f}B" if market_cap else "N/A"
-            _log.info(
-                f"[Valuation] {sym}: P/E={trailing_pe}, Fwd P/E={forward_pe}, MktCap={cap_str}"
+            upsert_quote_valuation(
+                sym,
+                trailing_pe,
+                forward_pe,
+                market_cap,
+                set_valuation_ts=set_valuation_ts,
+                source="yahoo",
             )
+            cap_str = f"${market_cap/1e9:.2f}B" if market_cap else "N/A"
+            valuation_msg = f"[Valuation] {sym} (Yahoo): P/E={trailing_pe}, Fwd P/E={forward_pe}, MktCap={cap_str}"
+            print(valuation_msg, flush=True)
+            _log.info(valuation_msg)
         except Exception as exc:
+            print(f"[Valuation] {sym} Yahoo fetch failed: {exc}", flush=True)
             _log.warning("Yahoo valuation fetch failed for %s: %s", sym, exc)
         if idx < total:
             time.sleep(YAHOO_VALUATION_SYMBOL_SLEEP_S)
+
+
+def refresh_watchlist_valuations_from_yahoo(
+    symbols: List[str],
+    log: logging.Logger | None = None,
+) -> None:
+    """Backward-compatible wrapper for valuation refresh."""
+    refresh_symbol_valuations_with_fallback(symbols, log=log, set_valuation_ts=True)
 
 
 def _extract_yahoo_valuation(
@@ -840,6 +937,7 @@ def upsert_quote_valuation(
     market_cap: float | None = None,
     *,
     set_valuation_ts: bool = True,
+    source: str = "yahoo",
 ) -> None:
     """Upsert valuation fields.
 
@@ -861,7 +959,7 @@ def upsert_quote_valuation(
                 market_cap = COALESCE(excluded.market_cap, watchlist_quotes.market_cap),
                 valuation_updated_at = COALESCE(excluded.valuation_updated_at, watchlist_quotes.valuation_updated_at)
             """,
-            (symbol, trailing_pe, forward_pe, market_cap, valuation_ts, "yahoo", now_ms),
+            (symbol, trailing_pe, forward_pe, market_cap, valuation_ts, source, now_ms),
         )
 
 

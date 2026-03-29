@@ -78,6 +78,7 @@ import { computeDailyIQTechScoreStrategy } from './overlays/dailyIQTechScoreStra
 import { computeStructureBreaks } from './overlays/structureBreaks';
 import { computeLiquidityLevelLines } from './overlays/liquidityLevels';
 import { computeLiquiditySweeps } from './overlays/liquiditySweeps';
+import { computeLiquiditySweepIctSmc } from './overlays/liquiditySweepIctSmc';
 import { computeFVG } from './overlays/fvg';
 import { computeFVGMomentum } from './overlays/fvgMomentum';
 import { computeGapZones } from './overlays/gapZones';
@@ -125,6 +126,7 @@ const computeFns: Record<string, (bars: OHLCVBar[], params: Record<string, numbe
   'Structure Breaks': computeStructureBreaks,
   'Liquidity Levels': computeLiquidityLevelLines,
   'Liquidity Sweep Signal': computeLiquiditySweeps,
+  'Liquidity Sweep (ICT/SMC)': computeLiquiditySweepIctSmc,
   FVG: computeFVG,
   'FVG Momentum': computeFVGMomentum,
   'Gap Zones': computeGapZones,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, RefreshCw, Download, CheckCircle, AlertTriangle } from "lucide-react";
+import { X, RefreshCw, Download, CheckCircle, AlertTriangle, LogOut } from "lucide-react";
 import { useTws } from "../lib/tws";
+import { useAuth } from "../lib/auth";
 import { checkUpdate, installUpdate, type UpdateManifest } from "@tauri-apps/api/updater";
 import { getVersion } from "@tauri-apps/api/app";
 import { relaunch } from "@tauri-apps/api/process";
@@ -27,6 +28,7 @@ const PLAYBOOK_PLACEHOLDER = `Example:
 - Prefer swing-style decisions over scalp-style noise`;
 
 export default function SettingsPanel({ open, onClose, updateAvailable }: SettingsPanelProps) {
+  const { session, signOut } = useAuth();
   const {
     status,
     port,
@@ -97,6 +99,7 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
   const [finnhubSaveMessage, setFinnhubSaveMessage] = useState("");
   const [finnhubSaveState, setFinnhubSaveState] = useState<"idle" | "success" | "error">("idle");
   const [playbookSaveMessage, setPlaybookSaveMessage] = useState("");
+  const [signingOut, setSigningOut] = useState(false);
 
   // Escape to close
   useEffect(() => {
@@ -193,6 +196,16 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
     setPlaybookSaveMessage("");
   }
 
+  async function handleSignOut() {
+    setSigningOut(true);
+    try {
+      await signOut();
+      onClose();
+    } finally {
+      setSigningOut(false);
+    }
+  }
+
   return (
     <>
       {/* Backdrop */}
@@ -222,6 +235,34 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
 
         {/* Body */}
         <div className="scrollbar-panel flex-1 overflow-y-auto px-4 py-4">
+          <section className="mb-6">
+            <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-white/30">
+              Account
+            </h3>
+            <div className="rounded-md border border-white/[0.06] bg-base/70 px-3 py-3">
+              <p className="text-[10px] uppercase tracking-[0.14em] text-white/25">
+                Signed in as
+              </p>
+              <p className="mt-1 break-all font-mono text-[11px] text-white/70">
+                {session?.user?.email ?? "Unknown user"}
+              </p>
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <p className="max-w-[210px] text-[10px] leading-4 text-white/28">
+                  Sign out of the DailyIQ console on this device.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  disabled={signingOut}
+                  className="flex items-center gap-1.5 rounded-md border border-red/20 bg-red/[0.06] px-3 py-1 text-[11px] text-red/80 transition-colors duration-120 hover:bg-red/[0.12] disabled:opacity-40"
+                >
+                  <LogOut className="h-3 w-3" strokeWidth={1.5} />
+                  {signingOut ? "Logging out..." : "Log out"}
+                </button>
+              </div>
+            </div>
+          </section>
+
           {/* Connection Section */}
           <section className="mb-6">
             <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-white/30">

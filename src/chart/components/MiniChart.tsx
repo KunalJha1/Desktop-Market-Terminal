@@ -8,7 +8,7 @@ import type { Timeframe, ChartType, ActiveIndicator, YScaleMode } from '../types
 import { PRICE_AXIS_CONTROL_HEIGHT, PRICE_AXIS_WIDTH } from '../constants';
 import { useTws } from '../../lib/tws';
 import { linkBus } from '../../lib/link-bus';
-import { X, ChevronDown, ChevronUp, Search, TrendingUp, BrainCircuit, ZoomIn, ZoomOut, RotateCcw, Minus, Maximize2, ChevronsUpDown, Save, FolderOpen } from 'lucide-react';
+import { X, ChevronDown, ChevronUp, Search, TrendingUp, BrainCircuit, RotateCcw, Minus, Maximize2, ChevronsUpDown, Save, FolderOpen } from 'lucide-react';
 import ComponentLinkMenu from '../../components/ComponentLinkMenu';
 import IndicatorLegend from './IndicatorLegend';
 import {
@@ -31,22 +31,15 @@ interface MiniChartProps {
 const MINI_TIMEFRAMES: { label: string; value: Timeframe }[] = [
   { label: '1m',  value: '1m'  },
   { label: '2m',  value: '2m'  },
-  { label: '3m',  value: '3m'  },
   { label: '5m',  value: '5m'  },
   { label: '10m', value: '10m' },
   { label: '15m', value: '15m' },
   { label: '30m', value: '30m' },
-  { label: '1H',  value: '1H'  },
-  { label: '2H',  value: '2H'  },
-  { label: '3H',  value: '3H'  },
-  { label: '4H',  value: '4H'  },
-  { label: '1D',  value: '1D'  },
-  { label: '3D',  value: '3D'  },
-  { label: '1W',  value: '1W'  },
+  { label: '1h',  value: '1H'  },
+  { label: '4h',  value: '4H'  },
+  { label: '1d',  value: '1D'  },
+  { label: '1w',  value: '1W'  },
   { label: '1M',  value: '1M'  },
-  { label: '3M',  value: '3M'  },
-  { label: '6M',  value: '6M'  },
-  { label: '12M', value: '12M' },
 ];
 
 const CHART_TYPES: { label: string; short: string; value: ChartType }[] = [
@@ -65,6 +58,8 @@ const INDICATOR_CATEGORIES = [
   { key: 'oscillator' as const, label: 'Oscillators' },
   { key: 'volume' as const, label: 'Volume' },
 ];
+
+const HIDDEN_INDICATOR_KEYS = new Set<string>();
 
 interface PersistedMiniIndicator {
   name: string;
@@ -167,6 +162,16 @@ function recordsEqual(a: Record<string, unknown> | undefined, b: Record<string, 
   return JSON.stringify(aEntries) === JSON.stringify(bEntries);
 }
 
+function buildIndicatorFingerprint(indicators: PersistedMiniIndicator[]): string {
+  return indicators
+    .map((indicator) => (
+      `${indicator.name}:${indicator.paneId}:${JSON.stringify(indicator.params)}:${JSON.stringify(indicator.textParams ?? {})}`
+      + `:${JSON.stringify(indicator.colors)}:${JSON.stringify(indicator.lineWidths ?? {})}`
+      + `:${JSON.stringify(indicator.lineStyles ?? {})}:${indicator.visible}`
+    ))
+    .join('|');
+}
+
 export default function MiniChart({
   config,
   onConfigChange,
@@ -178,6 +183,7 @@ export default function MiniChart({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<ChartEngine | null>(null);
+  const hasHydratedIndicatorsRef = useRef(false);
   const lastRestoredFingerprintRef = useRef<string>('');
   const configRef = useRef(config);
   useEffect(() => { configRef.current = config; }, [config]);
@@ -201,6 +207,8 @@ export default function MiniChart({
   const [showStrategyMenu, setShowStrategyMenu] = useState(false);
   const [showScriptEditor, setShowScriptEditor] = useState(false);
   const [indicatorSearch, setIndicatorSearch] = useState('');
+  const [highlightedIndicatorIndex, setHighlightedIndicatorIndex] = useState(-1);
+  const [highlightedStrategyIndex, setHighlightedStrategyIndex] = useState(-1);
   const [activeIndicators, setActiveIndicators] = useState<ActiveIndicator[]>([]);
   /** Bumps when ChartEngine is (re)created so indicator reconcile runs against the new instance. */
   const [engineVersion, setEngineVersion] = useState(0);
@@ -222,12 +230,14 @@ export default function MiniChart({
   const indicatorMenuRef = useRef<HTMLDivElement>(null);
   const strategyMenuRef = useRef<HTMLDivElement>(null);
   const indicatorSearchRef = useRef<HTMLInputElement>(null);
+  const strategySearchRef = useRef<HTMLInputElement>(null);
 
   // Pull real data from the sidecar (same path as ChartPage)
   const { sidecarPort } = useTws();
   const {
     bars,
     source,
+    datasetKey,
     onViewportChange,
     pendingViewportShift,
     onViewportShiftApplied,
@@ -239,6 +249,7 @@ export default function MiniChart({
     sidecarPort,
   });
   const stopperPx = (config.stopperPx as number) ?? 40;
+  const lastDatasetKeyRef = useRef<string | null>(null);
 
   const handleCanvasPointerMove = useCallback((event: ReactMouseEvent<HTMLCanvasElement>) => {
     const canvas = event.currentTarget;
@@ -374,13 +385,15 @@ export default function MiniChart({
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
-    if (updateMode === 'tail' && bars.length > 0) {
+    const datasetChanged = lastDatasetKeyRef.current !== datasetKey;
+    lastDatasetKeyRef.current = datasetKey;
+    if (!datasetChanged && updateMode === 'tail' && bars.length > 0) {
       engine.updateTail(bars, tailChangeOffset);
     } else {
       engine.setData(bars);
     }
     syncPaneLayout();
-  }, [bars, updateMode, tailChangeOffset, syncPaneLayout]);
+  }, [bars, datasetKey, updateMode, tailChangeOffset, syncPaneLayout]);
 
   // Wire viewport change notifications so intraday pan backfill stays anchored
   useEffect(() => {
@@ -411,6 +424,15 @@ export default function MiniChart({
     engineRef.current?.resetViewport();
     engineRef.current?.setTimeframe(timeframe);
   }, [timeframe]);
+
+  useEffect(() => {
+    if (lastDatasetKeyRef.current === null) {
+      lastDatasetKeyRef.current = datasetKey;
+      return;
+    }
+    engineRef.current?.resetViewport();
+    onViewportShiftApplied();
+  }, [datasetKey, onViewportShiftApplied]);
 
   // Push Y-scale mode to engine
   useEffect(() => {
@@ -460,6 +482,12 @@ export default function MiniChart({
     }
   }, [showIndicatorMenu]);
 
+  useEffect(() => {
+    if (showStrategyMenu) {
+      setTimeout(() => strategySearchRef.current?.focus(), 50);
+    }
+  }, [showStrategyMenu]);
+
   const setTimeframeValue = (tf: Timeframe) => {
     onConfigChange({ ...configRef.current, timeframe: tf });
   };
@@ -475,7 +503,9 @@ export default function MiniChart({
 
   // Filtered indicators for search
   const allIndicators = useMemo(
-    () => Object.entries(indicatorRegistry).map(([key, meta]) => ({ key, ...meta })),
+    () => Object.entries(indicatorRegistry)
+      .filter(([key]) => !HIDDEN_INDICATOR_KEYS.has(key))
+      .map(([key, meta]) => ({ key, ...meta })),
     [],
   );
   const filteredIndicators = useMemo(() => {
@@ -501,6 +531,7 @@ export default function MiniChart({
     () => activeIndicators.filter((ind) => !STRATEGY_KEYS.has(ind.name)).length,
     [activeIndicators],
   );
+  const activeToolbarTextColor = '#60A5FA';
 
   const currentChartType = CHART_TYPES.find((ct) => ct.value === chartType);
   const emptyScripts = useMemo(() => new Map(), []);
@@ -522,18 +553,53 @@ export default function MiniChart({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.scripts]);
 
-  const syncIndicators = useCallback((persist = true) => {
+  const persistedIndicatorsFingerprint = useMemo(
+    () => buildIndicatorFingerprint(persistedIndicators),
+    [persistedIndicators],
+  );
+
+  useEffect(() => {
+    setHighlightedIndicatorIndex(standardIndicators.length > 0 ? 0 : -1);
+  }, [standardIndicators, showIndicatorMenu]);
+
+  useEffect(() => {
+    setHighlightedStrategyIndex(strategyIndicators.length > 0 ? 0 : -1);
+  }, [strategyIndicators, showStrategyMenu]);
+
+  useEffect(() => {
+    if (!showIndicatorMenu || highlightedIndicatorIndex < 0) return;
+    const item = indicatorMenuRef.current?.querySelector<HTMLElement>(
+      `[data-indicator-option-index="${highlightedIndicatorIndex}"]`,
+    );
+    item?.scrollIntoView({ block: 'nearest' });
+  }, [showIndicatorMenu, highlightedIndicatorIndex]);
+
+  useEffect(() => {
+    if (!showStrategyMenu || highlightedStrategyIndex < 0) return;
+    const item = strategyMenuRef.current?.querySelector<HTMLElement>(
+      `[data-strategy-option-index="${highlightedStrategyIndex}"]`,
+    );
+    item?.scrollIntoView({ block: 'nearest' });
+  }, [showStrategyMenu, highlightedStrategyIndex]);
+
+  const syncIndicatorsFromEngine = useCallback(() => {
     const engine = engineRef.current;
-    if (!engine) return;
+    if (!engine) return [] as ActiveIndicator[];
     const nextIndicators = [...engine.getActiveIndicators()];
+    hasHydratedIndicatorsRef.current = true;
     setActiveIndicators(nextIndicators);
+    return nextIndicators;
+  }, []);
+
+  const syncIndicators = useCallback((persist = true) => {
+    const nextIndicators = syncIndicatorsFromEngine();
     if (persist) {
       onConfigChange({
         ...configRef.current,
         indicators: serializeIndicators(nextIndicators),
       });
     }
-  }, [onConfigChange]);
+  }, [onConfigChange, syncIndicatorsFromEngine]);
 
   const applyPersistedIndicators = useCallback((
     engine: ChartEngine,
@@ -546,7 +612,10 @@ export default function MiniChart({
     for (const indicator of indicatorsToApply) {
       const id = engine.addIndicator(indicator.name);
       if (!id) continue;
-      engine.setIndicatorPane(id, indicator.paneId);
+      engine.setIndicatorPane(
+        id,
+        indicator.name === 'Probability Engine' ? 'main' : indicator.paneId,
+      );
       if (Object.keys(indicator.params).length > 0) {
         engine.updateIndicatorParams(id, indicator.params);
       }
@@ -638,64 +707,67 @@ export default function MiniChart({
 
     const engineIndicators = engine.getActiveIndicators();
 
-    // Write-back guard: config was wiped (stale spread) but engine still has indicators — heal config
-    if (persistedIndicators.length === 0 && engineIndicators.length > 0) {
-      onConfigChange({ ...configRef.current, indicators: serializeIndicators(engineIndicators) });
-      return;
-    }
-
-    // Fingerprint guard: skip re-application if persisted content hasn't changed
-    const fingerprint = persistedIndicators
-      .map((i) => `${i.name}:${i.paneId}:${JSON.stringify(i.params)}:${JSON.stringify(i.textParams ?? {})}:${i.visible}`)
-      .join('|');
-    const needsRestoreDespiteFingerprint =
-      engineIndicators.length === 0 && persistedIndicators.length > 0;
-    if (fingerprint === lastRestoredFingerprintRef.current && !needsRestoreDespiteFingerprint) {
-      // Also restore script if needed (doesn't depend on fingerprint)
-      if (persistedScript && engine.getActiveIndicators().length === engineIndicators.length) {
-        const result = interpretScript(persistedScript.source, bars);
-        engine.setScriptResult(persistedScript.id, result);
-        setScriptSource(persistedScript.source);
+    const fingerprintChanged = persistedIndicatorsFingerprint !== lastRestoredFingerprintRef.current;
+    const needsRestore = engineIndicators.length === 0 && persistedIndicators.length > 0;
+    if (fingerprintChanged || needsRestore) {
+      if (!persistedIndicatorsMatch(persistedIndicators, engineIndicators)) {
+        applyPersistedIndicators(engine, persistedIndicators);
       }
-      return;
+      lastRestoredFingerprintRef.current = persistedIndicatorsFingerprint;
+      syncIndicatorsFromEngine();
+    } else if (!hasHydratedIndicatorsRef.current && engineIndicators.length > 0) {
+      syncIndicatorsFromEngine();
+    } else if (persistedIndicators.length === 0 && engineIndicators.length === 0) {
+      hasHydratedIndicatorsRef.current = true;
+      setActiveIndicators([]);
     }
-    lastRestoredFingerprintRef.current = fingerprint;
 
-    // Idempotent: only restore indicators into an empty engine
-    if (engineIndicators.length === 0) {
-      applyPersistedIndicators(engine, persistedIndicators);
-      syncIndicators(false);
-    }
-
-    // Restore persisted script
     if (persistedScript) {
       const result = interpretScript(persistedScript.source, bars);
       engine.setScriptResult(persistedScript.id, result);
       setScriptSource(persistedScript.source);
+    } else if (scriptSource) {
+      engine.clearAllScripts();
+      setScriptSource('');
+      setScriptErrors([]);
     }
-  }, [bars, persistedIndicators, persistedScript, syncIndicators, onConfigChange, applyPersistedIndicators]);
+  }, [
+    bars,
+    persistedIndicators,
+    persistedIndicatorsFingerprint,
+    persistedScript,
+    scriptSource,
+    persistedIndicatorsMatch,
+    applyPersistedIndicators,
+    syncIndicatorsFromEngine,
+  ]);
 
   useEffect(() => {
     const engine = engineRef.current;
-    if (!engine || bars.length === 0) return;
-    const desiredIndicators = activeIndicators.length > 0
-      ? serializeIndicators(activeIndicators)
-      : persistedIndicators;
-    if (desiredIndicators.length === 0) return;
+    if (!engine || bars.length === 0 || !hasHydratedIndicatorsRef.current) return;
 
+    const desiredIndicators = serializeIndicators(activeIndicators);
     const engineIndicators = engine.getActiveIndicators();
+
+    if (desiredIndicators.length === 0) {
+      if (engineIndicators.length > 0) {
+        applyPersistedIndicators(engine, desiredIndicators);
+        syncIndicatorsFromEngine();
+      }
+      return;
+    }
+
     if (persistedIndicatorsMatch(desiredIndicators, engineIndicators)) return;
 
     applyPersistedIndicators(engine, desiredIndicators);
-    syncIndicators(false);
+    syncIndicatorsFromEngine();
   }, [
     bars,
     engineVersion,
     activeIndicators,
-    persistedIndicators,
     persistedIndicatorsMatch,
     applyPersistedIndicators,
-    syncIndicators,
+    syncIndicatorsFromEngine,
   ]);
 
   useEffect(() => {
@@ -717,6 +789,37 @@ export default function MiniChart({
     }
     syncIndicators();
   };
+
+  const handleIndicatorMenuKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setShowIndicatorMenu(false);
+      setIndicatorSearch('');
+      return;
+    }
+
+    if (standardIndicators.length === 0) return;
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setHighlightedIndicatorIndex((prev) => (prev + 1) % standardIndicators.length);
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setHighlightedIndicatorIndex((prev) => (prev <= 0 ? standardIndicators.length - 1 : prev - 1));
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const item = standardIndicators[highlightedIndicatorIndex];
+      if (item) {
+        addIndicator(item.key);
+      }
+    }
+  }, [standardIndicators, highlightedIndicatorIndex]);
 
   const toggleStrategy = (name: string) => {
     const engine = engineRef.current;
@@ -742,6 +845,37 @@ export default function MiniChart({
     }
     syncIndicators();
   };
+
+  const handleStrategyMenuKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setShowStrategyMenu(false);
+      setIndicatorSearch('');
+      return;
+    }
+
+    if (strategyIndicators.length === 0) return;
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setHighlightedStrategyIndex((prev) => (prev + 1) % strategyIndicators.length);
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setHighlightedStrategyIndex((prev) => (prev <= 0 ? strategyIndicators.length - 1 : prev - 1));
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const item = strategyIndicators[highlightedStrategyIndex];
+      if (item) {
+        toggleStrategy(item.key);
+      }
+    }
+  }, [strategyIndicators, highlightedStrategyIndex]);
 
   const removeIndicator = (id: string) => {
     const engine = engineRef.current;
@@ -855,20 +989,14 @@ export default function MiniChart({
       return;
     }
 
-    const engine = engineRef.current;
-    if (engine) {
-      for (const indicator of [...engine.getActiveIndicators()]) {
-        engine.removeIndicator(indicator.id);
-      }
-      engine.clearAllScripts();
-    }
+    const importedConfig = dailyIqChartConfigToMiniChartConfig(result.file.chart);
+    lastRestoredFingerprintRef.current = '';
+    hasHydratedIndicatorsRef.current = false;
     setActiveIndicators([]);
     setScriptSource('');
     setScriptErrors([]);
-    lastRestoredFingerprintRef.current = '';
-
     onSetLinkChannel(result.file.chart.linkChannel);
-    onConfigChange(dailyIqChartConfigToMiniChartConfig(result.file.chart));
+    onConfigChange(importedConfig);
     setChartNotice('Chart imported.');
   }, [onConfigChange, onSetLinkChannel]);
 
@@ -895,17 +1023,12 @@ export default function MiniChart({
         </div>
       )}
 
-      {/* Toolbar: symbol, timeframes, chart type, indicators, close */}
+      {/* Toolbar: symbol on the left, controls on the right */}
       <div
-        className="flex h-8 shrink-0 select-none items-center justify-between border-b border-white/[0.10] bg-base px-2"
+        className="flex h-9 shrink-0 select-none items-center justify-between border-b border-white/[0.10] bg-base px-2"
       >
-        {/* Left: link + symbol + price + collapse toggle */}
+        {/* Left: symbol + price */}
         <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-          <ComponentLinkMenu
-            linkChannel={linkChannel}
-            onSetLinkChannel={onSetLinkChannel}
-          />
-
           <span
             style={{
               fontFamily: '"JetBrains Mono", monospace',
@@ -930,7 +1053,7 @@ export default function MiniChart({
           <span
             style={{
               fontFamily: '"JetBrains Mono", monospace',
-              fontSize: 9,
+              fontSize: 11,
               color: isPositive ? '#00C853' : '#FF3D71',
               whiteSpace: 'nowrap',
             }}
@@ -939,7 +1062,7 @@ export default function MiniChart({
           </span>
         </div>
 
-        {/* Right: timeframes + chart type + indicators + collapse + close */}
+        {/* Right: timeframes + chart tools + window controls + link */}
         <div className="flex items-center gap-0.5 shrink-0">
           {!toolbarCollapsed && (<>
           {/* Timeframe buttons */}
@@ -950,13 +1073,13 @@ export default function MiniChart({
               className="rounded-sm transition-colors duration-75 hover:bg-white/[0.06]"
               style={{
                 fontFamily: '"JetBrains Mono", monospace',
-                fontSize: 9,
-                padding: '2px 4px',
+                fontSize: 11,
+                padding: '2px 5px',
                 borderRadius: 2,
                 border: 'none',
                 cursor: 'pointer',
                 backgroundColor: timeframe === tf.value ? 'rgba(59, 130, 246, 0.1)' : 'transparent',
-                color: timeframe === tf.value ? '#3B82F6' : '#8B949E',
+                color: timeframe === tf.value ? '#3B82F6' : '#FFFFFF',
                 lineHeight: 1,
               }}
             >
@@ -969,17 +1092,21 @@ export default function MiniChart({
           {/* Chart type dropdown */}
           <div className="relative" ref={chartTypeMenuRef}>
             <button
-              onClick={() => { setShowChartTypeMenu((v) => !v); setShowIndicatorMenu(false); }}
+              onClick={() => {
+                setShowChartTypeMenu((v) => !v);
+                setShowIndicatorMenu(false);
+                setShowStrategyMenu(false);
+              }}
               className="flex items-center gap-0.5 rounded-sm transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/60"
               style={{
                 fontFamily: '"JetBrains Mono", monospace',
-                fontSize: 9,
-                padding: '2px 4px',
+                fontSize: 10,
+                padding: '3px 7px',
                 borderRadius: 2,
                 border: 'none',
                 cursor: 'pointer',
                 backgroundColor: showChartTypeMenu ? 'rgba(255,255,255,0.06)' : 'transparent',
-                color: '#8B949E',
+                color: '#FFFFFF',
                 lineHeight: 1,
               }}
               title="Chart type"
@@ -1045,7 +1172,7 @@ export default function MiniChart({
                 border: 'none',
                 cursor: 'pointer',
                 backgroundColor: showIndicatorMenu ? 'rgba(255,255,255,0.06)' : 'transparent',
-                color: activeStandardIndicatorCount > 0 ? '#60A5FA' : '#8B949E',
+                color: activeStandardIndicatorCount > 0 ? activeToolbarTextColor : '#FFFFFF',
                 lineHeight: 1,
               }}
               title="Indicators"
@@ -1081,6 +1208,7 @@ export default function MiniChart({
                     type="text"
                     value={indicatorSearch}
                     onChange={(e) => setIndicatorSearch(e.target.value)}
+                    onKeyDown={handleIndicatorMenuKeyDown}
                     placeholder="Search indicators..."
                     spellCheck={false}
                     data-no-drag
@@ -1117,17 +1245,21 @@ export default function MiniChart({
                         </div>
                         {items.map((ind) => {
                           const isActive = activeIndicators.some((ai) => ai.name === ind.key);
+                          const optionIndex = standardIndicators.findIndex((item) => item.key === ind.key);
+                          const isHighlighted = optionIndex === highlightedIndicatorIndex;
                           return (
                             <button
                               key={ind.key}
                               onClick={() => addIndicator(ind.key)}
+                              data-indicator-option-index={optionIndex}
+                              onMouseEnter={() => setHighlightedIndicatorIndex(optionIndex)}
                               className="flex items-center justify-between w-full px-2 py-1 hover:bg-[#1C2128] text-left"
                               style={{
                                 fontFamily: '"JetBrains Mono", monospace',
                                 fontSize: 10,
                                 color: isActive ? '#E6EDF3' : '#8B949E',
                                 border: 'none',
-                                background: 'none',
+                                background: isHighlighted ? '#1C2128' : 'none',
                                 cursor: 'pointer',
                                 borderRadius: 2,
                               }}
@@ -1193,7 +1325,7 @@ export default function MiniChart({
                 border: 'none',
                 cursor: 'pointer',
                 backgroundColor: showStrategyMenu ? 'rgba(255,255,255,0.06)' : 'transparent',
-                color: activeStrategyCount > 0 ? '#1A56DB' : '#8B949E',
+                color: activeStrategyCount > 0 ? activeToolbarTextColor : '#FFFFFF',
                 lineHeight: 1,
               }}
               title="Strategies"
@@ -1224,9 +1356,11 @@ export default function MiniChart({
                 >
                   <Search size={10} style={{ color: '#484F58', flexShrink: 0 }} />
                   <input
+                    ref={strategySearchRef}
                     type="text"
                     value={indicatorSearch}
                     onChange={(e) => setIndicatorSearch(e.target.value)}
+                    onKeyDown={handleStrategyMenuKeyDown}
                     placeholder="Search strategies..."
                     spellCheck={false}
                     data-no-drag
@@ -1245,17 +1379,21 @@ export default function MiniChart({
                 <div className="scrollbar-panel" style={{ maxHeight: 220, overflowY: 'auto' }}>
                   {strategyIndicators.map((ind) => {
                     const isActive = activeIndicators.some((ai) => ai.name === ind.key);
+                    const optionIndex = strategyIndicators.findIndex((item) => item.key === ind.key);
+                    const isHighlighted = optionIndex === highlightedStrategyIndex;
                     return (
                       <button
                         key={ind.key}
                         onClick={() => toggleStrategy(ind.key)}
+                        data-strategy-option-index={optionIndex}
+                        onMouseEnter={() => setHighlightedStrategyIndex(optionIndex)}
                         className="flex items-center justify-between w-full px-2 py-1 hover:bg-[#1C2128] text-left"
                         style={{
                           fontFamily: '"JetBrains Mono", monospace',
                           fontSize: 10,
                           color: isActive ? '#E6EDF3' : '#8B949E',
                           border: 'none',
-                          background: 'none',
+                          background: isHighlighted ? '#1C2128' : 'none',
                           cursor: 'pointer',
                           borderRadius: 2,
                         }}
@@ -1281,40 +1419,9 @@ export default function MiniChart({
             )}
           </div>
 
-          {/* Zoom controls */}
-          <button
-            onClick={() => engineRef.current?.zoomOut()}
-            className="flex items-center justify-center rounded-sm text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/55"
-            style={{
-              width: 16,
-              height: 16,
-              borderRadius: 2,
-              border: 'none',
-              background: 'transparent',
-              cursor: 'pointer',
-            }}
-            title="Zoom out"
-          >
-            <ZoomOut size={10} />
-          </button>
-          <button
-            onClick={() => engineRef.current?.zoomIn()}
-            className="flex items-center justify-center rounded-sm text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/55"
-            style={{
-              width: 16,
-              height: 16,
-              borderRadius: 2,
-              border: 'none',
-              background: 'transparent',
-              cursor: 'pointer',
-            }}
-            title="Zoom in"
-          >
-            <ZoomIn size={10} />
-          </button>
           <button
             onClick={() => engineRef.current?.resetZoom()}
-            className="flex items-center justify-center rounded-sm text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/55"
+            className="flex items-center justify-center rounded-sm text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
             style={{
               width: 16,
               height: 16,
@@ -1325,7 +1432,7 @@ export default function MiniChart({
             }}
             title="Reset zoom"
           >
-            <RotateCcw size={10} />
+            <RotateCcw size={13} />
           </button>
 
           {source === 'tws' && (
@@ -1369,7 +1476,7 @@ export default function MiniChart({
           {/* Compact mode toggle */}
           <button
             onClick={() => { void handleImportChart(); }}
-            className="flex items-center justify-center rounded-sm text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/55"
+            className="flex items-center justify-center rounded-sm text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
             style={{
               width: 16,
               height: 16,
@@ -1380,11 +1487,11 @@ export default function MiniChart({
             }}
             title="Import .diqc"
           >
-            <FolderOpen size={9} />
+            <FolderOpen size={13} strokeWidth={2} />
           </button>
           <button
             onClick={() => { void handleExportChart(); }}
-            className="flex items-center justify-center rounded-sm text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/55"
+            className="flex items-center justify-center rounded-sm text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
             style={{
               width: 16,
               height: 16,
@@ -1395,21 +1502,21 @@ export default function MiniChart({
             }}
             title="Export .diqc"
           >
-            <Save size={9} />
+            <Save size={13} strokeWidth={2} />
           </button>
 
           <button
             onClick={() => setToolbarCollapsed(v => !v)}
-            className="rounded-sm p-0 text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/55"
+            className="rounded-sm p-0 text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               width: 16, height: 16, padding: 0, border: 'none', cursor: 'pointer',
               backgroundColor: toolbarCollapsed ? 'rgba(255,255,255,0.06)' : 'transparent',
-              color: toolbarCollapsed ? '#E6EDF3' : '#8B949E', borderRadius: 2,
+              color: '#FFFFFF', borderRadius: 2,
             }}
             title={toolbarCollapsed ? 'Show controls' : 'Compact mode'}
           >
-            <span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 8, lineHeight: 1 }}>
+            <span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 11, lineHeight: 1 }}>
               {toolbarCollapsed ? '▶' : '◀'}
             </span>
           </button>
@@ -1417,10 +1524,15 @@ export default function MiniChart({
           {/* Separator */}
           <div className="mx-px h-3 w-px bg-white/[0.08]" />
 
+          <ComponentLinkMenu
+            linkChannel={linkChannel}
+            onSetLinkChannel={onSetLinkChannel}
+          />
+
           {/* Close */}
           <button
             onClick={onClose}
-            className="rounded-sm p-0 text-white/30 transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
+            className="rounded-sm p-0 text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -1431,97 +1543,15 @@ export default function MiniChart({
               border: 'none',
               cursor: 'pointer',
               backgroundColor: 'transparent',
-              color: '#8B949E',
+              color: '#FFFFFF',
               borderRadius: 2,
             }}
             title="Close"
           >
-            <X size={10} />
+            <X size={12} strokeWidth={2} />
           </button>
         </div>
       </div>
-
-      {/* Active indicator pills — only shown when indicators are active */}
-      {activeIndicators.length > 0 && (
-        <div
-          className="flex items-center gap-1 shrink-0 overflow-x-auto"
-          style={{
-            height: 20,
-            padding: '0 4px',
-            borderBottom: '1px solid #21262D',
-            backgroundColor: '#0D1117',
-          }}
-        >
-          {activeIndicators.map((ind) => {
-            const meta = indicatorRegistry[ind.name];
-            const firstOutputKey = meta?.outputs[0]?.key;
-            const color = (firstOutputKey && ind.colors[firstOutputKey]) || meta?.outputs[0]?.color || '#8B949E';
-            return (
-              <div
-                key={ind.id}
-                className="flex items-center gap-0.5 shrink-0"
-                style={{
-                  padding: '1px 4px',
-                  borderRadius: 2,
-                  backgroundColor: 'rgba(255,255,255,0.04)',
-                  border: '1px solid rgba(255,255,255,0.06)',
-                }}
-              >
-                <span
-                  style={{
-                    width: 4,
-                    height: 4,
-                    borderRadius: '50%',
-                    backgroundColor: color,
-                    flexShrink: 0,
-                  }}
-                />
-                <span
-                  style={{
-                    fontFamily: '"JetBrains Mono", monospace',
-                    fontSize: 8,
-                    color: '#8B949E',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {meta?.shortName ?? ind.name}
-                  {Object.keys(ind.params).length > 0 && (
-                    <span style={{ color: '#484F58' }}>
-                      ({Object.values(ind.params).join(',')})
-                    </span>
-                  )}
-                  {Object.keys(ind.textParams).length > 0 && (
-                    <span style={{ color: '#484F58' }}>
-                      [{Object.values(ind.textParams).join(',')}]
-                    </span>
-                  )}
-                </span>
-                <button
-                  onClick={() => removeIndicator(ind.id)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: 10,
-                    height: 10,
-                    padding: 0,
-                    border: 'none',
-                    cursor: 'pointer',
-                    backgroundColor: 'transparent',
-                    color: '#484F58',
-                    borderRadius: 2,
-                    flexShrink: 0,
-                  }}
-                  className="hover:text-[#FF3D71]"
-                  title={`Remove ${meta?.shortName ?? ind.name}`}
-                >
-                  <X size={7} />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
 
       {/* Script editor panel */}
       {showScriptEditor && (

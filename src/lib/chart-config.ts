@@ -1,25 +1,33 @@
-import type { ChartType, Timeframe } from "../chart/types";
+import type { ChartType, Timeframe, YScaleMode } from "../chart/types";
 import { indicatorRegistry } from "../chart/indicators/registry";
 import type {
   ChartState,
   PersistedChartIndicator,
   PersistedChartScript,
+  ProbEngWidgetState,
 } from "./chart-state";
+import { createDefaultProbEngWidgetState } from "./chart-state";
+import type { CustomStrategyDefinition } from "../chart/customStrategies";
 
 export interface DailyIqChartConfig {
   symbol: string;
   timeframe: Timeframe;
   chartType: ChartType;
+  yScaleMode: YScaleMode;
   linkChannel: number | null;
   indicators: PersistedChartIndicator[];
   stopperPx: number;
   indicatorColorDefaults: Record<string, Record<string, string>>;
   scripts: PersistedChartScript[];
+  customStrategies: CustomStrategyDefinition[];
+  activeCustomStrategyIds: string[];
+  probEngWidget: ProbEngWidgetState;
+  tooltipFields: Record<string, boolean>;
 }
 
 export interface DailyIqChartFile {
   type: "dailyiq-chart";
-  version: 1;
+  version: 1 | 2;
   exportedAt: string;
   chart: DailyIqChartConfig;
 }
@@ -57,6 +65,15 @@ function sanitizeLineStyleRecord(
   return result;
 }
 
+function sanitizeBooleanRecord(value: unknown): Record<string, boolean> {
+  if (!isRecord(value)) return {};
+  const result: Record<string, boolean> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "boolean") result[key] = item;
+  }
+  return result;
+}
+
 function parseIndicators(value: unknown): PersistedChartIndicator[] {
   if (!Array.isArray(value)) return [];
 
@@ -89,12 +106,29 @@ function parseScripts(value: unknown): PersistedChartScript[] {
   });
 }
 
+function parseCustomStrategies(value: unknown): CustomStrategyDefinition[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.id !== "string" || typeof item.name !== "string" || !Array.isArray(item.conditions)) return [];
+    return [{
+      id: item.id,
+      name: item.name,
+      conditions: item.conditions as CustomStrategyDefinition["conditions"],
+      buyThreshold: typeof item.buyThreshold === "number" ? item.buyThreshold : 70,
+      sellThreshold: typeof item.sellThreshold === "number" ? item.sellThreshold : 30,
+    }];
+  });
+}
+
 function sanitizeChartConfig(value: unknown): DailyIqChartConfig | null {
   if (!isRecord(value)) return null;
   return {
     symbol: typeof value.symbol === "string" ? value.symbol : "",
     timeframe: (typeof value.timeframe === "string" ? value.timeframe : "1D") as Timeframe,
     chartType: (typeof value.chartType === "string" ? value.chartType : "candlestick") as ChartType,
+    yScaleMode: value.yScaleMode === "auto" || value.yScaleMode === "log" || value.yScaleMode === "manual"
+      ? value.yScaleMode
+      : "auto",
     linkChannel: typeof value.linkChannel === "number" ? value.linkChannel : null,
     indicators: parseIndicators(value.indicators),
     stopperPx: typeof value.stopperPx === "number" ? value.stopperPx : 80,
@@ -102,13 +136,27 @@ function sanitizeChartConfig(value: unknown): DailyIqChartConfig | null {
       ? (value.indicatorColorDefaults as Record<string, Record<string, string>>)
       : {},
     scripts: parseScripts(value.scripts),
+    customStrategies: parseCustomStrategies(value.customStrategies),
+    activeCustomStrategyIds: Array.isArray(value.activeCustomStrategyIds)
+      ? value.activeCustomStrategyIds.filter((item): item is string => typeof item === "string")
+      : [],
+    probEngWidget: isRecord(value.probEngWidget)
+      ? {
+          x: typeof value.probEngWidget.x === "number" ? value.probEngWidget.x : 96,
+          y: typeof value.probEngWidget.y === "number" ? value.probEngWidget.y : 64,
+          visible: typeof value.probEngWidget.visible === "boolean" ? value.probEngWidget.visible : true,
+          detailed: typeof value.probEngWidget.detailed === "boolean" ? value.probEngWidget.detailed : false,
+          locked: typeof value.probEngWidget.locked === "boolean" ? value.probEngWidget.locked : false,
+        }
+      : createDefaultProbEngWidgetState(),
+    tooltipFields: sanitizeBooleanRecord(value.tooltipFields),
   };
 }
 
 export function createDailyIqChartFile(config: DailyIqChartConfig): DailyIqChartFile {
   return {
     type: "dailyiq-chart",
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     chart: {
       ...config,
@@ -124,6 +172,10 @@ export function createDailyIqChartFile(config: DailyIqChartConfig): DailyIqChart
         Object.entries(config.indicatorColorDefaults).map(([key, value]) => [key, { ...value }]),
       ),
       scripts: config.scripts.map((script) => ({ ...script })),
+      customStrategies: config.customStrategies.map((strategy) => ({ ...strategy, conditions: strategy.conditions.map((condition) => ({ ...condition })) })),
+      activeCustomStrategyIds: [...config.activeCustomStrategyIds],
+      probEngWidget: { ...config.probEngWidget },
+      tooltipFields: { ...config.tooltipFields },
     },
   };
 }
@@ -136,12 +188,12 @@ export function parseDailyIqChartFile(raw: string): DailyIqChartFile | null {
       exportedAt?: unknown;
       chart?: unknown;
     };
-    if (parsed.type !== "dailyiq-chart" || parsed.version !== 1) return null;
+    if (parsed.type !== "dailyiq-chart" || (parsed.version !== 1 && parsed.version !== 2)) return null;
     const chart = sanitizeChartConfig(parsed.chart);
     if (!chart) return null;
     return {
       type: "dailyiq-chart",
-      version: 1,
+      version: parsed.version,
       exportedAt: typeof parsed.exportedAt === "string" ? parsed.exportedAt : new Date().toISOString(),
       chart,
     };
@@ -155,6 +207,7 @@ export function chartStateToDailyIqChartConfig(state: ChartState): DailyIqChartC
     symbol: state.symbol,
     timeframe: state.timeframe,
     chartType: state.chartType,
+    yScaleMode: state.yScaleMode ?? "auto",
     linkChannel: state.linkChannel,
     indicators: state.indicators.map((indicator) => ({
       ...indicator,
@@ -169,6 +222,10 @@ export function chartStateToDailyIqChartConfig(state: ChartState): DailyIqChartC
       Object.entries(state.indicatorColorDefaults).map(([key, value]) => [key, { ...value }]),
     ),
     scripts: (state.scripts ?? []).map((script) => ({ ...script })),
+    customStrategies: (state.customStrategies ?? []).map((strategy) => ({ ...strategy, conditions: strategy.conditions.map((condition) => ({ ...condition })) })),
+    activeCustomStrategyIds: [...(state.activeCustomStrategyIds ?? [])],
+    probEngWidget: { ...(state.probEngWidget ?? createDefaultProbEngWidgetState()) },
+    tooltipFields: { ...(state.tooltipFields ?? {}) },
   };
 }
 
@@ -177,6 +234,7 @@ export function dailyIqChartConfigToChartState(config: DailyIqChartConfig): Char
     symbol: config.symbol,
     timeframe: config.timeframe,
     chartType: config.chartType,
+    yScaleMode: config.yScaleMode,
     linkChannel: config.linkChannel,
     indicators: config.indicators.map((indicator) => ({
       ...indicator,
@@ -192,6 +250,10 @@ export function dailyIqChartConfigToChartState(config: DailyIqChartConfig): Char
       Object.entries(config.indicatorColorDefaults).map(([key, value]) => [key, { ...value }]),
     ),
     scripts: config.scripts.map((script) => ({ ...script })),
+    customStrategies: config.customStrategies.map((strategy) => ({ ...strategy, conditions: strategy.conditions.map((condition) => ({ ...condition })) })),
+    activeCustomStrategyIds: [...config.activeCustomStrategyIds],
+    probEngWidget: { ...config.probEngWidget },
+    tooltipFields: { ...config.tooltipFields },
   };
 }
 
@@ -203,22 +265,30 @@ export function miniChartConfigToDailyIqChartConfig(
     symbol: config.symbol,
     timeframe: config.timeframe,
     chartType: config.chartType,
+    yScaleMode: config.yScaleMode,
     linkChannel,
     indicators: config.indicators,
     stopperPx: config.stopperPx,
     indicatorColorDefaults: config.indicatorColorDefaults,
     scripts: config.scripts,
+    probEngWidget: config.probEngWidget,
+    tooltipFields: config.tooltipFields,
   });
 
   return chart ?? {
     symbol: "",
     timeframe: "1D",
     chartType: "candlestick",
+    yScaleMode: "auto",
     linkChannel,
     indicators: [],
     stopperPx: 40,
     indicatorColorDefaults: {},
     scripts: [],
+    customStrategies: [],
+    activeCustomStrategyIds: [],
+    probEngWidget: createDefaultProbEngWidgetState(),
+    tooltipFields: {},
   };
 }
 
@@ -229,6 +299,7 @@ export function dailyIqChartConfigToMiniChartConfig(
     symbol: config.symbol,
     timeframe: config.timeframe,
     chartType: config.chartType,
+    yScaleMode: config.yScaleMode,
     indicators: config.indicators.map((indicator) => ({
       ...indicator,
       params: { ...indicator.params },
@@ -243,5 +314,7 @@ export function dailyIqChartConfigToMiniChartConfig(
       Object.entries(config.indicatorColorDefaults).map(([key, value]) => [key, { ...value }]),
     ),
     scripts: config.scripts.map((script) => ({ ...script })),
+    probEngWidget: { ...config.probEngWidget },
+    tooltipFields: { ...config.tooltipFields },
   };
 }

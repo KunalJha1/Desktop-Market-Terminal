@@ -1,7 +1,8 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Columns3, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Columns3, Pencil, Trash2, X } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
+import CustomSelect from "./CustomSelect";
 import { getChannelById } from "../lib/link-channels";
 import { linkBus } from "../lib/link-bus";
 import { getSymbolName } from "../lib/market-data";
@@ -109,6 +110,10 @@ function statTone(value: number | null): StatTone {
   return value > 0 ? "positive" : "negative";
 }
 
+function isFiniteNumber(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
 function readFilter(config: Record<string, unknown>): FilterValue {
   const raw = config.accountFilter;
   if (raw === "all") return raw;
@@ -164,6 +169,33 @@ function deriveOrderedColumnIds(
   return [...ordered, ...appended];
 }
 
+function derivePortfolioRow(
+  position: ReturnType<typeof usePortfolioData>["positions"][number],
+  quote: { last?: number | null; prevClose?: number | null } | undefined,
+) {
+  const currentPrice = quote?.last ?? position.currentPrice ?? null;
+  const prevClose = quote?.prevClose ?? null;
+  const marketValue = currentPrice != null ? currentPrice * position.quantity : position.marketValue;
+  const unrealizedPnl = isFiniteNumber(position.unrealizedPnl)
+    ? position.unrealizedPnl
+    : marketValue != null
+      ? marketValue - position.costBasis
+      : null;
+  const dayPnl = prevClose != null && currentPrice != null ? (currentPrice - prevClose) * position.quantity : null;
+
+  return {
+    ...position,
+    currentPrice,
+    displayName: getSymbolName(position.symbol) || position.name || position.symbol,
+    marketValue,
+    unrealizedPnl,
+    dayPnl,
+    dayPnlPct: prevClose != null && currentPrice != null && prevClose !== 0
+      ? ((currentPrice - prevClose) / prevClose) * 100
+      : null,
+  };
+}
+
 export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClose, config, onConfigChange }: PortfolioCardProps) {
   // ── Manager / composer state ──
   const [managerOpen, setManagerOpen] = useState(false);
@@ -182,8 +214,6 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
   const [cashId, setCashId] = useState<string | null>(null);
   const [cashCurrency, setCashCurrency] = useState("USD");
   const [cashBalance, setCashBalance] = useState("");
-  const [groupName, setGroupName] = useState("");
-  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
 
   // ── Column configuration state (initialised from persisted config) ──
   const [colPickerOpen, setColPickerOpen] = useState(false);
@@ -261,6 +291,15 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
     };
   }, [headerMenu]);
 
+  useEffect(() => {
+    if (!managerOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setManagerOpen(false);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [managerOpen]);
+
   function openColPicker() {
     if (!colPickerOpen && colPickerButtonRef.current) {
       setColPickerRect(colPickerButtonRef.current.getBoundingClientRect());
@@ -328,13 +367,56 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
     deleteManualPosition: deleteManualPositionInner,
     createManualCashBalance, updateManualCashBalance,
     deleteManualCashBalance: deleteManualCashBalanceInner,
-    createGroup, updateGroup, deleteGroup,
   } = portfolio;
 
   const manualAccounts = useMemo(() => accounts.filter((a) => a.source === "manual"), [accounts]);
+  const manageButtonLabel = manualAccounts.length === 0 ? "Create an account" : "Manage accounts";
   const selectedManualAccount = useMemo(
     () => manualAccounts.find((a) => a.id === selectedManualAccountId) ?? manualAccounts[0] ?? null,
     [manualAccounts, selectedManualAccountId],
+  );
+  const accountFilterOptions = useMemo(
+    () => [
+      { value: "all", label: "All Accounts" },
+      ...groups.map((group) => ({
+        value: `group:${group.id}`,
+        label: group.name,
+        description: "Account group",
+      })),
+      ...accounts.map((account) => ({
+        value: `account:${account.id}`,
+        label: account.name,
+        description: account.source === "manual" ? "Manual account" : "IBKR account",
+      })),
+    ],
+    [accounts, groups],
+  );
+  const techScoreColorModeOptions = useMemo(
+    () => [
+      { value: "white", label: "White", description: "Neutral score styling" },
+      { value: "heat", label: "Heatmap", description: "Colors by score strength" },
+      { value: "position", label: "Position Risk", description: "Flags score/trade conflicts" },
+    ],
+    [],
+  );
+  const rowHighlightOptions = useMemo(
+    () => [
+      { value: "off", label: "Off", description: "No row tinting" },
+      ...TA_SCORE_TIMEFRAMES.map((tf) => ({
+        value: tf,
+        label: tf,
+        description: "Highlight rows from this timeframe",
+      })),
+    ],
+    [],
+  );
+  const manualAccountOptions = useMemo(
+    () => manualAccounts.map((account) => ({
+      value: account.id,
+      label: account.name,
+      description: account.groupNames.length ? account.groupNames.join(", ") : "No groups assigned",
+    })),
+    [manualAccounts],
   );
   const symbols = useMemo(() => Array.from(new Set(positions.map((p) => p.symbol).filter(Boolean))), [positions]);
   const { quotes } = useWatchlistData(symbols);
@@ -413,21 +495,7 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
     () =>
       positions
         .filter((p) => activeAccountIds.has(p.accountId))
-        .map((p) => {
-          const quote = quotes.get(p.symbol);
-          const price = quote?.last ?? p.currentPrice ?? null;
-          const prevClose = quote?.prevClose ?? null;
-          const marketValue = price != null ? price * p.quantity : p.marketValue;
-          const dayPnl = prevClose != null && price != null ? (price - prevClose) * p.quantity : null;
-          return {
-            ...p,
-            currentPrice: price,
-            displayName: getSymbolName(p.symbol) || p.name || p.symbol,
-            marketValue,
-            dayPnl,
-            dayPnlPct: prevClose && price != null && prevClose !== 0 ? ((price - prevClose) / prevClose) * 100 : null,
-          };
-        }),
+        .map((p) => derivePortfolioRow(p, quotes.get(p.symbol))),
     [activeAccountIds, positions, quotes],
   );
 
@@ -468,9 +536,8 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
     };
 
     const portfolioValue = (row: RowType, key: string): number | string | null => {
-      const unrealizedPnl = row.unrealizedPnl ?? ((row.marketValue ?? 0) - row.costBasis);
       switch (key) {
-        case "unrealizedPnl": return unrealizedPnl;
+        case "unrealizedPnl": return row.unrealizedPnl;
         case "dayPnl": return row.dayPnl;
         case "symbol": return row.symbol;
         case "qty": return row.quantity;
@@ -512,9 +579,9 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
   const summary = useMemo(() => {
     let marketValue = 0, dayPnl = 0, totalPnl = 0;
     for (const row of rows) {
-      marketValue += row.marketValue ?? 0;
-      dayPnl += row.dayPnl ?? 0;
-      totalPnl += (row.marketValue ?? 0) - row.costBasis;
+      if (isFiniteNumber(row.marketValue)) marketValue += row.marketValue;
+      if (isFiniteNumber(row.dayPnl)) dayPnl += row.dayPnl;
+      if (isFiniteNumber(row.unrealizedPnl)) totalPnl += row.unrealizedPnl;
     }
     marketValue += filteredCash.reduce((sum, c) => sum + (c.currency === "USD" ? c.balance : 0), 0);
     const pnlBase = marketValue !== 0 ? marketValue : null;
@@ -538,7 +605,6 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
   }
 
   function resetAccountForm() { setEditingAccountId(null); setAccountName(""); }
-  function resetGroupForm() { setEditingGroupId(null); setGroupName(""); }
   function resetPositionForm() { setPositionId(null); setPositionSymbol(""); setPositionQty(""); setPositionAvgCost(""); setPositionCurrency("USD"); }
   function resetCashForm() { setCashId(null); setCashCurrency("USD"); setCashBalance(""); }
 
@@ -561,13 +627,6 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
         : createManualAccount({ name, groupIds: [] }),
     );
     resetAccountForm();
-  }
-
-  async function submitGroup() {
-    const name = groupName.trim();
-    if (!name) return setManagerError("Group name is required.");
-    await runMutation(() => editingGroupId ? updateGroup(editingGroupId, { name, accountIds: [] }) : createGroup({ name, accountIds: [] }));
-    resetGroupForm();
   }
 
   async function submitPosition() {
@@ -801,9 +860,8 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
 
   // ── Cell value renderers ──
   function cellValue(row: RowType, key: string): { value: string; tone?: string; strong?: boolean } {
-    const unrealizedPnl = row.unrealizedPnl ?? ((row.marketValue ?? 0) - row.costBasis);
     switch (key) {
-      case "unrealizedPnl": return { value: fmtMoney(unrealizedPnl), tone: pnlClass(unrealizedPnl) };
+      case "unrealizedPnl": return { value: fmtMoney(row.unrealizedPnl), tone: pnlClass(row.unrealizedPnl) };
       case "dayPnl":        return { value: fmtMoney(row.dayPnl), tone: pnlClass(row.dayPnl) };
       case "symbol":        return { value: row.symbol, strong: true };
       case "qty":           return { value: fmtNumber(row.quantity, 4) };
@@ -855,9 +913,21 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
               ref={colPickerButtonRef}
               type="button"
               onClick={openColPicker}
-              className={`flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[9px] font-mono transition-colors ${colPickerOpen ? "bg-blue/[0.14] text-blue" : "text-white/50 hover:bg-white/[0.06] hover:text-white/80"}`}
+              className="flex items-center gap-1 rounded-sm transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
+              style={{
+                height: 16,
+                padding: '0 6px',
+                borderRadius: 2,
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: colPickerOpen ? 'rgba(255,255,255,0.06)' : 'transparent',
+                color: colPickerOpen ? '#FFFFFF' : '#FFFFFF',
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 11,
+                lineHeight: 1,
+              }}
             >
-              <Columns3 className="h-2.5 w-2.5" strokeWidth={1.5} />
+              <Columns3 className="h-[13px] w-[13px]" strokeWidth={2} />
               Cols
             </button>
           </div>
@@ -907,29 +977,24 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
                 </p>
                 <div className="mt-2 border-t border-white/[0.08] pt-2">
                   <p className="mb-1 text-[9px] uppercase tracking-[0.14em] text-white/35">TA Score Color</p>
-                  <select
+                  <CustomSelect
                     value={techScoreColorMode}
-                    onChange={(e) => handleTechScoreColorModeChange(e.target.value as TechScoreColorMode)}
-                    className="h-7 w-full rounded-sm border border-white/[0.08] bg-[#0D1117] px-2 text-[10px] text-white/70 outline-none"
-                  >
-                    <option value="white">White</option>
-                    <option value="heat">Heatmap</option>
-                    <option value="position">Position Risk</option>
-                  </select>
+                    onChange={(next) => handleTechScoreColorModeChange(next as TechScoreColorMode)}
+                    options={techScoreColorModeOptions}
+                    size="sm"
+                    triggerClassName="h-7 text-[10px] text-white/70"
+                  />
                   <p className="mt-1 text-[9px] text-white/28">White is the default. Heatmap colors by score strength, Position Risk marks scores that oppose the trade.</p>
                 </div>
                 <div className="mt-2 border-t border-white/[0.08] pt-2">
                   <p className="mb-1 text-[9px] uppercase tracking-[0.14em] text-white/35">Row Highlight</p>
-                  <select
+                  <CustomSelect
                     value={rowHighlightTimeframe}
-                    onChange={(e) => handleRowHighlightTimeframeChange(e.target.value)}
-                    className="h-7 w-full rounded-sm border border-white/[0.08] bg-[#0D1117] px-2 text-[10px] text-white/70 outline-none"
-                  >
-                    <option value="off">Off</option>
-                    {TA_SCORE_TIMEFRAMES.map((tf) => (
-                      <option key={`row-highlight-${tf}`} value={tf}>{tf}</option>
-                    ))}
-                  </select>
+                    onChange={handleRowHighlightTimeframeChange}
+                    options={rowHighlightOptions}
+                    size="sm"
+                    triggerClassName="h-7 text-[10px] text-white/70"
+                  />
                   <p className="mt-1 text-[9px] text-white/28">Rows turn green at 60+ and red at 40- for the selected timeframe.</p>
                 </div>
               </div>
@@ -939,13 +1004,45 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
           <button
             type="button"
             onClick={() => setManagerOpen((v) => !v)}
-            className={`rounded-sm px-1.5 py-0.5 text-[9px] font-mono transition-colors ${managerOpen ? "bg-blue/[0.14] text-blue" : "text-white/35 hover:bg-white/[0.06] hover:text-white/70"}`}
+            className="rounded-sm transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
+            style={{
+              height: 16,
+              padding: '0 6px',
+              borderRadius: 2,
+              border: 'none',
+              cursor: 'pointer',
+              backgroundColor: managerOpen ? 'rgba(255,255,255,0.06)' : 'transparent',
+              color: '#FFFFFF',
+              fontFamily: '"JetBrains Mono", monospace',
+              fontSize: 11,
+              lineHeight: 1,
+            }}
           >
-            Manage
+            <span className="flex items-center gap-1">
+              <Pencil className="h-[13px] w-[13px]" strokeWidth={2} />
+              <span>{manageButtonLabel}</span>
+            </span>
           </button>
           <ComponentLinkMenu linkChannel={linkChannel} onSetLinkChannel={onSetLinkChannel} />
-          <button type="button" onClick={onClose} className="rounded-sm p-0.5 text-white/70 hover:bg-white/[0.06] hover:text-red">
-            <X className="h-2.5 w-2.5" strokeWidth={1.5} />
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-sm p-0 text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 16,
+              height: 16,
+              padding: 0,
+              border: 'none',
+              cursor: 'pointer',
+              backgroundColor: 'transparent',
+              color: '#FFFFFF',
+              borderRadius: 2,
+            }}
+          >
+            <X className="h-3 w-3" strokeWidth={2} />
           </button>
         </div>
       </div>
@@ -966,19 +1063,14 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
         />
         <StatBox label="Market Value" value={fmtMoney(summary.marketValue)} tone="text-white/75" />
         <div className="ml-auto">
-          <select
+          <CustomSelect
             value={accountFilter}
-            onChange={(e) => onConfigChange({ ...config, accountFilter: e.target.value })}
-            className="h-[30px] min-w-[200px] rounded-sm border border-white/[0.10] bg-[#161B22] px-2.5 text-[10px] font-mono text-white/70 outline-none"
-          >
-            <option value="all">All Accounts</option>
-            {groups.map((g) => (
-              <option key={g.id} value={`group:${g.id}`}>{g.name} (group)</option>
-            ))}
-            {accounts.map((a) => (
-              <option key={a.id} value={`account:${a.id}`}>{a.name} ({a.source === "manual" ? "manual" : "ibkr"})</option>
-            ))}
-          </select>
+            onChange={(next) => onConfigChange({ ...config, accountFilter: next })}
+            options={accountFilterOptions}
+            triggerClassName="h-[30px] min-w-[220px] border-white/[0.10] bg-[#161B22] px-2.5 text-[10px] font-mono text-white/70"
+            panelClassName="bg-[#161B22]"
+            align="end"
+          />
         </div>
       </div>
 
@@ -1296,9 +1388,14 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
               <form onSubmit={submitComposer} className="space-y-3">
                 <div>
                   <label className="mb-1 block text-[9px] uppercase tracking-[0.14em] text-white/28">Manual Account</label>
-                  <select value={selectedManualAccountId ?? ""} onChange={(e) => setSelectedManualAccountId(e.target.value || null)} className="h-9 w-full rounded-sm border border-white/[0.08] bg-[#0D1117] px-2 text-[11px] text-white/75 outline-none">
-                    {manualAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                  </select>
+                  <CustomSelect
+                    value={selectedManualAccountId ?? ""}
+                    onChange={(next) => setSelectedManualAccountId(next || null)}
+                    options={manualAccountOptions}
+                    placeholder="Create an account first"
+                    disabled={manualAccountOptions.length === 0}
+                    triggerClassName="text-[11px] text-white/75"
+                  />
                 </div>
                 {composerMode === "position" ? (
                   <div className="grid grid-cols-2 gap-2">
@@ -1325,65 +1422,67 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
         </div>
       , document.body) : null}
 
-      {/* ── Portfolio Manager drawer ── */}
-      {managerOpen ? (
-        <div className="absolute inset-y-10 right-2 z-[140] w-[390px] rounded-md border border-white/[0.08] bg-[#11161D] shadow-2xl shadow-black/50">
-          <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-2">
-            <div>
-              <p className="text-[11px] font-medium text-white/78">Portfolio Manager</p>
-              <p className="text-[9px] uppercase tracking-[0.14em] text-white/25">Accounts and Groups</p>
+      {/* ── Portfolio Manager modal ── */}
+      {managerOpen ? createPortal(
+        <div className="fixed inset-0 z-[950] flex items-center justify-center bg-black/60 px-6 py-10 backdrop-blur-[5px]" onMouseDown={() => setManagerOpen(false)}>
+          <div
+            className="w-[min(720px,calc(100vw-48px))] overflow-hidden rounded-[18px] border border-white/[0.10] bg-[#11161D] shadow-2xl shadow-black/70"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="max-h-[min(760px,calc(100vh-72px))] overflow-y-auto p-5 scrollbar-dark">
+              <div className="mb-4 flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-[10px] uppercase tracking-[0.16em] text-blue/72">Portfolio</p>
+                  <h3 className="mt-1 text-[22px] font-semibold tracking-[-0.02em] text-white">Manual accounts</h3>
+                  <p className="mt-1 text-[11px] leading-5 text-white/45">A basic window for creating accounts and logging manual entries.</p>
+                </div>
+                <button type="button" onClick={() => setManagerOpen(false)} className="rounded-sm p-1.5 text-white/30 hover:bg-white/[0.05] hover:text-white/70">
+                  <X className="h-4 w-4" strokeWidth={1.5} />
+                </button>
+              </div>
+
+              {managerError ? <div className="mb-4 rounded-md border border-red/30 bg-red/[0.08] px-3 py-2 text-[11px] text-red/80">{managerError}</div> : null}
+
+              <div className="space-y-5">
+                <section className="rounded-md border border-white/[0.06] bg-white/[0.02] p-3">
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    <button type="button" onClick={resetAccountForm} className="h-9 rounded-md bg-blue/[0.16] px-3 text-[11px] font-medium text-blue hover:bg-blue/[0.24]">New account</button>
+                    <button type="button" onClick={() => startComposer("position")} disabled={!selectedManualAccount} className="h-9 rounded-md border border-white/[0.08] px-3 text-[11px] text-white/68 hover:border-white/[0.18] hover:text-white/86 disabled:opacity-40">Log position</button>
+                    <button type="button" onClick={() => startComposer("cash")} disabled={!selectedManualAccount} className="h-9 rounded-md border border-white/[0.08] px-3 text-[11px] text-white/68 hover:border-white/[0.18] hover:text-white/86 disabled:opacity-40">Log cash</button>
+                  </div>
+
+                  <div className="space-y-2">
+                    {manualAccounts.map((account) => (
+                      <ManagerRow
+                        key={account.id}
+                        title={account.name}
+                        subtitle={account.groupNames.length ? account.groupNames.join(", ") : "No groups"}
+                        actions={
+                          <>
+                            <button type="button" onClick={() => { setSelectedManualAccountId(account.id); setManagerOpen(false); }} className={`rounded-sm px-2 py-1 text-[10px] ${selectedManualAccount?.id === account.id ? "bg-blue/[0.15] text-blue" : "text-white/40 hover:bg-white/[0.06] hover:text-white/70"}`}>Open</button>
+                            <button type="button" onClick={() => { setEditingAccountId(account.id); setAccountName(account.name); }} className="rounded-sm p-1 text-white/35 hover:bg-white/[0.06] hover:text-white"><Pencil className="h-3.5 w-3.5" strokeWidth={1.5} /></button>
+                            <button type="button" onClick={() => { if (window.confirm(`Delete manual account "${account.name}"?`)) void runMutation(() => deleteManualAccount(rawManualAccountId(account.id))); }} className="rounded-sm p-1 text-white/35 hover:bg-white/[0.06] hover:text-red"><Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} /></button>
+                          </>
+                        }
+                      />
+                    ))}
+                    {manualAccounts.length === 0 ? <EmptyState title="No manual accounts yet" body="Create your first local account here." /> : null}
+                  </div>
+                </section>
+
+                <section className="rounded-md border border-white/[0.06] bg-white/[0.02] p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className="text-[10px] uppercase tracking-[0.14em] text-white/35">{editingAccountId ? "Edit account" : "New account"}</p>
+                    {editingAccountId || accountName ? <button type="button" onClick={resetAccountForm} className="text-[9px] text-white/35 hover:text-white/70">Clear</button> : null}
+                  </div>
+                  <input value={accountName} onChange={(e) => setAccountName(e.target.value)} placeholder="Account name" className="mb-2 h-9 w-full rounded-sm border border-white/[0.08] bg-black/20 px-2 text-[11px] text-white/75 outline-none placeholder:text-white/20" />
+                  <button type="button" onClick={() => void submitAccount()} disabled={busy} className="h-9 w-full rounded-md bg-blue/[0.16] text-[11px] font-medium text-blue hover:bg-blue/[0.22] disabled:opacity-50">{editingAccountId ? "Update Account" : "Create Account"}</button>
+                </section>
+              </div>
             </div>
-            <button type="button" onClick={() => setManagerOpen(false)} className="rounded-sm p-1 text-white/30 hover:bg-white/[0.05] hover:text-white/70">
-              <X className="h-3.5 w-3.5" strokeWidth={1.5} />
-            </button>
           </div>
-          <div className="max-h-[calc(100vh-180px)] space-y-4 overflow-y-auto p-3 scrollbar-dark">
-            {managerError ? <div className="rounded-sm border border-red/30 bg-red/[0.08] px-2 py-1.5 text-[10px] text-red/80">{managerError}</div> : null}
-
-            <ManagerSection title="Manual Accounts" actionLabel="New" onAction={resetAccountForm} disabled={busy}>
-              {manualAccounts.map((account) => (
-                <ManagerRow
-                  key={account.id}
-                  title={account.name}
-                  subtitle={account.groupNames.length ? account.groupNames.join(", ") : "No groups"}
-                  actions={
-                    <>
-                      <button type="button" onClick={() => { setSelectedManualAccountId(account.id); setManagerOpen(false); }} className={`rounded-sm px-1.5 py-1 text-[9px] ${selectedManualAccount?.id === account.id ? "bg-blue/[0.15] text-blue" : "text-white/40 hover:bg-white/[0.06] hover:text-white/70"}`}>Open</button>
-                      <button type="button" onClick={() => { setEditingAccountId(account.id); setAccountName(account.name); }} className="rounded-sm p-1 text-white/35 hover:bg-white/[0.06] hover:text-white"><Pencil className="h-3.5 w-3.5" strokeWidth={1.5} /></button>
-                      <button type="button" onClick={() => { if (window.confirm(`Delete manual account "${account.name}"?`)) void runMutation(() => deleteManualAccount(rawManualAccountId(account.id))); }} className="rounded-sm p-1 text-white/35 hover:bg-white/[0.06] hover:text-red"><Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} /></button>
-                    </>
-                  }
-                />
-              ))}
-              {manualAccounts.length === 0 ? <p className="text-[10px] text-white/35">No manual accounts yet.</p> : null}
-              <InlineFormCard title={editingAccountId ? "Edit Account" : "New Account"} onClear={editingAccountId || accountName ? resetAccountForm : undefined}>
-                <input value={accountName} onChange={(e) => setAccountName(e.target.value)} placeholder="Account name" className="mb-2 h-8 w-full rounded-sm border border-white/[0.08] bg-black/20 px-2 text-[11px] text-white/75 outline-none placeholder:text-white/20" />
-                <button type="button" onClick={() => void submitAccount()} disabled={busy} className="h-8 w-full rounded-sm bg-blue/[0.16] text-[10px] font-medium text-blue hover:bg-blue/[0.22] disabled:opacity-50">{editingAccountId ? "Update Account" : "Create Account"}</button>
-              </InlineFormCard>
-            </ManagerSection>
-
-            <ManagerSection title="Groups" actionLabel="New" onAction={resetGroupForm} disabled={busy}>
-              {groups.map((group) => (
-                <ManagerRow
-                  key={group.id}
-                  title={group.name}
-                  subtitle={group.accountNames.length ? group.accountNames.join(", ") : "No members"}
-                  actions={
-                    <>
-                      <button type="button" onClick={() => { setEditingGroupId(group.id); setGroupName(group.name); }} className="rounded-sm p-1 text-white/35 hover:bg-white/[0.06] hover:text-white"><Pencil className="h-3.5 w-3.5" strokeWidth={1.5} /></button>
-                      <button type="button" onClick={() => { if (window.confirm(`Delete group "${group.name}"?`)) void runMutation(() => deleteGroup(group.id)); }} className="rounded-sm p-1 text-white/35 hover:bg-white/[0.06] hover:text-red"><Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} /></button>
-                    </>
-                  }
-                />
-              ))}
-              {groups.length === 0 ? <p className="text-[10px] text-white/35">No groups yet.</p> : null}
-              <InlineFormCard title={editingGroupId ? "Edit Group" : "New Group"} onClear={editingGroupId || groupName ? resetGroupForm : undefined}>
-                <input value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="Group name" className="mb-2 h-8 w-full rounded-sm border border-white/[0.08] bg-black/20 px-2 text-[11px] text-white/75 outline-none placeholder:text-white/20" />
-                <button type="button" onClick={() => void submitGroup()} disabled={busy} className="h-8 w-full rounded-sm bg-blue/[0.16] text-[10px] font-medium text-blue hover:bg-blue/[0.22] disabled:opacity-50">{editingGroupId ? "Update Group" : "Create Group"}</button>
-              </InlineFormCard>
-            </ManagerSection>
-          </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
@@ -1423,23 +1522,6 @@ function InputField({ label, value, onChange, placeholder }: { label: string; va
   );
 }
 
-function ManagerSection({ title, actionLabel, onAction, disabled, children }: { title: string; actionLabel: string; onAction: () => void; disabled?: boolean; children: ReactNode }) {
-  return (
-    <section className="rounded-md border border-white/[0.06] bg-white/[0.02] p-3">
-      <div className="mb-2 flex items-center justify-between">
-        <p className="text-[10px] uppercase tracking-[0.14em] text-white/35">{title}</p>
-        {actionLabel ? (
-          <button type="button" onClick={onAction} disabled={disabled} className="flex items-center gap-1 rounded-sm border border-white/[0.08] px-2 py-1 text-[9px] text-white/55 transition-colors hover:border-white/[0.18] hover:text-white/78 disabled:opacity-50">
-            <Plus className="h-3 w-3" strokeWidth={1.5} />
-            {actionLabel}
-          </button>
-        ) : null}
-      </div>
-      <div className="space-y-2">{children}</div>
-    </section>
-  );
-}
-
 function ManagerRow({ title, subtitle, actions }: { title: string; subtitle: string; actions: ReactNode }) {
   return (
     <div className="flex items-center justify-between rounded-sm border border-white/[0.05] bg-black/10 px-2 py-2">
@@ -1452,14 +1534,11 @@ function ManagerRow({ title, subtitle, actions }: { title: string; subtitle: str
   );
 }
 
-function InlineFormCard({ title, onClear, children }: { title: string; onClear?: () => void; children: ReactNode }) {
+function EmptyState({ title, body }: { title: string; body: string }) {
   return (
-    <div className="rounded-sm border border-white/[0.05] bg-black/10 p-2">
-      <div className="mb-2 flex items-center justify-between">
-        <p className="text-[9px] uppercase tracking-[0.14em] text-white/25">{title}</p>
-        {onClear ? <button type="button" onClick={onClear} className="text-[9px] text-white/35 hover:text-white/70">Clear</button> : null}
-      </div>
-      {children}
+    <div className="rounded-md border border-dashed border-white/[0.08] bg-black/10 px-3 py-4">
+      <p className="text-[11px] text-white/68">{title}</p>
+      <p className="mt-1 text-[10px] leading-5 text-white/34">{body}</p>
     </div>
   );
 }

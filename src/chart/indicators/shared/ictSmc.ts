@@ -400,6 +400,11 @@ function simulateFvgOnChart(
     const sourceIndex = findSourceIndexForTime(sourceBars, chartBars[i].time);
     if (sourceIndex >= 0 && isLastChartBarForSourceIndex(chartBars, sourceBars, i, sourceIndex)) {
       for (const event of eventsBySourceIndex.get(sourceIndex) ?? []) {
+        for (let zi = zones.length - 1; zi >= 0; zi -= 1) {
+          if (zones[zi].isBull === event.isBull) {
+            zones.splice(zi, 1);
+          }
+        }
         zones.push({
           top: event.top,
           bottom: event.bottom,

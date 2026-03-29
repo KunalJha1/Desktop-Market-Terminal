@@ -14,7 +14,6 @@ def ensure_base_schema(conn: sqlite3.Connection) -> None:
             score_5m         INTEGER,
             score_15m        INTEGER,
             score_1h         INTEGER,
-            score_4h         INTEGER,
             score_1d         INTEGER,
             score_1w         INTEGER,
             last_updated_utc TEXT
@@ -99,6 +98,13 @@ def ensure_base_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS active_symbols (
             symbol        TEXT PRIMARY KEY,
             last_requested INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dailyiq_cache (
+            cache_key   TEXT PRIMARY KEY,
+            response    TEXT NOT NULL,
+            fetched_at  INTEGER NOT NULL
         )
     """)
     conn.execute("""

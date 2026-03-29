@@ -1175,6 +1175,21 @@ async def get_historical_bars(
             except Exception as e:
                 logger.warning(f"TWS historical fetch failed for {symbol}: {e}")
 
+        # ── Step 2b: DailyIQ fallback (5m/15m/1d only) ─────────────────
+        if not fetched_bars and what_to_show == "TRADES" and db_bar_size in ("5m", "15m", "1d"):
+            try:
+                from dailyiq_provider import fetch_bars_from_dailyiq_async
+                diq_limit = max(50, min(5000, lookback_days * ({"5m": 78, "15m": 26, "1d": 1}.get(db_bar_size, 1))))
+                diq_bars = await fetch_bars_from_dailyiq_async(symbol, timeframe=db_bar_size, limit=diq_limit)
+                if diq_bars:
+                    fetched_bars = diq_bars
+                    fetch_source = "dailyiq"
+                    logger.info(
+                        f"Fetched {len(diq_bars)} {cache_key} bars from DailyIQ for {symbol}"
+                    )
+            except Exception as e:
+                logger.warning(f"DailyIQ historical fetch failed for {symbol}: {e}")
+
         if not fetched_bars:
             if what_to_show != "TRADES":
                 async with _raw_db_session() as conn:

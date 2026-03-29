@@ -190,7 +190,6 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
             score_5m         INTEGER,
             score_15m        INTEGER,
             score_1h         INTEGER,
-            score_4h         INTEGER,
             score_1d         INTEGER,
             score_1w         INTEGER,
             last_updated_utc TEXT

@@ -423,6 +423,8 @@ interface IndicatorLegendProps {
   onDragEnd?: () => void;
   onOpenBuiltInScript?: (script: { indicatorId: string; name: string; source: string }) => void;
   leftOffset?: number;
+  allCollapsed?: boolean;
+  onCollapsedChange?: (v: boolean) => void;
 }
 
 export default function IndicatorLegend({
@@ -442,11 +444,21 @@ export default function IndicatorLegend({
   onDragEnd,
   onOpenBuiltInScript,
   leftOffset = 8,
+  allCollapsed: allCollapsedProp,
+  onCollapsedChange,
 }: IndicatorLegendProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [scriptViewerId, setScriptViewerId] = useState<string | null>(null);
   const [colorPicker, setColorPicker] = useState<{ id: string; key: string; rect: DOMRect } | null>(null);
+  const [localCollapsed, setLocalCollapsed] = useState(false);
+  const isControlled = allCollapsedProp !== undefined;
+  const allCollapsed = isControlled ? allCollapsedProp! : localCollapsed;
+  const handleToggleCollapsed = () => {
+    const next = !allCollapsed;
+    if (!isControlled) setLocalCollapsed(next);
+    onCollapsedChange?.(next);
+  };
 
   const hasScripts = Array.from(activeScripts.values()).some(r => r.plots.length > 0);
   if (indicators.length === 0 && !hasScripts) return null;
@@ -465,7 +477,55 @@ export default function IndicatorLegend({
         pointerEvents: 'none',
       }}
     >
-      {indicators.map((ind, index) => {
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: allCollapsed ? 'center' : 'flex-start',
+          pointerEvents: 'auto',
+          marginBottom: allCollapsed ? 0 : 2,
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => {
+            handleToggleCollapsed();
+            setHoveredId(null);
+            setExpandedId(null);
+            setScriptViewerId(null);
+            setColorPicker(null);
+          }}
+          title={allCollapsed ? 'Show indicators' : 'Collapse indicators'}
+          aria-label={allCollapsed ? 'Show indicators' : 'Collapse indicators'}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 26,
+            height: 22,
+            borderRadius: 999,
+            border: `1px solid ${LEGEND_ROW_BORDER}`,
+            backgroundColor: '#000000',
+            color: '#8B949E',
+            boxShadow: '0 3px 10px rgba(0, 0, 0, 0.45)',
+            cursor: 'pointer',
+            transition: 'color 120ms ease-out, border-color 120ms ease-out, transform 120ms ease-out',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = '#E6EDF3';
+            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.16)';
+            e.currentTarget.style.transform = 'translateY(-1px)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = '#8B949E';
+            e.currentTarget.style.borderColor = LEGEND_ROW_BORDER;
+            e.currentTarget.style.transform = 'translateY(0)';
+          }}
+        >
+          {allCollapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+        </button>
+      </div>
+
+      {!allCollapsed && indicators.map((ind, index) => {
         const meta = indicatorRegistry[ind.name];
         if (!meta) return null;
         const isHovered = hoveredId === ind.id;
@@ -473,6 +533,7 @@ export default function IndicatorLegend({
         const isScriptOpen = scriptViewerId === ind.id;
         const colors = ind.colors ?? {};
         const isChopZone = ind.name === 'Chop Zone';
+        const canDrag = ind.name !== 'Probability Engine';
 
         return (
           <div
@@ -481,8 +542,12 @@ export default function IndicatorLegend({
           >
             {/* Main row */}
             <div
-              draggable
+              draggable={canDrag}
               onDragStart={(e) => {
+                if (!canDrag) {
+                  e.preventDefault();
+                  return;
+                }
                 e.dataTransfer.effectAllowed = 'move';
                 e.dataTransfer.setData('text/plain', ind.id);
                 onDragStart?.(ind.id);
@@ -682,9 +747,10 @@ export default function IndicatorLegend({
               >
                 {/* Section 1: Parameters */}
                 {Object.keys(ind.params).length > 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {Object.entries(ind.params).map(([key, value]) => (
-                      ind.name === 'DailyIQ Tech Score Signal' && key === 'showScorePane' ? (
+                      (ind.name === 'DailyIQ Tech Score Signal' && key === 'showScorePane')
+                      || (ind.name === 'Probability Engine' && key === 'detailedStats') ? (
                         <TogglePill
                           key={key}
                           active={value > 0}
@@ -694,12 +760,21 @@ export default function IndicatorLegend({
                       ) : (
                         <label
                           key={key}
-                          style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'minmax(84px, 1fr) auto',
+                            alignItems: 'center',
+                            gap: 8,
+                            padding: '4px 6px',
+                            borderRadius: 4,
+                            border: '1px solid rgba(255,255,255,0.06)',
+                            backgroundColor: '#0D1117',
+                          }}
                         >
                           <span
                             style={{
                               fontSize: 9,
-                              color: '#484F58',
+                              color: '#8B949E',
                               fontFamily: "'JetBrains Mono', monospace",
                             }}
                           >
@@ -715,16 +790,25 @@ export default function IndicatorLegend({
                   </div>
                 )}
                 {Object.keys(ind.textParams).length > 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {Object.entries(ind.textParams).map(([key, value]) => (
                       <label
                         key={key}
-                        style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'minmax(84px, 1fr) auto',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '4px 6px',
+                          borderRadius: 4,
+                          border: '1px solid rgba(255,255,255,0.06)',
+                          backgroundColor: '#0D1117',
+                        }}
                       >
                         <span
                           style={{
                             fontSize: 9,
-                            color: '#484F58',
+                            color: '#8B949E',
                             fontFamily: "'JetBrains Mono', monospace",
                           }}
                         >
@@ -904,7 +988,7 @@ export default function IndicatorLegend({
       })}
 
       {/* Active script entries */}
-      {Array.from(activeScripts.entries()).map(([id, result]) =>
+      {!allCollapsed && Array.from(activeScripts.entries()).map(([id, result]) =>
         result.plots.length > 0 ? (
           <div
             key={id}

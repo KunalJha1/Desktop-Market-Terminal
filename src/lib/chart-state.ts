@@ -1,6 +1,7 @@
 /** Persists per-tab chart state in sessionStorage */
-import type { ChartType, Timeframe } from "../chart/types";
+import type { ChartType, Timeframe, YScaleMode } from "../chart/types";
 import { indicatorRegistry } from "../chart/indicators/registry";
+import type { CustomStrategyDefinition } from "../chart/customStrategies";
 
 export interface PersistedChartIndicator {
   name: string;
@@ -18,18 +19,44 @@ export interface PersistedChartScript {
   source: string;
 }
 
+export interface ProbEngWidgetState {
+  x: number;
+  y: number;
+  visible: boolean;
+  detailed: boolean;
+  locked: boolean;
+}
+
 export interface ChartState {
   symbol: string;
   timeframe: Timeframe;
   chartType: ChartType;
+  yScaleMode?: YScaleMode;
   linkChannel: number | null;
   indicators: PersistedChartIndicator[];
   stopperPx: number;
   indicatorColorDefaults: Record<string, Record<string, string>>;
   scripts?: PersistedChartScript[];
+  customStrategies?: CustomStrategyDefinition[];
+  activeCustomStrategyIds?: string[];
+  probEngWidget?: ProbEngWidgetState;
+  tooltipFields?: Record<string, boolean>;
+  indicatorPanelOpen?: boolean;
+  strategyPanelOpen?: boolean;
+  legendCollapsed?: boolean;
 }
 
 const KEY_PREFIX = "chart-state:";
+
+export function createDefaultProbEngWidgetState(): ProbEngWidgetState {
+  return {
+    x: 96,
+    y: 64,
+    visible: true,
+    detailed: false,
+    locked: false,
+  };
+}
 
 export function createDefaultPersistedChartIndicators(): PersistedChartIndicator[] {
   return [{
@@ -125,6 +152,22 @@ function parseScripts(value: unknown): PersistedChartScript[] {
   });
 }
 
+function parseCustomStrategies(value: unknown): CustomStrategyDefinition[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.id !== "string" || typeof item.name !== "string" || !Array.isArray(item.conditions)) {
+      return [];
+    }
+    return [{
+      id: item.id,
+      name: item.name,
+      conditions: item.conditions as CustomStrategyDefinition["conditions"],
+      buyThreshold: typeof item.buyThreshold === "number" ? item.buyThreshold : 70,
+      sellThreshold: typeof item.sellThreshold === "number" ? item.sellThreshold : 30,
+    }];
+  });
+}
+
 export function loadChartState(tabId: string): ChartState | null {
   try {
     const raw = localStorage.getItem(KEY_PREFIX + tabId);
@@ -139,6 +182,9 @@ export function loadChartState(tabId: string): ChartState | null {
       symbol: typeof parsed.symbol === "string" ? parsed.symbol : "",
       timeframe: (typeof parsed.timeframe === "string" ? parsed.timeframe : "1D") as Timeframe,
       chartType: (typeof parsed.chartType === "string" ? parsed.chartType : "candlestick") as ChartType,
+      yScaleMode: (parsed.yScaleMode === "auto" || parsed.yScaleMode === "log" || parsed.yScaleMode === "manual")
+        ? parsed.yScaleMode
+        : "auto",
       linkChannel: typeof parsed.linkChannel === "number" ? parsed.linkChannel : null,
       indicators: hasIndicators ? parseIndicators(parsed.indicators) : createDefaultPersistedChartIndicators(),
       stopperPx: typeof parsed.stopperPx === "number" ? parsed.stopperPx : 80,
@@ -147,6 +193,38 @@ export function loadChartState(tabId: string): ChartState | null {
           ? (parsed.indicatorColorDefaults as Record<string, Record<string, string>>)
           : {},
       scripts: parseScripts((parsed as { scripts?: unknown }).scripts),
+      customStrategies: parseCustomStrategies((parsed as { customStrategies?: unknown }).customStrategies),
+      activeCustomStrategyIds: Array.isArray((parsed as { activeCustomStrategyIds?: unknown }).activeCustomStrategyIds)
+        ? ((parsed as { activeCustomStrategyIds: unknown[] }).activeCustomStrategyIds.filter((item): item is string => typeof item === "string"))
+        : [],
+      indicatorPanelOpen: typeof (parsed as { indicatorPanelOpen?: unknown }).indicatorPanelOpen === "boolean"
+        ? (parsed as { indicatorPanelOpen: boolean }).indicatorPanelOpen
+        : false,
+      strategyPanelOpen: typeof (parsed as { strategyPanelOpen?: unknown }).strategyPanelOpen === "boolean"
+        ? (parsed as { strategyPanelOpen: boolean }).strategyPanelOpen
+        : false,
+      legendCollapsed: typeof (parsed as { legendCollapsed?: unknown }).legendCollapsed === "boolean"
+        ? (parsed as { legendCollapsed: boolean }).legendCollapsed
+        : false,
+      probEngWidget: isRecord((parsed as { probEngWidget?: unknown }).probEngWidget)
+        ? {
+            x: typeof (parsed as { probEngWidget?: { x?: unknown } }).probEngWidget?.x === "number"
+              ? (parsed as { probEngWidget: { x: number } }).probEngWidget.x
+              : 16,
+            y: typeof (parsed as { probEngWidget?: { y?: unknown } }).probEngWidget?.y === "number"
+              ? (parsed as { probEngWidget: { y: number } }).probEngWidget.y
+              : 44,
+            visible: typeof (parsed as { probEngWidget?: { visible?: unknown } }).probEngWidget?.visible === "boolean"
+              ? (parsed as { probEngWidget: { visible: boolean } }).probEngWidget.visible
+              : true,
+            detailed: typeof (parsed as { probEngWidget?: { detailed?: unknown } }).probEngWidget?.detailed === "boolean"
+              ? (parsed as { probEngWidget: { detailed: boolean } }).probEngWidget.detailed
+              : false,
+            locked: typeof (parsed as { probEngWidget?: { locked?: unknown } }).probEngWidget?.locked === "boolean"
+              ? (parsed as { probEngWidget: { locked: boolean } }).probEngWidget.locked
+              : false,
+          }
+        : createDefaultProbEngWidgetState(),
     };
   } catch {
     return null;

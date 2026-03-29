@@ -816,7 +816,7 @@ fn do_spawn_valuation_worker(app_handle: &AppHandle, state: &SidecarState) -> Re
     }
 
     let child = if let Some(script_path) = find_valuation_worker_script() {
-        spawn_dev_python(app_handle, &script_path, &[])?
+        spawn_dev_python(app_handle, &script_path, &["--loop".to_string()])?
     } else {
         spawn_bundled_sidecar(app_handle, "dailyiq-valuation-worker", &[])?
     };

@@ -22,8 +22,18 @@ export async function importChartConfigFromFile(): Promise<ChartConfigImportResu
       multiple: false,
     });
     if (typeof selected !== "string") return { status: "canceled" };
-    const content = await readTextFile(selected);
+    let content: string;
+    try {
+      content = await readTextFile(selected);
+    } catch (err) {
+      console.error("Failed to read chart config file:", { selected, err });
+      return { status: "error" };
+    }
+
     const file = parseDailyIqChartFile(content);
+    if (!file) {
+      console.error("Failed to parse chart config file:", { selected });
+    }
     return file ? { status: "success", file } : { status: "invalid" };
   } catch (err) {
     console.error("Failed to import chart config:", err);
@@ -43,7 +53,12 @@ export async function exportChartConfigToFile(config: DailyIqChartFile["chart"])
     if (typeof filePath !== "string") return false;
 
     const file = createDailyIqChartFile(config);
-    await writeTextFile(filePath, JSON.stringify(file, null, 2));
+    try {
+      await writeTextFile(filePath, JSON.stringify(file, null, 2));
+    } catch (err) {
+      console.error("Failed to write chart config file:", { filePath, err });
+      return false;
+    }
     return true;
   } catch (err) {
     console.error("Failed to export chart config:", err);

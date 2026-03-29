@@ -3,7 +3,6 @@ export const STRATEGY_KEYS_LIST = [
   'EMA 9/14 Crossover',
   'EMA 5/20 Crossover',
   'DailyIQ Tech Score Signal',
-  'Liquidity Sweep Signal',
   'FVG Momentum',
   'MACD Crossover',
   'ADL Crossover',

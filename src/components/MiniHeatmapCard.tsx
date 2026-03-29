@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
+import CustomSelect from "./CustomSelect";
 import { useSp500HeatmapData } from "../lib/use-sp500-heatmap";
 import {
   HEATMAP_METRIC_OPTIONS,
@@ -139,30 +140,43 @@ export default function MiniHeatmapCard({
       <div
         className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2"
       >
-        <span className="text-[11px] font-medium text-white/80">
+        <span className="text-[11px] font-medium text-white/85">
           S&P 500 Heatmap
         </span>
-        <div className="flex items-center gap-1">
-          <select
+        <div className="flex items-center gap-0.5">
+          <CustomSelect
             value={metricMode}
-            onChange={(e) =>
-              onConfigChange({ ...config, metricMode: e.target.value as HeatmapMetricMode })
+            onChange={(next) =>
+              onConfigChange({ ...config, metricMode: next as HeatmapMetricMode })
             }
-            className="h-5 rounded-sm border border-white/[0.08] bg-[#131720] px-1.5 text-[9px] text-white/75 outline-none"
-            title="Heatmap metric"
-          >
-            {HEATMAP_METRIC_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            options={HEATMAP_METRIC_OPTIONS.map((option) => ({
+              value: option.value,
+              label: option.label,
+            }))}
+            size="sm"
+            triggerClassName="h-4 border-transparent bg-transparent px-1.5 font-mono text-[11px] text-white hover:border-transparent hover:bg-white/[0.06] hover:text-white/90"
+            panelClassName="bg-[#131720]"
+            panelWidth={144}
+          />
           <ComponentLinkMenu linkChannel={linkChannel} onSetLinkChannel={onSetLinkChannel} />
           <button
             onClick={onClose}
-            className="rounded-sm p-0.5 text-white/70 transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
+            className="rounded-sm p-0 text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 16,
+              height: 16,
+              padding: 0,
+              border: "none",
+              cursor: "pointer",
+              backgroundColor: "transparent",
+              color: "#FFFFFF",
+              borderRadius: 2,
+            }}
           >
-            <X className="h-2.5 w-2.5" strokeWidth={1.5} />
+            <X className="h-[12px] w-[12px]" strokeWidth={2} />
           </button>
         </div>
       </div>

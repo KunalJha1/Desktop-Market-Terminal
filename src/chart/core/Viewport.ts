@@ -5,8 +5,10 @@ import {
 } from '../constants';
 import type { YScaleMode } from '../types';
 
-// How many bars of empty space to allow scrolling past the right edge
-const FRONT_MARGIN_BARS = 25;
+// Default blank space when the chart snaps to the latest bar.
+const DEFAULT_FRONT_MARGIN_BARS = 25;
+// Maximum blank space the user can manually drag into on the right.
+const MAX_FRONT_MARGIN_BARS = 80;
 
 export class Viewport {
   startIndex: number = 0;
@@ -42,7 +44,7 @@ export class Viewport {
   }
 
   get endIndex(): number {
-    const extra = Math.max(FRONT_MARGIN_BARS, Math.ceil(this.rightOffsetBars));
+    const extra = this.getMaxRightExtraBars();
     return Math.min(this.startIndex + this.barsVisible, this.totalBars + extra);
   }
 
@@ -130,16 +132,28 @@ export class Viewport {
   }
 
   getMaxStart(): number {
-    const extra = Math.max(FRONT_MARGIN_BARS, Math.ceil(this.rightOffsetBars));
+    const extra = this.getMaxRightExtraBars();
     return Math.max(0, this.totalBars + extra - this.barsVisible);
   }
 
   isNearEnd(thresholdBars: number): boolean {
-    return this.startIndex >= this.getMaxStart() - thresholdBars;
+    return this.startIndex >= this.getDefaultEndStart() - thresholdBars;
   }
 
   scrollToEnd() {
-    this.startIndex = this.getMaxStart();
+    this.startIndex = this.getDefaultEndStart();
+  }
+
+  private getDefaultRightExtraBars(): number {
+    return Math.max(DEFAULT_FRONT_MARGIN_BARS, Math.ceil(this.rightOffsetBars));
+  }
+
+  private getMaxRightExtraBars(): number {
+    return Math.max(MAX_FRONT_MARGIN_BARS, Math.ceil(this.rightOffsetBars));
+  }
+
+  private getDefaultEndStart(): number {
+    return Math.max(0, this.totalBars + this.getDefaultRightExtraBars() - this.barsVisible);
   }
 
   shiftStartBy(deltaBars: number) {

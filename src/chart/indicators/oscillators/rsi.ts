@@ -28,8 +28,8 @@ function rma(data: number[], period: number): number[] {
 }
 
 export function computeRSI(bars: OHLCVBar[], params: Record<string, number>): number[][] {
-  const period = params.period ?? 14;
-  const maPeriod = params.maPeriod ?? 0;
+  const period = Math.max(1, Math.round(params.period ?? 14));
+  const maPeriod = Math.max(1, Math.round(params.maPeriod ?? 14));
   const maType = Math.round(params.maType ?? 1);
   const len = bars.length;
   const result = new Array<number>(len).fill(NaN);
@@ -71,11 +71,9 @@ export function computeRSI(bars: OHLCVBar[], params: Record<string, number>): nu
   }
 
   let maResult = new Array<number>(len).fill(NaN);
-  if (maPeriod >= 1) {
-    if (maType === 2) maResult = ema(result, maPeriod);
-    else if (maType === 3) maResult = rma(result, maPeriod);
-    else maResult = sma(result, maPeriod);
-  }
+  if (maType === 2) maResult = ema(result, maPeriod);
+  else if (maType === 3) maResult = rma(result, maPeriod);
+  else maResult = sma(result, maPeriod);
 
   return [result, maResult];
 }

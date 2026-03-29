@@ -2,10 +2,10 @@ import type { TaScoreTimeframe } from "./ta-score-timeframes";
 import { TA_SCORE_TIMEFRAMES } from "./ta-score-timeframes";
 
 // ─── Custom Column Type System ──────────────────────────────────────
-// expression  — legacy JS expression (backward compat)
-// indicator   — single indicator value (RSI, MACD signal, etc.)
-// crossover   — boolean comparison between two indicator outputs
-// score       — composite 0-100 from multiple indicator conditions
+// expression  — JS expression over quote + symbol metadata
+// indicator   — display a single value source
+// crossover   — compare two value sources across one or more combos
+// score       — composite 0-100 from multiple source comparisons
 
 export type IndicatorType =
   | "PRICE"
@@ -24,6 +24,37 @@ export type Timeframe = TaScoreTimeframe;
 
 export type IndicatorParams = Record<string, number>;
 
+export type QuoteField =
+  | "last"
+  | "open"
+  | "high"
+  | "low"
+  | "prevClose"
+  | "change"
+  | "changePct"
+  | "volume"
+  | "bid"
+  | "ask"
+  | "mid"
+  | "spread"
+  | "week52High"
+  | "week52Low"
+  | "trailingPE"
+  | "forwardPE"
+  | "marketCap";
+
+export type MetaField = "symbol" | "name" | "sector" | "industry" | "indexWeight";
+
+export type EtfField =
+  | "isEtf"
+  | "holdingCount"
+  | "topHoldingWeight"
+  | "topHoldingSymbol"
+  | "topHoldingName";
+
+export type ValueSourceKind = "indicator" | "quote" | "meta" | "etf";
+export type ScoreOperator = "above" | "below" | "equal" | "notEqual";
+
 export interface IndicatorRequestSpec {
   type: IndicatorType;
   timeframe: string;
@@ -40,7 +71,72 @@ export interface IndicatorCatalogEntry {
   outputs?: Array<{ key: string; label: string }>;
 }
 
+export interface IndicatorValueSource {
+  sourceKind: "indicator";
+  indicatorType: IndicatorType;
+  timeframe: Timeframe;
+  params: IndicatorParams;
+  output?: string;
+}
+
+export interface QuoteValueSource {
+  sourceKind: "quote";
+  field: QuoteField;
+}
+
+export interface MetaValueSource {
+  sourceKind: "meta";
+  field: MetaField;
+}
+
+export interface EtfValueSource {
+  sourceKind: "etf";
+  field: EtfField;
+}
+
+export type ValueSource =
+  | IndicatorValueSource
+  | QuoteValueSource
+  | MetaValueSource
+  | EtfValueSource;
+
 export const AVAILABLE_TIMEFRAMES: Timeframe[] = [...TA_SCORE_TIMEFRAMES];
+
+export const QUOTE_FIELD_OPTIONS: Array<{ value: QuoteField; label: string }> = [
+  { value: "last", label: "Last" },
+  { value: "open", label: "Open" },
+  { value: "high", label: "High" },
+  { value: "low", label: "Low" },
+  { value: "prevClose", label: "Prev Close" },
+  { value: "change", label: "Change" },
+  { value: "changePct", label: "Change %" },
+  { value: "volume", label: "Volume" },
+  { value: "bid", label: "Bid" },
+  { value: "ask", label: "Ask" },
+  { value: "mid", label: "Mid" },
+  { value: "spread", label: "Spread" },
+  { value: "week52High", label: "52W High" },
+  { value: "week52Low", label: "52W Low" },
+  { value: "trailingPE", label: "Trailing P/E" },
+  { value: "forwardPE", label: "Forward P/E" },
+  { value: "marketCap", label: "Market Cap" },
+];
+
+export const META_FIELD_OPTIONS: Array<{ value: MetaField; label: string }> = [
+  { value: "symbol", label: "Symbol" },
+  { value: "name", label: "Name" },
+  { value: "sector", label: "Sector" },
+  { value: "industry", label: "Industry" },
+  { value: "indexWeight", label: "Index Weight" },
+];
+
+export const ETF_FIELD_OPTIONS: Array<{ value: EtfField; label: string }> = [
+  { value: "isEtf", label: "Is ETF" },
+  { value: "holdingCount", label: "Holding Count" },
+  { value: "topHoldingWeight", label: "Top Holding Weight" },
+  { value: "topHoldingSymbol", label: "Top Holding Symbol" },
+  { value: "topHoldingName", label: "Top Holding Name" },
+];
 
 export const INDICATOR_CATALOG: Record<IndicatorType, IndicatorCatalogEntry> = {
   PRICE: {
@@ -48,16 +144,9 @@ export const INDICATOR_CATALOG: Record<IndicatorType, IndicatorCatalogEntry> = {
     defaults: {},
     paramOrder: [],
     paramLabels: {},
-    outputs: [
-      { key: "last", label: "Last" },
-      { key: "open", label: "Open" },
-      { key: "high", label: "High" },
-      { key: "low", label: "Low" },
-      { key: "prevClose", label: "Prev Close" },
-      { key: "mid", label: "Mid" },
-      { key: "bid", label: "Bid" },
-      { key: "ask", label: "Ask" },
-    ],
+    outputs: QUOTE_FIELD_OPTIONS.filter((item) =>
+      ["last", "open", "high", "low", "prevClose", "mid", "bid", "ask"].includes(item.value),
+    ).map((item) => ({ key: item.value, label: item.label })),
   },
   RSI: {
     label: "RSI",
@@ -179,6 +268,48 @@ export function getIndicatorCatalogEntry(type: IndicatorType): IndicatorCatalogE
   return INDICATOR_CATALOG[type];
 }
 
+export function makeIndicatorValueSource(
+  indicatorType: IndicatorType,
+  timeframe: Timeframe = "1h",
+  params: IndicatorParams = getDefaultIndicatorParams(indicatorType),
+  output: string | undefined = getDefaultIndicatorOutput(indicatorType),
+): IndicatorValueSource {
+  return {
+    sourceKind: "indicator",
+    indicatorType,
+    timeframe,
+    params: cloneParams(params),
+    output,
+  };
+}
+
+export function getDefaultValueSource(kind: ValueSourceKind = "indicator"): ValueSource {
+  switch (kind) {
+    case "quote":
+      return { sourceKind: "quote", field: "last" };
+    case "meta":
+      return { sourceKind: "meta", field: "symbol" };
+    case "etf":
+      return { sourceKind: "etf", field: "isEtf" };
+    default:
+      return makeIndicatorValueSource("RSI");
+  }
+}
+
+export function getValueSourceLabel(source: ValueSource): string {
+  if (source.sourceKind === "indicator") {
+    const outputLabel = getIndicatorOutputs(source.indicatorType).find((item) => item.key === source.output)?.label;
+    return outputLabel ? `${source.indicatorType} ${outputLabel}` : source.indicatorType;
+  }
+  if (source.sourceKind === "quote") {
+    return QUOTE_FIELD_OPTIONS.find((item) => item.value === source.field)?.label ?? source.field;
+  }
+  if (source.sourceKind === "meta") {
+    return META_FIELD_OPTIONS.find((item) => item.value === source.field)?.label ?? source.field;
+  }
+  return ETF_FIELD_OPTIONS.find((item) => item.value === source.field)?.label ?? source.field;
+}
+
 interface CustomColumnBase {
   id: string;
   label: string;
@@ -195,40 +326,29 @@ export interface ExpressionColumn extends CustomColumnBase {
 
 export interface IndicatorColumn extends CustomColumnBase {
   kind: "indicator";
-  indicatorType: IndicatorType;
-  timeframe: Timeframe;
-  params: IndicatorParams;
-  output?: string;
-}
-
-export interface IndicatorRef {
-  type: IndicatorType;
-  params: IndicatorParams;
-  output?: string;
+  source: ValueSource;
 }
 
 export interface CrossoverCombo {
-  indicatorA: IndicatorRef;
-  indicatorB: IndicatorRef;
+  left: ValueSource;
+  right: ValueSource;
 }
 
 export interface CrossoverColumn extends CustomColumnBase {
   kind: "crossover";
-  timeframe: Timeframe;
   combos: CrossoverCombo[];
 }
 
 export interface ScoreCondition {
-  indicatorType: IndicatorType;
-  params: IndicatorParams;
-  output?: string;
-  comparison: "above" | "below";
+  left: ValueSource;
+  operator: ScoreOperator;
+  targetType: "value" | "source";
   threshold: number;
+  right?: ValueSource;
 }
 
 export interface ScoreColumn extends CustomColumnBase {
   kind: "score";
-  timeframe: Timeframe;
   conditions: ScoreCondition[];
 }
 
@@ -281,6 +401,60 @@ function normalizeOutput(type: IndicatorType, raw: unknown): string | undefined 
   return outputs[0]?.key;
 }
 
+function normalizeTimeframe(raw: unknown, fallback: Timeframe = "1h"): Timeframe {
+  const value = typeof raw === "string" ? raw : fallback;
+  return (AVAILABLE_TIMEFRAMES.includes(value as Timeframe) ? value : fallback) as Timeframe;
+}
+
+function normalizeQuoteField(raw: unknown, fallback: QuoteField = "last"): QuoteField {
+  return QUOTE_FIELD_OPTIONS.some((item) => item.value === raw) ? (raw as QuoteField) : fallback;
+}
+
+function normalizeMetaField(raw: unknown, fallback: MetaField = "symbol"): MetaField {
+  return META_FIELD_OPTIONS.some((item) => item.value === raw) ? (raw as MetaField) : fallback;
+}
+
+function normalizeEtfField(raw: unknown, fallback: EtfField = "isEtf"): EtfField {
+  return ETF_FIELD_OPTIONS.some((item) => item.value === raw) ? (raw as EtfField) : fallback;
+}
+
+function normalizeValueSource(
+  raw: Record<string, unknown> | undefined,
+  fallback: ValueSource = makeIndicatorValueSource("RSI"),
+  legacyTimeframe?: Timeframe,
+): ValueSource {
+  const item = raw ?? {};
+  const sourceKind = item.sourceKind;
+  if (sourceKind === "quote") {
+    return { sourceKind, field: normalizeQuoteField(item.field) };
+  }
+  if (sourceKind === "meta") {
+    return { sourceKind, field: normalizeMetaField(item.field) };
+  }
+  if (sourceKind === "etf") {
+    return { sourceKind, field: normalizeEtfField(item.field) };
+  }
+
+  const indicatorType = String(
+    item.indicatorType ?? item.type ?? ("indicatorType" in fallback && fallback.indicatorType) ?? "RSI",
+  ) as IndicatorType;
+
+  if (indicatorType === "PRICE") {
+    return {
+      sourceKind: "quote",
+      field: normalizeQuoteField(item.output),
+    };
+  }
+
+  return {
+    sourceKind: "indicator",
+    indicatorType,
+    timeframe: normalizeTimeframe(item.timeframe, legacyTimeframe ?? ("timeframe" in fallback ? fallback.timeframe : "1h")),
+    params: paramsFromLegacy(indicatorType, item),
+    output: normalizeOutput(indicatorType, item.output),
+  };
+}
+
 /** Normalize legacy columns (no `kind` field) to ExpressionColumn. */
 export function migrateColumn(raw: Record<string, unknown>): CustomColumnDef {
   if (!("kind" in raw)) {
@@ -312,72 +486,88 @@ export function migrateColumn(raw: Record<string, unknown>): CustomColumnDef {
         expression: String(raw.expression ?? ""),
       };
     case "indicator": {
-      const indicatorType = String(raw.indicatorType ?? "RSI") as IndicatorType;
+      const legacyIndicatorType = String(raw.indicatorType ?? "RSI") as IndicatorType;
+      const legacyTimeframe = normalizeTimeframe(raw.timeframe);
       return {
         ...base,
         kind: "indicator",
-        indicatorType,
-        timeframe: String(raw.timeframe ?? "1h") as Timeframe,
-        params: paramsFromLegacy(indicatorType, raw),
-        output: normalizeOutput(indicatorType, raw.output),
+        source: raw.source && typeof raw.source === "object"
+          ? normalizeValueSource(raw.source as Record<string, unknown>, makeIndicatorValueSource("RSI"), legacyTimeframe)
+          : normalizeValueSource(
+              {
+                indicatorType: legacyIndicatorType,
+                timeframe: legacyTimeframe,
+                params: raw.params,
+                output: raw.output,
+              },
+              makeIndicatorValueSource("RSI"),
+            ),
       };
     }
     case "crossover": {
-      const normalizeIndicatorRef = (item: Record<string, unknown> | undefined, fallback: IndicatorType): IndicatorRef => {
-        const rawRef = item ?? {};
-        const type = String(rawRef.type ?? fallback) as IndicatorType;
-        return {
-          type,
-          params: paramsFromLegacy(type, rawRef),
-          output: normalizeOutput(type, rawRef.output),
-        };
-      };
-
+      const legacyTimeframe = normalizeTimeframe(raw.timeframe);
       const combos = Array.isArray(raw.combos)
         ? raw.combos.map((combo, idx) => {
             const item = (combo as Record<string, unknown>) ?? {};
             return {
-              indicatorA: normalizeIndicatorRef(item.indicatorA as Record<string, unknown> | undefined, idx === 0 ? "EMA" : "RSI"),
-              indicatorB: normalizeIndicatorRef(item.indicatorB as Record<string, unknown> | undefined, "EMA"),
+              left: item.left && typeof item.left === "object"
+                ? normalizeValueSource(item.left as Record<string, unknown>, makeIndicatorValueSource(idx === 0 ? "EMA" : "RSI"), legacyTimeframe)
+                : normalizeValueSource(item.indicatorA as Record<string, unknown> | undefined, makeIndicatorValueSource(idx === 0 ? "EMA" : "RSI"), legacyTimeframe),
+              right: item.right && typeof item.right === "object"
+                ? normalizeValueSource(item.right as Record<string, unknown>, makeIndicatorValueSource("EMA"), legacyTimeframe)
+                : normalizeValueSource(item.indicatorB as Record<string, unknown> | undefined, makeIndicatorValueSource("EMA"), legacyTimeframe),
             };
           })
         : [{
-            indicatorA: normalizeIndicatorRef(raw.indicatorA as Record<string, unknown> | undefined, "EMA"),
-            indicatorB: normalizeIndicatorRef(raw.indicatorB as Record<string, unknown> | undefined, "EMA"),
+            left: normalizeValueSource(raw.indicatorA as Record<string, unknown> | undefined, makeIndicatorValueSource("EMA"), legacyTimeframe),
+            right: normalizeValueSource(raw.indicatorB as Record<string, unknown> | undefined, makeIndicatorValueSource("EMA"), legacyTimeframe),
           }];
 
       return {
-        id: base.id,
-        label: base.label,
-        width: base.width,
-        color: base.color,
+        ...base,
         kind: "crossover",
-        timeframe: String(raw.timeframe ?? "1h") as Timeframe,
         combos: combos.length > 0 ? combos : [{
-          indicatorA: normalizeIndicatorRef(undefined, "EMA"),
-          indicatorB: normalizeIndicatorRef(undefined, "EMA"),
+          left: makeIndicatorValueSource("EMA", legacyTimeframe, { period: 9 }),
+          right: makeIndicatorValueSource("EMA", legacyTimeframe, { period: 21 }),
         }],
       };
     }
-    case "score":
+    case "score": {
+      const legacyTimeframe = normalizeTimeframe(raw.timeframe);
       return {
         ...base,
         kind: "score",
-        timeframe: String(raw.timeframe ?? "1h") as Timeframe,
         conditions: Array.isArray(raw.conditions)
           ? raw.conditions.map((condition) => {
               const item = (condition as Record<string, unknown>) ?? {};
-              const indicatorType = String(item.indicatorType ?? "RSI") as IndicatorType;
+              const legacyIndicatorType = String(item.indicatorType ?? "RSI") as IndicatorType;
               return {
-                indicatorType,
-                params: paramsFromLegacy(indicatorType, item),
-                output: normalizeOutput(indicatorType, item.output),
-                comparison: item.comparison === "below" ? "below" : "above",
+                left: item.left && typeof item.left === "object"
+                  ? normalizeValueSource(item.left as Record<string, unknown>, makeIndicatorValueSource("RSI"), legacyTimeframe)
+                  : normalizeValueSource(
+                      {
+                        indicatorType: legacyIndicatorType,
+                        timeframe: legacyTimeframe,
+                        params: item.params,
+                        output: item.output,
+                      },
+                      makeIndicatorValueSource("RSI"),
+                    ),
+                operator: item.operator === "below" || item.operator === "equal" || item.operator === "notEqual"
+                  ? item.operator
+                  : item.comparison === "below"
+                    ? "below"
+                    : "above",
+                targetType: item.targetType === "source" ? "source" : "value",
                 threshold: typeof item.threshold === "number" && Number.isFinite(item.threshold) ? item.threshold : 0,
+                right: item.right && typeof item.right === "object"
+                  ? normalizeValueSource(item.right as Record<string, unknown>, { sourceKind: "quote", field: "last" })
+                  : undefined,
               };
             })
           : [],
       };
+    }
     default:
       return {
         ...base,
@@ -419,6 +609,20 @@ function addRequest(
   }
 }
 
+function addValueSourceRequest(
+  requests: IndicatorRequestSpec[],
+  seen: Set<string>,
+  source: ValueSource | undefined,
+) {
+  if (!source || source.sourceKind !== "indicator") return;
+  addRequest(requests, seen, {
+    type: source.indicatorType,
+    timeframe: source.timeframe,
+    params: cloneParams(source.params),
+    output: source.output,
+  });
+}
+
 export function extractIndicatorRequests(columns: CustomColumnDef[]): IndicatorRequestSpec[] {
   const seen = new Set<string>();
   const requests: IndicatorRequestSpec[] = [];
@@ -426,44 +630,19 @@ export function extractIndicatorRequests(columns: CustomColumnDef[]): IndicatorR
   for (const col of columns) {
     switch (col.kind) {
       case "indicator":
-        if (col.indicatorType !== "PRICE") {
-          addRequest(requests, seen, {
-            type: col.indicatorType,
-            timeframe: col.timeframe,
-            params: cloneParams(col.params),
-            output: col.output,
-          });
-        }
+        addValueSourceRequest(requests, seen, col.source);
         break;
       case "crossover":
         for (const combo of col.combos) {
-          if (combo.indicatorA.type !== "PRICE") {
-            addRequest(requests, seen, {
-              type: combo.indicatorA.type,
-              timeframe: col.timeframe,
-              params: cloneParams(combo.indicatorA.params),
-              output: combo.indicatorA.output,
-            });
-          }
-          if (combo.indicatorB.type !== "PRICE") {
-            addRequest(requests, seen, {
-              type: combo.indicatorB.type,
-              timeframe: col.timeframe,
-              params: cloneParams(combo.indicatorB.params),
-              output: combo.indicatorB.output,
-            });
-          }
+          addValueSourceRequest(requests, seen, combo.left);
+          addValueSourceRequest(requests, seen, combo.right);
         }
         break;
       case "score":
         for (const cond of col.conditions) {
-          if (cond.indicatorType !== "PRICE") {
-            addRequest(requests, seen, {
-              type: cond.indicatorType,
-              timeframe: col.timeframe,
-              params: cloneParams(cond.params),
-              output: cond.output,
-            });
+          addValueSourceRequest(requests, seen, cond.left);
+          if (cond.targetType === "source") {
+            addValueSourceRequest(requests, seen, cond.right);
           }
         }
         break;

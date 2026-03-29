@@ -35,6 +35,7 @@ interface DrawingContextMenu {
 
 interface ChartCanvasProps {
   bars: OHLCVBar[];
+  datasetKey: string;
   symbol?: string;
   chartType: ChartType;
   timeframe: Timeframe;
@@ -58,6 +59,7 @@ interface ChartCanvasProps {
 
 export default function ChartCanvas({
   bars,
+  datasetKey,
   symbol,
   chartType,
   timeframe,
@@ -65,7 +67,7 @@ export default function ChartCanvas({
   activeScripts,
   liveMode = false,
   stopperPx = 0,
-  onStopperPxChange,
+  onStopperPxChange: _onStopperPxChange,
   brandingMode = 'none',
   onViewportChange,
   onLayoutChange,
@@ -81,6 +83,7 @@ export default function ChartCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
+  const lastDatasetKeyRef = useRef<string | null>(null);
   const [activeTool, setActiveTool] = useState<DrawingTool>('none');
   const [yAxisHovered, setYAxisHovered] = useState(false);
   const [xAxisHovered, setXAxisHovered] = useState(false);
@@ -144,13 +147,15 @@ export default function ChartCanvas({
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
-    if (updateMode === 'tail' && bars.length > 0) {
+    const datasetChanged = lastDatasetKeyRef.current !== datasetKey;
+    lastDatasetKeyRef.current = datasetKey;
+    if (!datasetChanged && updateMode === 'tail' && bars.length > 0) {
       engine.updateTail(bars, tailChangeOffset);
     } else {
       engine.setData(bars);
     }
     notifyLayout();
-  }, [bars, updateMode, tailChangeOffset, engineRef, onLayoutChange]);
+  }, [bars, datasetKey, updateMode, tailChangeOffset, engineRef, onLayoutChange, notifyLayout]);
 
   useEffect(() => {
     if (!pendingViewportShift) return;
@@ -171,6 +176,15 @@ export default function ChartCanvas({
     engineRef.current?.resetViewport();
     engineRef.current?.setTimeframe(timeframe);
   }, [timeframe, engineRef]);
+
+  useEffect(() => {
+    if (lastDatasetKeyRef.current === null) {
+      lastDatasetKeyRef.current = datasetKey;
+      return;
+    }
+    engineRef.current?.resetViewport();
+    onViewportShiftApplied?.();
+  }, [datasetKey, engineRef, onViewportShiftApplied]);
 
   useEffect(() => {
     engineRef.current?.setBrandingMode(brandingMode);
@@ -716,31 +730,6 @@ export default function ChartCanvas({
         <div style={{ pointerEvents: (drawingHovered || activeTool !== 'none' || selectedDrawing) ? 'none' : undefined }}>
           {children}
         </div>
-        {liveMode && (
-          <div
-            className="absolute right-2 bottom-1 flex items-center gap-2"
-            style={{
-              height: 20,
-              padding: '0 6px',
-              backgroundColor: 'rgba(13,17,23,0.7)',
-              border: '1px solid rgba(33,38,45,0.7)',
-              borderRadius: 4,
-              backdropFilter: 'blur(2px)',
-            }}
-          >
-            <span className="text-[9px] font-mono text-text-muted">Stop</span>
-            <input
-              type="range"
-              min={0}
-              max={200}
-              step={2}
-              value={stopperPx}
-              onChange={(e) => onStopperPxChange?.(Number(e.target.value))}
-              style={{ width: 90 }}
-            />
-            <span className="text-[9px] font-mono text-text-muted">{stopperPx}px</span>
-          </div>
-        )}
       </div>
     </div>
   );

@@ -19,21 +19,19 @@ logger = logging.getLogger(__name__)
 
 # Minimum resampled candles required before we attempt indicator math
 MIN_BARS = 60
-SUPPORTED_TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
-INTRADAY_TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h"}
+SUPPORTED_TIMEFRAMES = ("1m", "5m", "15m", "1h", "1d", "1w")
+INTRADAY_TIMEFRAMES = {"1m", "5m", "15m", "1h"}
 
 # How many 1m bars to pull per intraday timeframe (enough for 100+ resampled bars)
 _TF_1M_FETCH: dict[str, int] = {
     "5m":  5  * 200,   # 200 × 5m bars
     "15m": 15 * 200,   # 200 × 15m bars
     "1h":  60 * 200,   # 200 × 1h bars
-    "4h":  240 * 150,  # 150 × 4h bars (cap at 15 000)
 }
 _TF_RESAMPLE_MINUTES: dict[str, int] = {
     "5m":  5,
     "15m": 15,
     "1h":  60,
-    "4h":  240,
 }
 
 
@@ -505,5 +503,250 @@ def compute_indicators_for_symbols(
     except Exception as e:
         logger.error(f"compute_indicators_for_symbols: {e}")
         return {s: {} for s in symbols}
+
+    return result
+
+
+def _fill_nan(length: int) -> list[float]:
+    return [float("nan")] * length
+
+
+def _estimate_tick_size(df: pd.DataFrame) -> float:
+    best = float("inf")
+
+    def consider(value: float) -> None:
+        nonlocal best
+        if not np.isfinite(value) or value <= 0:
+            return
+        rounded = round(float(value), 8)
+        if rounded > 0:
+            best = min(best, rounded)
+
+    for i in range(1, len(df)):
+        prev = df.iloc[i - 1]
+        cur = df.iloc[i]
+        consider(abs(float(cur["open"]) - float(prev["open"])))
+        consider(abs(float(cur["high"]) - float(prev["high"])))
+        consider(abs(float(cur["low"]) - float(prev["low"])))
+        consider(abs(float(cur["close"]) - float(prev["close"])))
+        consider(abs(float(cur["high"]) - float(cur["low"])))
+
+    if best != float("inf"):
+        return best
+    fallback = abs(float(df["close"].iloc[0]) / 10000) if len(df) else 0.0
+    return fallback if fallback > 0 else 0.01
+
+
+def _period_key_day(ts: int) -> str:
+    dt = pd.to_datetime(ts, unit="ms", utc=True)
+    return f"{dt.year}-{dt.month}-{dt.day}"
+
+
+def _period_key_week(ts: int) -> str:
+    dt = pd.to_datetime(ts, unit="ms", utc=True)
+    monday = dt.normalize() - pd.Timedelta(days=dt.weekday())
+    return f"{monday.year}-{monday.month}-{monday.day}"
+
+
+def _period_key_month(ts: int) -> str:
+    dt = pd.to_datetime(ts, unit="ms", utc=True)
+    return f"{dt.year}-{dt.month}"
+
+
+def _compute_period_levels(
+    df: pd.DataFrame,
+    get_key,
+) -> tuple[list[float], list[float], list[float], list[float]]:
+    length = len(df)
+    current_high = _fill_nan(length)
+    current_low = _fill_nan(length)
+    previous_high = _fill_nan(length)
+    previous_low = _fill_nan(length)
+
+    active_key = ""
+    period_high = float("nan")
+    period_low = float("nan")
+    last_high = float("nan")
+    last_low = float("nan")
+
+    for i, row in enumerate(df.itertuples(index=False)):
+        key = get_key(int(row.ts))
+        if key != active_key:
+            active_key = key
+            if np.isfinite(period_high):
+                last_high = period_high
+                last_low = period_low
+            period_high = float(row.high)
+            period_low = float(row.low)
+        else:
+            period_high = max(period_high, float(row.high))
+            period_low = min(period_low, float(row.low))
+
+        current_high[i] = period_high
+        current_low[i] = period_low
+        previous_high[i] = last_high
+        previous_low[i] = last_low
+
+    return current_high, current_low, previous_high, previous_low
+
+
+def _compute_liquidity_levels(df: pd.DataFrame) -> dict[str, list[float]]:
+    day = _compute_period_levels(df, _period_key_day)
+    week = _compute_period_levels(df, _period_key_week)
+    month = _compute_period_levels(df, _period_key_month)
+    return {
+        "todayHigh": day[0],
+        "todayLow": day[1],
+        "prevDayHigh": day[2],
+        "prevDayLow": day[3],
+        "prevWeekHigh": week[2],
+        "prevWeekLow": week[3],
+        "prevMonthHigh": month[2],
+        "prevMonthLow": month[3],
+    }
+
+
+def detect_latest_liquidity_sweep(
+    df: pd.DataFrame,
+    lookback_bars: int,
+    params: dict | None = None,
+) -> dict[str, int | float | str | None]:
+    params = params or {}
+    if df is None or len(df) < 2:
+        return {
+            "direction": None,
+            "eventTs": None,
+            "ageBars": None,
+            "source": None,
+        }
+
+    liq_use_close_confirm = float(params.get("liqUseCloseConfirm", 1)) >= 0.5
+    liq_show_today_hl = float(params.get("liqShowTodayHL", 1)) >= 0.5
+    liq_show_pdh_pdl = float(params.get("liqShowPDH_PDL", 1)) >= 0.5
+    liq_show_pwh_pwl = float(params.get("liqShowPWH_PWL", 1)) >= 0.5
+    liq_show_pmh_pml = float(params.get("liqShowPMH_PML", 1)) >= 0.5
+    liq_use_external_only = float(params.get("liqUseExternalOnly", 1)) >= 0.5
+    liq_pad_ticks = max(0, int(round(float(params.get("liqPadTicks", 0)))))
+
+    levels = _compute_liquidity_levels(df)
+    tick_size = _estimate_tick_size(df)
+    pad = tick_size * liq_pad_ticks
+    tol = tick_size * 2
+
+    latest_event: dict[str, int | float | str | None] | None = None
+
+    def allow_bear(level: float, base_high: float) -> bool:
+        return (
+            not liq_use_external_only
+            or (np.isfinite(level) and np.isfinite(base_high) and level >= (base_high - tol))
+        )
+
+    def allow_bull(level: float, base_low: float) -> bool:
+        return (
+            not liq_use_external_only
+            or (np.isfinite(level) and np.isfinite(base_low) and level <= (base_low + tol))
+        )
+
+    def bull_sweep(index: int, level: float) -> bool:
+        return (
+            np.isfinite(level)
+            and float(df["low"].iloc[index]) < (level - pad)
+            and (not liq_use_close_confirm or float(df["close"].iloc[index]) > level)
+        )
+
+    def bear_sweep(index: int, level: float) -> bool:
+        return (
+            np.isfinite(level)
+            and float(df["high"].iloc[index]) > (level + pad)
+            and (not liq_use_close_confirm or float(df["close"].iloc[index]) < level)
+        )
+
+    for i in range(1, len(df)):
+        base_high = levels["todayHigh"][i - 1]
+        base_low = levels["todayLow"][i - 1]
+
+        bull_source = None
+        if liq_show_today_hl and bull_sweep(i, base_low):
+            bull_source = "today"
+        elif liq_show_pdh_pdl and allow_bull(levels["prevDayLow"][i], base_low) and bull_sweep(i, levels["prevDayLow"][i]):
+            bull_source = "prevDay"
+        elif liq_show_pwh_pwl and allow_bull(levels["prevWeekLow"][i], base_low) and bull_sweep(i, levels["prevWeekLow"][i]):
+            bull_source = "prevWeek"
+        elif liq_show_pmh_pml and allow_bull(levels["prevMonthLow"][i], base_low) and bull_sweep(i, levels["prevMonthLow"][i]):
+            bull_source = "prevMonth"
+
+        bear_source = None
+        if liq_show_today_hl and bear_sweep(i, base_high):
+            bear_source = "today"
+        elif liq_show_pdh_pdl and allow_bear(levels["prevDayHigh"][i], base_high) and bear_sweep(i, levels["prevDayHigh"][i]):
+            bear_source = "prevDay"
+        elif liq_show_pwh_pwl and allow_bear(levels["prevWeekHigh"][i], base_high) and bear_sweep(i, levels["prevWeekHigh"][i]):
+            bear_source = "prevWeek"
+        elif liq_show_pmh_pml and allow_bear(levels["prevMonthHigh"][i], base_high) and bear_sweep(i, levels["prevMonthHigh"][i]):
+            bear_source = "prevMonth"
+
+        if bull_source and not bear_source:
+            latest_event = {
+                "direction": "bull",
+                "eventTs": int(df["ts"].iloc[i]),
+                "ageBars": len(df) - 1 - i,
+                "source": bull_source,
+            }
+        elif bear_source and not bull_source:
+            latest_event = {
+                "direction": "bear",
+                "eventTs": int(df["ts"].iloc[i]),
+                "ageBars": len(df) - 1 - i,
+                "source": bear_source,
+            }
+
+    if latest_event is None:
+        return {
+            "direction": None,
+            "eventTs": None,
+            "ageBars": None,
+            "source": None,
+        }
+
+    age_bars = latest_event["ageBars"]
+    if not isinstance(age_bars, int) or age_bars >= max(1, lookback_bars):
+        return {
+            "direction": None,
+            "eventTs": None,
+            "ageBars": None,
+            "source": None,
+        }
+
+    return latest_event
+
+
+def detect_liquidity_sweeps_for_symbols(
+    symbols: list[str],
+    timeframe: str,
+    lookback_bars: int,
+    params: dict | None = None,
+) -> dict[str, dict[str, int | float | str | None]]:
+    result: dict[str, dict[str, int | float | str | None]] = {}
+    normalized_timeframe = timeframe.strip().lower()
+    if normalized_timeframe not in {"5m", "15m", "1h", "1d", "1w"}:
+        return {
+            sym: {"direction": None, "eventTs": None, "ageBars": None, "source": None}
+            for sym in symbols
+        }
+
+    try:
+        with sync_db_session() as conn:
+            for sym in symbols:
+                df = _load_df(conn, sym, normalized_timeframe)
+                if df is None or len(df) < 2:
+                    result[sym] = {"direction": None, "eventTs": None, "ageBars": None, "source": None}
+                    continue
+                result[sym] = detect_latest_liquidity_sweep(df, lookback_bars, params)
+    except Exception as e:
+        logger.error(f"detect_liquidity_sweeps_for_symbols: {e}")
+        return {
+            sym: {"direction": None, "eventTs": None, "ageBars": None, "source": None}
+            for sym in symbols
+        }
 
     return result

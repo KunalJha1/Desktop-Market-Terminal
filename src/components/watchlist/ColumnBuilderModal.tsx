@@ -1,13 +1,17 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
-import { X, ChevronDown } from "lucide-react";
+import { X } from "lucide-react";
 import {
   AVAILABLE_TIMEFRAMES,
+  ETF_FIELD_OPTIONS,
   INDICATOR_TYPES,
-  getDefaultIndicatorOutput,
+  META_FIELD_OPTIONS,
+  QUOTE_FIELD_OPTIONS,
+  getDefaultValueSource,
   getIndicatorCatalogEntry,
   getIndicatorOutputs,
-  getDefaultIndicatorParams,
+  getValueSourceLabel,
+  makeIndicatorValueSource,
   type CustomColumnDef,
   type ExpressionColumn,
   type IndicatorColumn,
@@ -15,11 +19,13 @@ import {
   type CrossoverCombo,
   type ScoreColumn,
   type ScoreCondition,
-  type IndicatorRef,
   type IndicatorType,
-  type IndicatorParams,
   type Timeframe,
+  type ValueSource,
+  type ValueSourceKind,
+  type ScoreOperator,
 } from "../../lib/custom-column-types";
+import CustomSelect, { type CustomSelectOption } from "../CustomSelect";
 
 type ColumnKind = "score" | "crossover" | "indicator" | "expression";
 
@@ -34,35 +40,35 @@ interface ColumnBuilderModalProps {
 const KIND_LABELS: Record<ColumnKind, string> = {
   score: "Score",
   crossover: "Crossover",
-  indicator: "Indicator",
+  indicator: "Value",
   expression: "Expression",
 };
+
+const SOURCE_KIND_OPTIONS: Array<{ value: ValueSourceKind; label: string }> = [
+  { value: "indicator", label: "Indicator" },
+  { value: "quote", label: "Quote Field" },
+  { value: "meta", label: "Symbol Field" },
+  { value: "etf", label: "ETF Field" },
+];
+
+const COMPARISON_OPTIONS: CustomSelectOption[] = [
+  { value: "above", label: "above" },
+  { value: "below", label: "below" },
+  { value: "equal", label: "equals" },
+  { value: "notEqual", label: "not equal" },
+];
+
+const TARGET_OPTIONS: CustomSelectOption[] = [
+  { value: "value", label: "Number" },
+  { value: "source", label: "Another Source" },
+];
 
 const inputCls =
   "w-full appearance-none rounded border border-white/[0.08] bg-[#0D1117] px-2 py-1.5 font-mono text-[10px] text-white/80 outline-none focus:border-[#1A56DB]/50 placeholder:text-white/20";
 
-const selectCls =
-  "w-full appearance-none rounded border border-white/[0.08] bg-[#0D1117] py-1.5 pl-2 pr-6 font-mono text-[10px] text-white/80 outline-none focus:border-[#1A56DB]/50 cursor-pointer";
-
 const labelCls = "block pb-1 text-[8px] uppercase tracking-wider text-white/25";
-
-function SelectWrapper({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={`relative ${className ?? ""}`}>
-      {children}
-      <ChevronDown
-        size={10}
-        className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-white/25"
-      />
-    </div>
-  );
-}
+const selectTriggerCls =
+  "w-full font-mono text-[10px] text-white/80 focus:border-[#1A56DB]/50";
 
 function defaultLabel(kind: ColumnKind): string {
   switch (kind) {
@@ -71,49 +77,25 @@ function defaultLabel(kind: ColumnKind): string {
     case "crossover":
       return "Cross";
     case "indicator":
-      return "RSI";
+      return "Value";
     case "expression":
       return "Custom";
   }
 }
 
-function getPrimaryParam(type: IndicatorType, params: IndicatorParams): number {
-  const defaults = getDefaultIndicatorParams(type);
-  const firstKey = Object.keys(defaults)[0];
-  if (!firstKey) return 0;
-  return typeof params[firstKey] === "number" ? params[firstKey] : defaults[firstKey];
-}
-
-function setPrimaryParam(type: IndicatorType, value: number): IndicatorParams {
-  const defaults = getDefaultIndicatorParams(type);
-  const firstKey = Object.keys(defaults)[0];
-  if (!firstKey) return defaults;
-  return { ...defaults, [firstKey]: value };
-}
-
-function makeIndicatorRef(type: IndicatorType, primaryValue?: number): IndicatorRef {
-  const defaults = getDefaultIndicatorParams(type);
-  const firstKey = Object.keys(defaults)[0];
-  if (!firstKey || primaryValue === undefined) {
-    return { type, params: defaults, output: getDefaultIndicatorOutput(type) };
-  }
-  return { type, params: { ...defaults, [firstKey]: primaryValue }, output: getDefaultIndicatorOutput(type) };
-}
-
 function makeDefaultCrossoverCombo(): CrossoverCombo {
   return {
-    indicatorA: makeIndicatorRef("EMA", 9),
-    indicatorB: makeIndicatorRef("EMA", 21),
+    left: makeIndicatorValueSource("EMA", "1h", { period: 9 }, "value"),
+    right: makeIndicatorValueSource("EMA", "1h", { period: 21 }, "value"),
   };
 }
 
-function makeScoreCondition(type: IndicatorType, comparison: "above" | "below", threshold: number): ScoreCondition {
+function makeScoreCondition(): ScoreCondition {
   return {
-    indicatorType: type,
-    params: getDefaultIndicatorParams(type),
-    output: getDefaultIndicatorOutput(type),
-    comparison,
-    threshold,
+    left: makeIndicatorValueSource("RSI"),
+    operator: "above",
+    targetType: "value",
+    threshold: 50,
   };
 }
 
@@ -136,28 +118,13 @@ export default function ColumnBuilderModal({
   const [expression, setExpression] = useState(
     editColumn?.kind === "expression"
       ? (editColumn as ExpressionColumn).expression
-      : "changePct > 0 ? 75 : 25",
+      : "pct(change, prevClose)",
   );
 
-  const [indType, setIndType] = useState<IndicatorType>(
+  const [indicatorSource, setIndicatorSource] = useState<ValueSource>(
     editColumn?.kind === "indicator"
-      ? (editColumn as IndicatorColumn).indicatorType
-      : "RSI",
-  );
-  const [indParams, setIndParams] = useState<IndicatorParams>(
-    editColumn?.kind === "indicator"
-      ? (editColumn as IndicatorColumn).params
-      : getDefaultIndicatorParams("RSI"),
-  );
-  const [indOutput, setIndOutput] = useState<string | undefined>(
-    editColumn?.kind === "indicator"
-      ? (editColumn as IndicatorColumn).output
-      : getDefaultIndicatorOutput("RSI"),
-  );
-  const [indTimeframe, setIndTimeframe] = useState<Timeframe>(
-    editColumn?.kind === "indicator"
-      ? (editColumn as IndicatorColumn).timeframe
-      : "1h",
+      ? (editColumn as IndicatorColumn).source
+      : makeIndicatorValueSource("RSI"),
   );
 
   const [crossCombos, setCrossCombos] = useState<CrossoverCombo[]>(
@@ -167,19 +134,11 @@ export default function ColumnBuilderModal({
           : [makeDefaultCrossoverCombo()]))
       : [makeDefaultCrossoverCombo()],
   );
-  const [crossTf, setCrossTf] = useState<Timeframe>(
-    editColumn?.kind === "crossover"
-      ? (editColumn as CrossoverColumn).timeframe
-      : "1h",
-  );
 
-  const [scoreTf, setScoreTf] = useState<Timeframe>(
-    editColumn?.kind === "score" ? (editColumn as ScoreColumn).timeframe : "1h",
-  );
   const [conditions, setConditions] = useState<ScoreCondition[]>(
     editColumn?.kind === "score"
       ? (editColumn as ScoreColumn).conditions
-      : [makeScoreCondition("RSI", "above", 50)],
+      : [makeScoreCondition()],
   );
 
   const handleSave = () => {
@@ -194,10 +153,7 @@ export default function ColumnBuilderModal({
         onSave({
           ...base,
           kind: "indicator",
-          indicatorType: indType,
-          params: indParams,
-          output: indOutput,
-          timeframe: indTimeframe,
+          source: indicatorSource,
         });
         break;
       case "crossover":
@@ -205,17 +161,16 @@ export default function ColumnBuilderModal({
           ...base,
           kind: "crossover",
           combos: crossCombos,
-          timeframe: crossTf,
         });
         break;
       case "score":
-        onSave({ ...base, kind: "score", timeframe: scoreTf, conditions });
+        onSave({ ...base, kind: "score", conditions });
         break;
     }
   };
 
   const addCondition = () => {
-    setConditions((prev) => [...prev, makeScoreCondition("EMA", "above", 0)]);
+    setConditions((prev) => [...prev, makeScoreCondition()]);
   };
 
   const updateCondition = (idx: number, updates: Partial<ScoreCondition>) => {
@@ -240,7 +195,7 @@ export default function ColumnBuilderModal({
 
   return createPortal(
     <div className="fixed inset-0 z-[320] flex items-center justify-center bg-black/50">
-      <div className="w-[480px] rounded-lg border border-white/[0.08] bg-[#161B22] shadow-2xl shadow-black/60">
+      <div className="w-[620px] rounded-lg border border-white/[0.08] bg-[#161B22] shadow-2xl shadow-black/60">
         <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-3">
           <div>
             <h3 className="text-[13px] font-semibold text-white">
@@ -248,8 +203,8 @@ export default function ColumnBuilderModal({
             </h3>
             <p className="text-[10px] text-white/30">
               {kind === "expression"
-                ? "Write a JS expression using quote fields."
-                : `Configure a ${kind} column.`}
+                ? "Build a column from quote fields, symbol metadata, and ETF details."
+                : `Configure a ${kind} column with richer value sources.`}
             </p>
           </div>
           <button
@@ -281,44 +236,24 @@ export default function ColumnBuilderModal({
           ))}
         </div>
 
-        <div className="max-h-[400px] space-y-3 overflow-y-auto px-5 py-3">
+        <div className="max-h-[500px] space-y-3 overflow-y-auto px-5 py-3">
           {kind === "expression" && (
             <ExpressionForm expression={expression} onChange={setExpression} />
           )}
           {kind === "indicator" && (
-            <IndicatorForm
-              type={indType}
-              params={indParams}
-              output={indOutput}
-              timeframe={indTimeframe}
-              onTypeChange={(type) => {
-                setIndType(type);
-                setIndParams(getDefaultIndicatorParams(type));
-                setIndOutput(getDefaultIndicatorOutput(type));
-                if (!isEditing && label === defaultLabel("indicator")) {
-                  setLabel(type);
-                }
-              }}
-              onParamsChange={setIndParams}
-              onOutputChange={setIndOutput}
-              onTimeframeChange={setIndTimeframe}
-            />
+            <IndicatorForm source={indicatorSource} onSourceChange={setIndicatorSource} />
           )}
           {kind === "crossover" && (
             <CrossoverForm
               combos={crossCombos}
-              timeframe={crossTf}
               onUpdateCombo={updateCrossoverCombo}
               onAddCombo={addCrossoverCombo}
               onRemoveCombo={removeCrossoverCombo}
-              onTimeframeChange={setCrossTf}
             />
           )}
           {kind === "score" && (
             <ScoreForm
-              timeframe={scoreTf}
               conditions={conditions}
-              onTimeframeChange={setScoreTf}
               onAddCondition={addCondition}
               onUpdateCondition={updateCondition}
               onRemoveCondition={removeCondition}
@@ -419,72 +354,16 @@ function ExpressionForm({
       <textarea
         value={expression}
         onChange={(e) => onChange(e.target.value)}
-        rows={3}
+        rows={4}
         className="w-full resize-none appearance-none rounded border border-white/[0.08] bg-[#0D1117] px-2.5 py-2 font-mono text-[10px] text-white/70 outline-none focus:border-[#1A56DB]/50"
       />
       <p className="pt-1 text-[9px] text-white/20">
-        Available: last, bid, ask, mid, open, high, low, prevClose, change, changePct, volume, spread, symbol
+        Aliases: last, bid, ask, open, high, low, change, changePct, volume, week52High, trailingPE, marketCap, symbol, name, sector, industry.
+      </p>
+      <p className="pt-1 text-[9px] text-white/20">
+        Objects/helpers: quote.*, meta.*, etf.*, nz(value, fallback), pct(part, whole), between(value, min, max).
       </p>
     </div>
-  );
-}
-
-function IndicatorSelect({
-  value,
-  onChange,
-  className,
-}: {
-  value: IndicatorType;
-  onChange: (v: IndicatorType) => void;
-  className?: string;
-}) {
-  return (
-    <SelectWrapper className={className}>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as IndicatorType)}
-        className={selectCls}
-      >
-        {INDICATOR_TYPES.map((type) => (
-          <option key={type} value={type}>
-            {type}
-          </option>
-        ))}
-      </select>
-    </SelectWrapper>
-  );
-}
-
-function IndicatorOutputSelect({
-  type,
-  value,
-  onChange,
-  className,
-}: {
-  type: IndicatorType;
-  value?: string;
-  onChange: (value: string | undefined) => void;
-  className?: string;
-}) {
-  const outputs = getIndicatorOutputs(type);
-  if (outputs.length <= 1) {
-    return null;
-  }
-
-  return (
-    <SelectWrapper className={className}>
-      <select
-        value={value ?? outputs[0]?.key ?? ""}
-        onChange={(e) => onChange(e.target.value || undefined)}
-        className={selectCls}
-      >
-        {outputs.map((output) => (
-          <option key={output.key} value={output.key}>
-            {output.label}
-          </option>
-        ))}
-      </select>
-    </SelectWrapper>
   );
 }
 
@@ -498,61 +377,64 @@ function TimeframeSelect({
   className?: string;
 }) {
   return (
-    <SelectWrapper className={className}>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as Timeframe)}
-        className={selectCls}
-      >
-        {AVAILABLE_TIMEFRAMES.map((tf) => (
-          <option key={tf} value={tf}>
-            {tf}
-          </option>
-        ))}
-      </select>
-    </SelectWrapper>
+    <CustomSelect
+      className={className}
+      value={value}
+      onChange={(next) => onChange(next as Timeframe)}
+      options={AVAILABLE_TIMEFRAMES.map((tf) => ({ value: tf, label: tf }))}
+      size="sm"
+      triggerClassName={selectTriggerCls}
+    />
   );
 }
 
-function ComparisonSelect({
+function IndicatorSelect({
   value,
   onChange,
-  className,
 }: {
-  value: "above" | "below";
-  onChange: (v: "above" | "below") => void;
-  className?: string;
+  value: IndicatorType;
+  onChange: (v: IndicatorType) => void;
 }) {
   return (
-    <SelectWrapper className={className}>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as "above" | "below")}
-        className={selectCls}
-      >
-        <option value="above">above</option>
-        <option value="below">below</option>
-      </select>
-    </SelectWrapper>
+    <CustomSelect
+      value={value}
+      onChange={(next) => onChange(next as IndicatorType)}
+      options={INDICATOR_TYPES.map((type) => ({ value: type, label: type }))}
+      size="sm"
+      triggerClassName={selectTriggerCls}
+    />
   );
 }
 
-function IndicatorConfigEditor({
+function SourceKindSelect({
+  value,
+  onChange,
+}: {
+  value: ValueSourceKind;
+  onChange: (v: ValueSourceKind) => void;
+}) {
+  return (
+    <CustomSelect
+      value={value}
+      onChange={(next) => onChange(next as ValueSourceKind)}
+      options={SOURCE_KIND_OPTIONS}
+      size="sm"
+      triggerClassName={selectTriggerCls}
+    />
+  );
+}
+
+function ValueSourceEditor({
+  source,
+  onChange,
   title,
   description,
-  indicator,
-  onChange,
-  showSource = true,
 }: {
+  source: ValueSource;
+  onChange: (next: ValueSource) => void;
   title: string;
   description?: string;
-  indicator: IndicatorRef;
-  onChange: (next: IndicatorRef) => void;
-  showSource?: boolean;
 }) {
-  const catalog = getIndicatorCatalogEntry(indicator.type);
-  const outputs = getIndicatorOutputs(indicator.type);
-
   return (
     <div className="space-y-2 rounded border border-white/[0.06] bg-[#0D1117]/50 p-2.5">
       <div>
@@ -561,110 +443,149 @@ function IndicatorConfigEditor({
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        {showSource && (
+        <div>
+          <label className={labelCls}>Source Type</label>
+          <SourceKindSelect
+            value={source.sourceKind}
+            onChange={(kind) => onChange(getDefaultValueSource(kind))}
+          />
+        </div>
+
+        {source.sourceKind === "indicator" && (
           <div>
-            <label className={labelCls}>Source</label>
+            <label className={labelCls}>Indicator</label>
             <IndicatorSelect
-              value={indicator.type}
-              onChange={(type) =>
-                onChange({
-                  type,
-                  params: getDefaultIndicatorParams(type),
-                  output: getDefaultIndicatorOutput(type),
-                })
+              value={source.indicatorType}
+              onChange={(indicatorType) =>
+                onChange(makeIndicatorValueSource(indicatorType, source.timeframe))
               }
             />
           </div>
         )}
-        {outputs.length > 1 && (
+
+        {source.sourceKind === "quote" && (
           <div>
-            <label className={labelCls}>Output</label>
-            <IndicatorOutputSelect
-              type={indicator.type}
-              value={indicator.output}
-              onChange={(output) => onChange({ ...indicator, output })}
+            <label className={labelCls}>Field</label>
+            <CustomSelect
+              value={source.field}
+              onChange={(next) => onChange({ sourceKind: "quote", field: next as never })}
+              options={QUOTE_FIELD_OPTIONS}
+              size="sm"
+              triggerClassName={selectTriggerCls}
+            />
+          </div>
+        )}
+
+        {source.sourceKind === "meta" && (
+          <div>
+            <label className={labelCls}>Field</label>
+            <CustomSelect
+              value={source.field}
+              onChange={(next) => onChange({ sourceKind: "meta", field: next as never })}
+              options={META_FIELD_OPTIONS}
+              size="sm"
+              triggerClassName={selectTriggerCls}
+            />
+          </div>
+        )}
+
+        {source.sourceKind === "etf" && (
+          <div>
+            <label className={labelCls}>Field</label>
+            <CustomSelect
+              value={source.field}
+              onChange={(next) => onChange({ sourceKind: "etf", field: next as never })}
+              options={ETF_FIELD_OPTIONS}
+              size="sm"
+              triggerClassName={selectTriggerCls}
             />
           </div>
         )}
       </div>
 
-      {catalog.paramOrder.length > 0 && (
-        <div className={`grid gap-2 ${catalog.paramOrder.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
-          {catalog.paramOrder.map((paramKey) => {
-            const defaultValue = catalog.defaults[paramKey];
-            const label = catalog.paramLabels[paramKey] ?? paramKey;
-            return (
-              <div key={paramKey}>
-                <label className={labelCls}>{label}</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={indicator.params[paramKey] ?? ""}
-                  onChange={(e) =>
-                    onChange({
-                      ...indicator,
-                      params: {
-                        ...indicator.params,
-                        [paramKey]: e.target.value === "" ? defaultValue : Number(e.target.value) || defaultValue,
-                      },
-                    })
-                  }
-                  className={inputCls}
-                  placeholder={`${label} (default ${defaultValue})`}
+      {source.sourceKind === "indicator" && (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className={labelCls}>Timeframe</label>
+              <TimeframeSelect
+                value={source.timeframe}
+                onChange={(timeframe) => onChange({ ...source, timeframe })}
+              />
+            </div>
+            {getIndicatorOutputs(source.indicatorType).length > 1 && (
+              <div>
+                <label className={labelCls}>Output</label>
+                <CustomSelect
+                  value={source.output ?? ""}
+                  onChange={(next) => onChange({ ...source, output: next || undefined })}
+                  options={getIndicatorOutputs(source.indicatorType).map((output) => ({
+                    value: output.key,
+                    label: output.label,
+                  }))}
+                  size="sm"
+                  triggerClassName={selectTriggerCls}
                 />
               </div>
-            );
-          })}
-        </div>
+            )}
+          </div>
+
+          {getIndicatorCatalogEntry(source.indicatorType).paramOrder.length > 0 && (
+            <div
+              className={`grid gap-2 ${
+                getIndicatorCatalogEntry(source.indicatorType).paramOrder.length > 1 ? "grid-cols-2" : "grid-cols-1"
+              }`}
+            >
+              {getIndicatorCatalogEntry(source.indicatorType).paramOrder.map((paramKey) => {
+                const catalog = getIndicatorCatalogEntry(source.indicatorType);
+                const defaultValue = catalog.defaults[paramKey];
+                const label = catalog.paramLabels[paramKey] ?? paramKey;
+                return (
+                  <div key={paramKey}>
+                    <label className={labelCls}>{label}</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={source.params[paramKey] ?? ""}
+                      onChange={(e) =>
+                        onChange({
+                          ...source,
+                          params: {
+                            ...source.params,
+                            [paramKey]: e.target.value === "" ? defaultValue : Number(e.target.value) || defaultValue,
+                          },
+                        })
+                      }
+                      className={inputCls}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
 }
 
 function IndicatorForm({
-  type,
-  params,
-  output,
-  timeframe,
-  onTypeChange,
-  onParamsChange,
-  onOutputChange,
-  onTimeframeChange,
+  source,
+  onSourceChange,
 }: {
-  type: IndicatorType;
-  params: IndicatorParams;
-  output?: string;
-  timeframe: Timeframe;
-  onTypeChange: (t: IndicatorType) => void;
-  onParamsChange: (params: IndicatorParams) => void;
-  onOutputChange: (output: string | undefined) => void;
-  onTimeframeChange: (tf: Timeframe) => void;
+  source: ValueSource;
+  onSourceChange: (source: ValueSource) => void;
 }) {
   return (
     <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <label className={labelCls}>Indicator</label>
-          <IndicatorSelect value={type} onChange={onTypeChange} />
-        </div>
-        <div>
-          <label className={labelCls}>Timeframe</label>
-          <TimeframeSelect value={timeframe} onChange={onTimeframeChange} />
-        </div>
-      </div>
-      <IndicatorConfigEditor
-        title="Indicator Settings"
-        description="Adjust the source, output, and each parameter."
-        indicator={{ type, params, output }}
-        onChange={(next) => {
-          onTypeChange(next.type);
-          onParamsChange(next.params);
-          onOutputChange(next.output);
-        }}
-        showSource={false}
+      <ValueSourceEditor
+        source={source}
+        onChange={onSourceChange}
+        title="Displayed Value"
+        description="Pick any indicator, quote field, symbol field, or ETF field to render in the watchlist."
       />
       <p className="text-[9px] text-white/20">
-        Shows the raw {type} value on {timeframe} bars.
+        Current source: {getValueSourceLabel(source)}
       </p>
     </div>
   );
@@ -672,71 +593,51 @@ function IndicatorForm({
 
 function CrossoverForm({
   combos,
-  timeframe,
   onUpdateCombo,
   onAddCombo,
   onRemoveCombo,
-  onTimeframeChange,
 }: {
   combos: CrossoverCombo[];
-  timeframe: Timeframe;
   onUpdateCombo: (idx: number, updates: Partial<CrossoverCombo>) => void;
   onAddCombo: () => void;
   onRemoveCombo: (idx: number) => void;
-  onTimeframeChange: (tf: Timeframe) => void;
 }) {
   return (
     <div className="space-y-3">
-      <div>
-        <label className={labelCls}>Timeframe</label>
-        <TimeframeSelect
-          value={timeframe}
-          onChange={onTimeframeChange}
-          className="w-[100px]"
-        />
-      </div>
-
       <div className="space-y-2">
-        {combos.map((combo, index) => {
-          return (
-            <div
-              key={index}
-              className="space-y-2 rounded border border-white/[0.06] bg-[#0D1117]/50 p-2.5"
-            >
-              <div className="flex items-center justify-between">
-                <p className="text-[8px] uppercase tracking-wider text-white/25">Combo {index + 1}</p>
-                {combos.length > 1 && (
-                  <button
-                    onClick={() => onRemoveCombo(index)}
-                    className="rounded px-1 py-0.5 text-[9px] text-white/25 hover:bg-white/[0.06] hover:text-white/55"
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <IndicatorConfigEditor
-                  title="This On Top = BUY"
-                  description="Pick the bullish side. This can be MACD, Signal, Histogram, Price, or any other source."
-                  indicator={combo.indicatorA}
-                  onChange={(indicatorA) => onUpdateCombo(index, { indicatorA })}
-                />
-
-                <IndicatorConfigEditor
-                  title="This On Top = SELL"
-                  description="Pick the bearish counterpart for the same combo."
-                  indicator={combo.indicatorB}
-                  onChange={(indicatorB) => onUpdateCombo(index, { indicatorB })}
-                />
-              </div>
-
-              <p className="text-[9px] text-white/20">
-                BUY when the left indicator is above the right one. SELL when the left indicator is below the right one.
-              </p>
+        {combos.map((combo, index) => (
+          <div
+            key={index}
+            className="space-y-2 rounded border border-white/[0.06] bg-[#0D1117]/50 p-2.5"
+          >
+            <div className="flex items-center justify-between">
+              <p className="text-[8px] uppercase tracking-wider text-white/25">Combo {index + 1}</p>
+              {combos.length > 1 && (
+                <button
+                  onClick={() => onRemoveCombo(index)}
+                  className="rounded px-1 py-0.5 text-[9px] text-white/25 hover:bg-white/[0.06] hover:text-white/55"
+                >
+                  Remove
+                </button>
+              )}
             </div>
-          );
-        })}
+
+            <div className="grid grid-cols-2 gap-2">
+              <ValueSourceEditor
+                source={combo.left}
+                onChange={(left) => onUpdateCombo(index, { left })}
+                title="Left Source"
+                description="BUY if every left source is above its paired right source."
+              />
+              <ValueSourceEditor
+                source={combo.right}
+                onChange={(right) => onUpdateCombo(index, { right })}
+                title="Right Source"
+                description="SELL if every left source is below its paired right source."
+              />
+            </div>
+          </div>
+        ))}
       </div>
 
       <button
@@ -747,23 +648,19 @@ function CrossoverForm({
       </button>
 
       <p className="text-[9px] text-white/20">
-        Final result: BUY only when every combo is above its counterpart, SELL only when every combo is below its counterpart, otherwise NEUTRAL.
+        Final result: BUY only when every combo is above, SELL only when every combo is below, otherwise NEUTRAL.
       </p>
     </div>
   );
 }
 
 function ScoreForm({
-  timeframe,
   conditions,
-  onTimeframeChange,
   onAddCondition,
   onUpdateCondition,
   onRemoveCondition,
 }: {
-  timeframe: Timeframe;
   conditions: ScoreCondition[];
-  onTimeframeChange: (tf: Timeframe) => void;
   onAddCondition: () => void;
   onUpdateCondition: (idx: number, updates: Partial<ScoreCondition>) => void;
   onRemoveCondition: (idx: number) => void;
@@ -771,83 +668,89 @@ function ScoreForm({
   return (
     <div className="space-y-3">
       <div>
-        <label className={labelCls}>Timeframe</label>
-        <TimeframeSelect
-          value={timeframe}
-          onChange={onTimeframeChange}
-          className="w-[100px]"
-        />
-      </div>
-
-      <div>
         <p className="pb-1.5 text-[8px] uppercase tracking-wider text-white/25">Conditions</p>
-        <div className="space-y-1.5">
-          {conditions.map((cond, index) => {
-            const hasPrimaryParam = Object.keys(getDefaultIndicatorParams(cond.indicatorType)).length > 0;
-            return (
-              <div
-                key={index}
-                className="flex items-center gap-1.5 rounded border border-white/[0.06] bg-[#0D1117]/50 px-2 py-1.5"
-              >
-                <IndicatorSelect
-                  value={cond.indicatorType}
-                  onChange={(type) =>
-                    onUpdateCondition(index, {
-                      indicatorType: type,
-                      params: getDefaultIndicatorParams(type),
-                    })
-                  }
-                  className="w-[90px] shrink-0"
-                />
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={hasPrimaryParam ? getPrimaryParam(cond.indicatorType, cond.params) : "—"}
-                  onChange={(e) =>
-                    onUpdateCondition(index, {
-                      params: setPrimaryParam(cond.indicatorType, Number(e.target.value) || 1),
-                    })
-                  }
-                  className={`${inputCls} !w-[48px] shrink-0`}
-                  disabled={!hasPrimaryParam}
-                />
-                <ComparisonSelect
-                  value={cond.comparison}
-                  onChange={(comparison) => onUpdateCondition(index, { comparison })}
-                  className="w-[72px] shrink-0"
-                />
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={cond.threshold}
-                  onChange={(e) =>
-                    onUpdateCondition(index, { threshold: Number(e.target.value) || 0 })
-                  }
-                  className={`${inputCls} !w-[56px] shrink-0`}
-                  placeholder="Value"
-                />
-                <button
-                  onClick={() => onRemoveCondition(index)}
-                  className="ml-auto shrink-0 rounded p-0.5 text-white/20 hover:bg-white/[0.06] hover:text-white/50"
-                >
-                  <X size={10} />
-                </button>
+        <div className="space-y-2">
+          {conditions.map((cond, index) => (
+            <div
+              key={index}
+              className="space-y-2 rounded border border-white/[0.06] bg-[#0D1117]/50 p-2.5"
+            >
+              <div className="flex items-center justify-between">
+                <p className="text-[8px] uppercase tracking-wider text-white/25">Condition {index + 1}</p>
+                {conditions.length > 1 && (
+                  <button
+                    onClick={() => onRemoveCondition(index)}
+                    className="rounded px-1 py-0.5 text-[9px] text-white/25 hover:bg-white/[0.06] hover:text-white/55"
+                  >
+                    Remove
+                  </button>
+                )}
               </div>
-            );
-          })}
+
+              <ValueSourceEditor
+                source={cond.left}
+                onChange={(left) => onUpdateCondition(index, { left })}
+                title="Check This"
+              />
+
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className={labelCls}>Operator</label>
+                  <CustomSelect
+                    value={cond.operator}
+                    onChange={(next) => onUpdateCondition(index, { operator: next as ScoreOperator })}
+                    options={COMPARISON_OPTIONS}
+                    size="sm"
+                    triggerClassName={selectTriggerCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Compare Against</label>
+                  <CustomSelect
+                    value={cond.targetType}
+                    onChange={(next) =>
+                      onUpdateCondition(index, {
+                        targetType: next as "value" | "source",
+                        right: next === "source" ? cond.right ?? getDefaultValueSource("quote") : undefined,
+                      })
+                    }
+                    options={TARGET_OPTIONS}
+                    size="sm"
+                    triggerClassName={selectTriggerCls}
+                  />
+                </div>
+                {cond.targetType === "value" && (
+                  <div>
+                    <label className={labelCls}>Threshold</label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={cond.threshold}
+                      onChange={(e) => onUpdateCondition(index, { threshold: Number(e.target.value) || 0 })}
+                      className={inputCls}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {cond.targetType === "source" && (
+                <ValueSourceEditor
+                  source={cond.right ?? getDefaultValueSource("quote")}
+                  onChange={(right) => onUpdateCondition(index, { right })}
+                  title="Against This Source"
+                />
+              )}
+            </div>
+          ))}
         </div>
-        <button
-          onClick={onAddCondition}
-          className="mt-1.5 flex items-center gap-1 rounded px-2 py-1 text-[10px] text-[#1A56DB]/70 hover:bg-[#1A56DB]/10 hover:text-[#1A56DB]"
-        >
-          <span className="text-[11px] leading-none">+</span>
-          Add Condition
-        </button>
       </div>
 
-      <p className="text-[9px] text-white/20">
-        Score = (matching conditions / total) &times; 100. All match = 100 (buy), none = 0 (sell), mixed = neutral.
-      </p>
+      <button
+        onClick={onAddCondition}
+        className="rounded border border-white/[0.08] px-2 py-1 text-[10px] text-white/45 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/75"
+      >
+        Add Condition
+      </button>
     </div>
   );
 }

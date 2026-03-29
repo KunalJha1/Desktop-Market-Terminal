@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import CircularGauge from "../components/CircularGauge";
+import CustomSelect from "../components/CustomSelect";
 import {
   HEATMAP_METRIC_OPTIONS,
   HEATMAP_TECH_TIMEFRAMES,
@@ -216,17 +217,18 @@ export default function HeatmapPage() {
             <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-white/35">
               Metric
             </label>
-            <select
+            <CustomSelect
               value={metricMode}
-              onChange={(e) => setMetricMode(e.target.value as HeatmapMetricMode)}
-              className="h-6 rounded-sm border border-white/[0.08] bg-[#131720] px-2 font-mono text-[10px] text-white/80 outline-none"
-            >
-              {HEATMAP_METRIC_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              onChange={(next) => setMetricMode(next as HeatmapMetricMode)}
+              options={HEATMAP_METRIC_OPTIONS.map((option) => ({
+                value: option.value,
+                label: option.label,
+              }))}
+              size="sm"
+              triggerClassName="border-white/[0.08] bg-[#131720] font-mono text-[10px] text-white/80"
+              panelClassName="bg-[#131720]"
+              panelWidth={168}
+            />
             <span className="font-mono text-[10px] text-white/35">
               Updated {formatAsOf(asOf)}
             </span>

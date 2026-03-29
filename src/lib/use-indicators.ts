@@ -1,23 +1,90 @@
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api";
 import {
-  CustomColumnDef,
+  type CustomColumnDef,
+  type ValueSource,
   extractIndicatorRequests,
   indicatorKey,
 } from "./custom-column-types";
+import { SEARCHABLE_SYMBOLS, getEtfInfo } from "./market-data";
 import type { Quote } from "./market-data";
 import { TwsContext } from "./tws";
 
 const POLL_INTERVAL_MS = 60_000;
+const SYMBOL_META_MAP = new Map(SEARCHABLE_SYMBOLS.map((item) => [item.symbol, item]));
+
+function getValueFromSource(
+  source: ValueSource | undefined,
+  quote: Quote | null,
+  symbol: string,
+  symData: Record<string, number | null>,
+): number | string | null {
+  if (!source) return null;
+
+  if (source.sourceKind === "indicator") {
+    const key = indicatorKey({
+      type: source.indicatorType,
+      timeframe: source.timeframe,
+      params: source.params,
+      output: source.output,
+    });
+    return symData[key] ?? null;
+  }
+
+  if (source.sourceKind === "quote") {
+    const value = quote?.[source.field as keyof Quote];
+    return typeof value === "number" ? value : value == null ? null : String(value);
+  }
+
+  const meta = SYMBOL_META_MAP.get(symbol);
+  if (source.sourceKind === "meta") {
+    const value = meta?.[source.field];
+    return typeof value === "number" ? value : typeof value === "string" ? value : null;
+  }
+
+  const etf = getEtfInfo(symbol);
+  switch (source.field) {
+    case "isEtf":
+      return etf ? 1 : 0;
+    case "holdingCount":
+      return etf?.top_holdings.length ?? 0;
+    case "topHoldingWeight":
+      return etf?.top_holdings[0]?.weight_pct ?? null;
+    case "topHoldingSymbol":
+      return etf?.top_holdings[0]?.symbol ?? null;
+    case "topHoldingName":
+      return etf?.top_holdings[0]?.name ?? null;
+    default:
+      return null;
+  }
+}
+
+function asNumber(value: number | string | null): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function compareValues(
+  left: number | string | null,
+  right: number | string | null,
+  operator: "above" | "below" | "equal" | "notEqual",
+): boolean | null {
+  if (operator === "equal" || operator === "notEqual") {
+    if (left == null || right == null) return null;
+    const result = left === right;
+    return operator === "equal" ? result : !result;
+  }
+
+  const numericLeft = asNumber(left);
+  const numericRight = asNumber(right);
+  if (numericLeft == null || numericRight == null) return null;
+  return operator === "above" ? numericLeft > numericRight : numericLeft < numericRight;
+}
 
 /**
  * Fetches individual indicator values from the backend for non-expression custom columns.
  * Polls GET /technicals/indicators every 60s.
  *
  * Returns Map<symbol, Map<columnId, computed value>>.
- * - Indicator columns: raw numeric value
- * - Crossover columns: "BUY" | "SELL" | "NEUTRAL"
- * - Score columns: 0-100 score
  */
 export function useIndicatorValues(
   symbols: string[],
@@ -26,9 +93,7 @@ export function useIndicatorValues(
 ): Map<string, Map<string, number | string | null>> {
   const tws = useContext(TwsContext);
   const [fallbackPort, setFallbackPort] = useState<number | null>(null);
-  const [values, setValues] = useState<Map<string, Map<string, number | string | null>>>(
-    new Map(),
-  );
+  const [values, setValues] = useState<Map<string, Map<string, number | string | null>>>(new Map());
   const symbolsRef = useRef(symbols);
   const columnsRef = useRef(columns);
   const quotesRef = useRef(quotes);
@@ -52,7 +117,6 @@ export function useIndicatorValues(
     const currentQuotes = quotesRef.current;
     if (syms.length === 0) return;
 
-    // Only fetch for non-expression columns
     const nonExprCols = cols.filter((c) => c.kind !== "expression");
     if (nonExprCols.length === 0) return;
 
@@ -75,41 +139,10 @@ export function useIndicatorValues(
         const symData = data[sym] ?? {};
         const quote = currentQuotes.get(sym) ?? null;
 
-        const getRefValue = (
-          ref: { type: string; params: Record<string, number>; output?: string },
-          timeframe: string,
-        ) => {
-          if (ref.type === "PRICE") {
-            if (!quote) return null;
-            const priceField = ref.output ?? "last";
-            const value = quote[priceField as keyof Quote];
-            return typeof value === "number" ? value : null;
-          }
-          const key = indicatorKey({
-            type: ref.type as never,
-            timeframe,
-            params: ref.params,
-            output: ref.output,
-          });
-          return symData[key];
-        };
-
         for (const col of nonExprCols) {
           switch (col.kind) {
             case "indicator": {
-              if (col.indicatorType === "PRICE") {
-                const priceField = col.output ?? "last";
-                const priceValue = quote?.[priceField as keyof Quote];
-                inner.set(col.id, typeof priceValue === "number" ? priceValue : null);
-                break;
-              }
-              const key = indicatorKey({
-                type: col.indicatorType,
-                timeframe: col.timeframe,
-                params: col.params,
-                output: col.output,
-              });
-              inner.set(col.id, symData[key] ?? null);
+              inner.set(col.id, getValueFromSource(col.source, quote, sym, symData));
               break;
             }
             case "crossover": {
@@ -123,17 +156,17 @@ export function useIndicatorValues(
               let hasValue = false;
 
               for (const combo of col.combos) {
-                const valA = getRefValue(combo.indicatorA, col.timeframe);
-                const valB = getRefValue(combo.indicatorB, col.timeframe);
-                if (valA == null || valB == null) {
+                const left = asNumber(getValueFromSource(combo.left, quote, sym, symData));
+                const right = asNumber(getValueFromSource(combo.right, quote, sym, symData));
+                if (left == null || right == null) {
                   hasValue = false;
                   allAbove = false;
                   allBelow = false;
                   break;
                 }
                 hasValue = true;
-                if (!(valA > valB)) allAbove = false;
-                if (!(valA < valB)) allBelow = false;
+                if (!(left > right)) allAbove = false;
+                if (!(left < right)) allBelow = false;
               }
 
               if (!hasValue) {
@@ -155,38 +188,17 @@ export function useIndicatorValues(
               let matches = 0;
               let total = 0;
               for (const cond of col.conditions) {
-                if (cond.indicatorType === "PRICE") {
-                  const priceField = cond.output ?? "last";
-                  const value = quote?.[priceField as keyof Quote];
-                  if (typeof value !== "number") {
-                    continue;
-                  }
-                  total++;
-                  const passes =
-                    cond.comparison === "above" ? value > cond.threshold : value < cond.threshold;
-                  if (passes) matches++;
-                  continue;
-                }
-                const key = indicatorKey({
-                  type: cond.indicatorType,
-                  timeframe: col.timeframe,
-                  params: cond.params,
-                  output: cond.output,
-                });
-                const val = symData[key];
-                if (val == null) {
-                  continue;
-                }
+                const left = getValueFromSource(cond.left, quote, sym, symData);
+                const right =
+                  cond.targetType === "source"
+                    ? getValueFromSource(cond.right, quote, sym, symData)
+                    : cond.threshold;
+                const passes = compareValues(left, right, cond.operator);
+                if (passes == null) continue;
                 total++;
-                const passes =
-                  cond.comparison === "above" ? val > cond.threshold : val < cond.threshold;
                 if (passes) matches++;
               }
-              if (total === 0) {
-                inner.set(col.id, null);
-              } else {
-                inner.set(col.id, Math.round((matches / total) * 100));
-              }
+              inner.set(col.id, total === 0 ? null : Math.round((matches / total) * 100));
               break;
             }
           }
@@ -205,12 +217,15 @@ export function useIndicatorValues(
     return () => clearInterval(id);
   }, [fetchIndicators]);
 
-  // Refetch when symbols or columns change
   const colKey = JSON.stringify(columns);
-  const quoteKey = JSON.stringify(symbols.map((sym) => {
-    const quote = quotes.get(sym);
-    return quote ? [sym, quote.last, quote.open, quote.high, quote.low, quote.prevClose, quote.mid, quote.bid, quote.ask] : [sym, null];
-  }));
+  const quoteKey = JSON.stringify(
+    symbols.map((sym) => {
+      const quote = quotes.get(sym);
+      return quote
+        ? [sym, quote.last, quote.open, quote.high, quote.low, quote.prevClose, quote.mid, quote.bid, quote.ask]
+        : [sym, null];
+    }),
+  );
   useEffect(() => {
     fetchIndicators();
   }, [symbols.join(","), colKey, quoteKey, fetchIndicators]);

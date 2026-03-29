@@ -1,6 +1,6 @@
-"""Standalone Yahoo valuation worker.
+"""Standalone valuation worker.
 
-Runs a dedicated Yahoo valuation cycle on first local bootstrap and then once
+Runs a dedicated valuation cycle on first local bootstrap and then once
 every 24 hours after the last successful run. This keeps valuation and universe
 market-cap enrichment out of the TWS watchlist worker.
 """
@@ -14,6 +14,7 @@ import logging
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
 from runtime_paths import data_dir
 from worker_watchlist import (
     _snapshot_from_quote,
@@ -23,8 +24,10 @@ from worker_watchlist import (
     load_enabled_symbols_with_etfs,
     read_active_symbols,
     read_watchlist,
-    refresh_watchlist_valuations_from_yahoo,
+    refresh_symbol_valuations_with_fallback,
 )
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -97,14 +100,19 @@ def run_cycle() -> tuple[int, int]:
     valuation_symbols = valuation_watchlist_symbols()
     universe_symbols = valuation_universe_symbols()
 
-    logger.info(
-        "[ValuationWorker] Starting cycle: %d watchlist/active symbols, %d universe symbols",
-        len(valuation_symbols),
-        len(universe_symbols),
+    start_msg = (
+        "[ValuationWorker] Starting cycle: "
+        f"{len(valuation_symbols)} watchlist/active symbols, "
+        f"{len(universe_symbols)} universe symbols"
     )
+    print(start_msg, flush=True)
+    logger.info(start_msg)
 
     if valuation_symbols:
-        refresh_watchlist_valuations_from_yahoo(valuation_symbols, log=logger)
+        refresh_symbol_valuations_with_fallback(valuation_symbols, log=logger, set_valuation_ts=True)
+
+    if universe_symbols:
+        refresh_symbol_valuations_with_fallback(universe_symbols, log=logger, set_valuation_ts=True)
 
     fetched = 0
     if universe_symbols:
@@ -113,18 +121,20 @@ def run_cycle() -> tuple[int, int]:
             _upsert_market_snapshot(_snapshot_from_quote(quote))
         fetched = len(quotes)
         null_count = count_null_market_cap_symbols(universe_symbols)
-        logger.info(
-            "[ValuationWorker] Universe market caps filled for %d/%d symbols; missing=%d",
-            len(universe_symbols) - null_count,
-            len(universe_symbols),
-            null_count,
+        universe_msg = (
+            "[ValuationWorker] Universe market caps filled for "
+            f"{len(universe_symbols) - null_count}/{len(universe_symbols)} symbols; "
+            f"missing={null_count}"
         )
+        print(universe_msg, flush=True)
+        logger.info(universe_msg)
 
-    logger.info(
-        "[ValuationWorker] Cycle complete: %d valuation symbols, %d universe quotes",
-        len(valuation_symbols),
-        fetched,
+    complete_msg = (
+        "[ValuationWorker] Cycle complete: "
+        f"{len(valuation_symbols)} valuation symbols, {fetched} universe quotes"
     )
+    print(complete_msg, flush=True)
+    logger.info(complete_msg)
     return len(valuation_symbols), fetched
 
 
@@ -135,25 +145,38 @@ async def worker_loop() -> None:
         last_success_ms = read_last_success_ms()
         if should_run_cycle(now_ms, last_success_ms):
             reason = "first bootstrap" if last_success_ms is None else "interval elapsed"
-            logger.info("[ValuationWorker] Running cycle (%s)", reason)
+            cycle_msg = f"[ValuationWorker] Running cycle ({reason})"
+            print(cycle_msg, flush=True)
+            logger.info(cycle_msg)
             try:
                 await asyncio.to_thread(run_cycle)
                 finished_ms = int(time.time() * 1000)
                 await asyncio.to_thread(write_last_success_ms, finished_ms)
                 sleep_s = INTERVAL_S
             except Exception as exc:
+                print(f"[ValuationWorker] Cycle failed: {exc}", flush=True)
                 logger.warning("[ValuationWorker] Cycle failed: %s", exc)
                 sleep_s = RETRY_S
         else:
             sleep_s = min(RETRY_S, seconds_until_next_run(now_ms, last_success_ms))
-        logger.info("[ValuationWorker] Next check in %ds", int(max(1.0, sleep_s)))
+        next_msg = f"[ValuationWorker] Next check in {int(max(1.0, sleep_s))}s"
+        print(next_msg, flush=True)
+        logger.info(next_msg)
         await asyncio.sleep(max(1.0, sleep_s))
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Standalone Yahoo valuation worker")
-    parser.parse_args()
-    asyncio.run(worker_loop())
+    parser = argparse.ArgumentParser(description="Standalone valuation worker")
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Run the long-lived scheduler loop instead of a one-shot valuation cycle.",
+    )
+    args = parser.parse_args()
+    if args.loop:
+        asyncio.run(worker_loop())
+        return
+    run_cycle()
 
 
 if __name__ == "__main__":

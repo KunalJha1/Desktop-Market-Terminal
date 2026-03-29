@@ -1,10 +1,12 @@
 import React, { Suspense, useState, useRef, useEffect } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { appWindow } from "@tauri-apps/api/window";
-import { checkUpdate } from "@tauri-apps/api/updater";
+import { checkUpdate, installUpdate } from "@tauri-apps/api/updater";
+import { relaunch } from "@tauri-apps/api/process";
 import { useAuth } from "../lib/auth";
 import { useTabs, type TabType } from "../lib/tabs";
 import { useTws } from "../lib/tws";
+import { useObservedMarketDataSource } from "../lib/use-market-data";
 import { isTauriRuntime, usePlatform } from "../lib/platform";
 import WindowControls from "../components/WindowControls";
 import TabBar from "../components/TabBar";
@@ -53,14 +55,20 @@ export default function Dashboard() {
     backendMessage,
     restartBackend,
   } = useTws();
+  const observedMarketDataSource = useObservedMarketDataSource();
   const { isMac } = usePlatform();
 
-  // Derive active data provider for status bar
   const dataProvider = status === "connected"
-    ? "live" as const
-    : sidecarStatus !== "disconnected"
-      ? "yahoo" as const
-      : "offline" as const;
+    ? "live"
+    : observedMarketDataSource === "dailyiq"
+      ? "dailyiq"
+      : observedMarketDataSource === "finnhub"
+        ? "finnhub"
+        : observedMarketDataSource === "yahoo"
+          ? "yahoo"
+          : sidecarStatus !== "disconnected"
+            ? "offline"
+            : "offline";
   const finnhubIndicatorState =
     finnhubStatus === "connected"
       ? "connected"
@@ -71,13 +79,30 @@ export default function Dashboard() {
           : "off";
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
   const [appVersion, setAppVersion] = useState("");
 
   useEffect(() => {
     checkUpdate()
-      .then(({ shouldUpdate }) => { if (shouldUpdate) setUpdateAvailable(true); })
+      .then(({ shouldUpdate, manifest }) => {
+        if (shouldUpdate) {
+          setUpdateAvailable(true);
+          setUpdateVersion(manifest?.version ?? null);
+        }
+      })
       .catch(() => {});
   }, []);
+
+  async function handleApplyUpdate() {
+    setUpdateInstalling(true);
+    try {
+      await installUpdate();
+      await relaunch();
+    } catch {
+      setUpdateInstalling(false);
+    }
+  }
 
   useEffect(() => {
     getVersion()
@@ -92,6 +117,32 @@ export default function Dashboard() {
 
   const lastClickTime = useRef(0);
   const canDragWindow = isTauriRuntime();
+  const headerMeta = (
+    <>
+      <p className="min-w-0 truncate text-[11px] font-light tracking-wide text-white/40">
+        Hi, <span className="text-white/70">{firstName}</span>
+      </p>
+      <div className="flex min-w-0 shrink items-center gap-2 overflow-hidden">
+        <button
+          onClick={() => setSettingsOpen(true)}
+          className="relative shrink-0 text-[11px] font-light text-white/30 transition-all duration-100 hover:text-white/80"
+        >
+          Settings
+          {updateAvailable && (
+            <span className="absolute -right-1.5 -top-0.5 h-[5px] w-[5px] rounded-full bg-red" />
+          )}
+        </button>
+        {appVersion ? (
+          <span
+            className="truncate font-mono text-[10px] tabular-nums text-white/25"
+            title="App version"
+          >
+            v{appVersion}
+          </span>
+        ) : null}
+      </div>
+    </>
+  );
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const ActivePage = activeTab ? pageByType[activeTab.type] : null;
@@ -101,7 +152,7 @@ export default function Dashboard() {
       {/* Top bar — draggable titlebar */}
       <header
         className={`flex h-8 shrink-0 items-center border-b border-white/[0.06] bg-[#10151C] ${
-          isMac ? "justify-end pl-[70px]" : "justify-between pl-3"
+          isMac ? "justify-end pl-[78px] pr-3" : "justify-between pl-3"
         }`}
         onMouseDown={async (e) => {
           if (!canDragWindow) return;
@@ -122,62 +173,39 @@ export default function Dashboard() {
         }}
       >
         {!isMac && (
-          <div className="flex items-center gap-3" data-no-drag>
-            <p className="text-[11px] font-light tracking-wide text-white/40">
-              Hi, <span className="text-white/70">{firstName}</span>
-            </p>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setSettingsOpen(true)}
-                className="relative text-[11px] font-light text-white/30 transition-all duration-100 hover:text-white/80"
-              >
-                Settings
-                {updateAvailable && (
-                  <span className="absolute -right-1.5 -top-0.5 h-[5px] w-[5px] rounded-full bg-red" />
-                )}
-              </button>
-              {appVersion ? (
-                <span
-                  className="font-mono text-[10px] tabular-nums text-white/25"
-                  title="App version"
-                >
-                  v{appVersion}
-                </span>
-              ) : null}
-            </div>
+          <div className="flex min-w-0 items-center gap-3" data-no-drag>
+            {headerMeta}
           </div>
         )}
 
-        <div className="flex items-center gap-3" data-no-drag>
+        <div
+          className={`flex min-w-0 items-center gap-3 ${isMac ? "ml-auto max-w-full overflow-hidden" : ""}`}
+          data-no-drag
+        >
           {isMac && (
-            <>
-              <p className="text-[11px] font-light tracking-wide text-white/40">
-                Hi, <span className="text-white/70">{firstName}</span>
-              </p>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setSettingsOpen(true)}
-                  className="relative text-[11px] font-light text-white/30 transition-all duration-100 hover:text-white/80"
-                >
-                  Settings
-                  {updateAvailable && (
-                    <span className="absolute -right-1.5 -top-0.5 h-[5px] w-[5px] rounded-full bg-red" />
-                  )}
-                </button>
-                {appVersion ? (
-                  <span
-                    className="font-mono text-[10px] tabular-nums text-white/25"
-                    title="App version"
-                  >
-                    v{appVersion}
-                  </span>
-                ) : null}
-              </div>
-            </>
+            <div className="flex min-w-0 max-w-full items-center justify-end gap-3 overflow-hidden">
+              {headerMeta}
+            </div>
           )}
           <WindowControls />
         </div>
       </header>
+
+      {/* Update banner */}
+      {updateAvailable && (
+        <div className="flex h-7 shrink-0 items-center justify-between border-b border-blue/20 bg-blue/[0.06] px-3">
+          <span className="font-mono text-[10px] tracking-wide text-blue/70">
+            {updateVersion ? `v${updateVersion} available` : "Update available"}
+          </span>
+          <button
+            onClick={handleApplyUpdate}
+            disabled={updateInstalling}
+            className="rounded bg-blue/15 px-2 py-0.5 font-mono text-[10px] tracking-wide text-blue transition-colors duration-100 hover:bg-blue/25 disabled:opacity-50"
+          >
+            {updateInstalling ? "Installing..." : "Restart & Update"}
+          </button>
+        </div>
+      )}
 
       {/* Tab bar */}
       <TabBar />
@@ -212,7 +240,7 @@ export default function Dashboard() {
               className={`inline-block h-1.5 w-1.5 rounded-full ${
                 dataProvider === "live"
                   ? "bg-green"
-                  : dataProvider === "yahoo"
+                  : dataProvider === "dailyiq" || dataProvider === "finnhub" || dataProvider === "yahoo"
                     ? "bg-blue"
                     : "bg-red/60"
               }`}
@@ -220,12 +248,16 @@ export default function Dashboard() {
             <span className={
               dataProvider === "live"
                 ? "text-green"
-                : dataProvider === "yahoo"
+                : dataProvider === "dailyiq" || dataProvider === "finnhub" || dataProvider === "yahoo"
                   ? "text-blue"
                   : "text-red/60"
             }>
               {dataProvider === "live"
                 ? "LIVE"
+                : dataProvider === "dailyiq"
+                  ? "DAILYIQ API"
+                  : dataProvider === "finnhub"
+                    ? "FINNHUB"
                 : dataProvider === "yahoo"
                   ? "YAHOO"
                   : "OFFLINE"}
@@ -271,27 +303,6 @@ export default function Dashboard() {
           <div className="flex items-center gap-1.5">
             <span
               className={`inline-block h-1.5 w-1.5 rounded-full ${
-                status === "connected" && ibStatus === "connected"
-                  ? "bg-green"
-                  : status === "probing" || ibStatus === "reconnecting"
-                    ? "bg-amber animate-pulse"
-                    : "bg-red/60"
-              }`}
-            />
-            <span>
-              {status === "connected" && ibStatus === "connected" && connectionType
-                ? CONNECTION_LABELS[connectionType]
-                : ibStatus === "reconnecting"
-                  ? "Reconnecting..."
-                  : status === "probing"
-                    ? "Probing..."
-                    : "Disconnected"}
-            </span>
-          </div>
-          <span className="text-white/10">|</span>
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`inline-block h-1.5 w-1.5 rounded-full ${
                 finnhubIndicatorState === "connected"
                   ? "bg-green"
                   : finnhubIndicatorState === "testing" || finnhubIndicatorState === "saved"
@@ -318,15 +329,40 @@ export default function Dashboard() {
             </span>
           </div>
           <span className="text-white/10">|</span>
-          <span>
-            Port{" "}
-            <span className="text-white/15">{port ?? "—"}</span>
-          </span>
+          {status === "connected" && port !== null && clientId !== null ? (
+            <>
+              <span>
+                Port{" "}
+                <span className="text-white/15">{port}</span>
+              </span>
+              <span className="text-white/10">|</span>
+              <span>
+                Client ID{" "}
+                <span className="text-white/15">{clientId}</span>
+              </span>
+            </>
+          ) : null}
           <span className="text-white/10">|</span>
-          <span>
-            Client ID{" "}
-            <span className="text-white/15">{clientId ?? "—"}</span>
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`inline-block h-1.5 w-1.5 rounded-full ${
+                status === "connected" && ibStatus === "connected"
+                  ? "bg-green"
+                  : status === "probing" || ibStatus === "reconnecting"
+                    ? "bg-amber animate-pulse"
+                    : "bg-red/60"
+              }`}
+            />
+            <span>
+              {status === "connected" && ibStatus === "connected" && connectionType
+                ? CONNECTION_LABELS[connectionType]
+                : ibStatus === "reconnecting"
+                  ? "Reconnecting..."
+                  : status === "probing"
+                    ? "Probing..."
+                    : "TWS DISCONNECTED"}
+            </span>
+          </div>
         </div>
       </footer>
 

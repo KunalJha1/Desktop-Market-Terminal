@@ -42,7 +42,7 @@ export default function ComponentLinkMenu({
         className="flex items-center gap-1 rounded-sm p-0.5 text-white/70 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
         style={active ? { color: active.color } : undefined}
       >
-        <Link2 className="h-2.5 w-2.5" strokeWidth={1.5} />
+        <Link2 className="h-3.5 w-3.5" strokeWidth={1.5} />
         {active && (
           <span className="text-[9px]" style={{ color: active.color }}>
             {active.id}

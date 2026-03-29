@@ -2,7 +2,8 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { indicatorRegistry } from '../indicators/registry';
 import { STRATEGY_KEYS } from '../indicators/strategyKeys';
 import type { ActiveIndicator } from '../types';
-import { Search, X, Check } from 'lucide-react';
+import { Search, X, Check, Plus, Pencil, Copy, Trash2 } from 'lucide-react';
+import type { CustomStrategyDefinition, StrategyState } from '../customStrategies';
 
 interface IndicatorPanelProps {
   open: boolean;
@@ -11,6 +12,14 @@ interface IndicatorPanelProps {
   onToggleIndicator?: (name: string) => void;
   activeIndicators?: ActiveIndicator[];
   mode?: 'indicator' | 'strategy';
+  customStrategies?: CustomStrategyDefinition[];
+  activeCustomStrategyIds?: string[];
+  customStrategySummaryById?: Record<string, { score: number | null; state: StrategyState }>;
+  onToggleCustomStrategy?: (id: string) => void;
+  onCreateCustomStrategy?: () => void;
+  onEditCustomStrategy?: (id: string) => void;
+  onDuplicateCustomStrategy?: (id: string) => void;
+  onDeleteCustomStrategy?: (id: string) => void;
 }
 
 const categories = [
@@ -18,6 +27,8 @@ const categories = [
   { key: 'oscillator' as const, label: 'Oscillators' },
   { key: 'volume' as const, label: 'Volume' },
 ];
+
+const HIDDEN_INDICATOR_KEYS = new Set<string>();
 
 const INDICATOR_DESCRIPTIONS: Record<string, string> = {
   SMA: 'Trend-following moving average',
@@ -37,8 +48,7 @@ const INDICATOR_DESCRIPTIONS: Record<string, string> = {
   'MACD Crossover': 'Buy/sell on MACD-signal line crossovers',
   'ADL Crossover': 'Buy/sell when ADL crosses above/below its SMA smoothing line',
   'Structure Breaks': 'Pivot break markers for bullish and bearish structure breaks',
-  'Liquidity Levels': 'Today, previous day, week, and month liquidity lines',
-  'Liquidity Sweep Signal': 'Groups sweep candles into bullish/bearish liquidity zones with fewer signals',
+  'Liquidity Sweep (ICT/SMC)': 'Combined DH/DL and prior-period liquidity lines with ICT/SMC sweep zones and labels',
   FVG: 'Standalone fair value gap rectangles with auto-clear when used',
   'FVG Momentum': 'Latest fair value gap boundaries with pullback/rejection markers',
   'Gap Zones': 'Highlights simple gap-up and gap-down price voids on the chart',
@@ -72,6 +82,14 @@ export default function IndicatorPanel({
   onToggleIndicator,
   activeIndicators = [],
   mode = 'indicator',
+  customStrategies = [],
+  activeCustomStrategyIds = [],
+  customStrategySummaryById = {},
+  onToggleCustomStrategy,
+  onCreateCustomStrategy,
+  onEditCustomStrategy,
+  onDuplicateCustomStrategy,
+  onDeleteCustomStrategy,
 }: IndicatorPanelProps) {
   const [search, setSearch] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -80,6 +98,10 @@ export default function IndicatorPanel({
   const activeNames = useMemo(
     () => new Set(activeIndicators.map(ind => ind.name)),
     [activeIndicators],
+  );
+  const activeCustomNames = useMemo(
+    () => new Set(activeCustomStrategyIds),
+    [activeCustomStrategyIds],
   );
 
   useEffect(() => {
@@ -100,7 +122,9 @@ export default function IndicatorPanel({
   }, [open, onClose]);
 
   const indicators = useMemo(
-    () => Object.entries(indicatorRegistry).map(([key, meta]) => ({ key, ...meta })),
+    () => Object.entries(indicatorRegistry)
+      .filter(([key]) => !HIDDEN_INDICATOR_KEYS.has(key))
+      .map(([key, meta]) => ({ key, ...meta })),
     [],
   );
 
@@ -116,6 +140,74 @@ export default function IndicatorPanel({
         ind.shortName.toLowerCase().includes(q),
     );
   }, [search, indicators, mode]);
+  const filteredCustomStrategies = useMemo(() => {
+    if (mode !== 'strategy') return [];
+    if (!search.trim()) return customStrategies;
+    const q = search.toLowerCase();
+    return customStrategies.filter((strategy) => strategy.name.toLowerCase().includes(q));
+  }, [customStrategies, mode, search]);
+
+  const renderBuiltInStrategyRow = (ind: typeof filtered[number]) => {
+    const isActive = activeNames.has(ind.key);
+    return (
+      <button
+        key={ind.key}
+        onClick={() => (onToggleIndicator ?? onAddIndicator)(ind.key)}
+        style={{
+          width: '100%',
+          textAlign: 'left',
+          padding: '6px 12px',
+          fontSize: 11,
+          color: isActive ? '#8B949E' : '#E6EDF3',
+          backgroundColor: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          transition: 'background-color 120ms ease-out',
+          fontFamily: "'Geist Sans', Inter, system-ui, sans-serif",
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.backgroundColor = '#1C2128';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.backgroundColor = 'transparent';
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span>{ind.name}</span>
+            {isActive && (
+              <Check size={11} color="#00C853" style={{ flexShrink: 0 }} />
+            )}
+          </div>
+          {INDICATOR_DESCRIPTIONS[ind.key] && (
+            <span
+              style={{
+                fontSize: 9,
+                color: '#484F58',
+                fontFamily: "'JetBrains Mono', monospace",
+              }}
+            >
+              {INDICATOR_DESCRIPTIONS[ind.key]}
+            </span>
+          )}
+        </div>
+        <span
+          style={{
+            fontSize: 9,
+            color: '#484F58',
+            fontFamily: "'JetBrains Mono', monospace",
+            flexShrink: 0,
+          }}
+        >
+          {ind.shortName}
+        </span>
+      </button>
+    );
+  };
 
   if (!open) return null;
 
@@ -188,67 +280,124 @@ export default function IndicatorPanel({
         }}
       >
         {mode === 'strategy' ? (
-          filtered.map((ind) => {
-            const isActive = activeNames.has(ind.key);
-            return (
+          <>
+            <div
+              style={{
+                padding: '8px 12px 6px',
+                borderBottom: '1px solid #21262D',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <span style={{ fontSize: 9, color: '#8B949E', fontFamily: "'JetBrains Mono', monospace" }}>Built-In</span>
+            </div>
+            {filtered.map(renderBuiltInStrategyRow)}
+            <div
+              style={{
+                padding: '8px 12px 6px',
+                borderTop: '1px solid #21262D',
+                borderBottom: '1px solid #21262D',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <span style={{ fontSize: 9, color: '#8B949E', fontFamily: "'JetBrains Mono', monospace" }}>Custom</span>
               <button
-                key={ind.key}
-                onClick={() => (onToggleIndicator ?? onAddIndicator)(ind.key)}
+                onClick={onCreateCustomStrategy}
                 style={{
-                  width: '100%',
-                  textAlign: 'left',
-                  padding: '6px 12px',
-                  fontSize: 11,
-                  color: isActive ? '#8B949E' : '#E6EDF3',
-                  backgroundColor: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  display: 'flex',
+                  display: 'inline-flex',
                   alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 8,
-                  transition: 'background-color 120ms ease-out',
-                  fontFamily: "'Geist Sans', Inter, system-ui, sans-serif",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = '#1C2128';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'transparent';
+                  gap: 4,
+                  background: 'transparent',
+                  border: '1px solid #30363D',
+                  color: '#C9D1D9',
+                  borderRadius: 4,
+                  fontSize: 9,
+                  padding: '2px 6px',
+                  cursor: 'pointer',
+                  fontFamily: "'JetBrains Mono', monospace",
                 }}
               >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span>{ind.name}</span>
-                    {isActive && (
-                      <Check size={11} color="#00C853" style={{ flexShrink: 0 }} />
-                    )}
-                  </div>
-                  {INDICATOR_DESCRIPTIONS[ind.key] && (
-                    <span
-                      style={{
-                        fontSize: 9,
-                        color: '#484F58',
-                        fontFamily: "'JetBrains Mono', monospace",
-                      }}
-                    >
-                      {INDICATOR_DESCRIPTIONS[ind.key]}
-                    </span>
-                  )}
-                </div>
-                <span
+                <Plus size={10} />
+                New
+              </button>
+            </div>
+            {filteredCustomStrategies.length === 0 ? (
+              <div style={{ padding: '10px 12px', fontSize: 10, color: '#6E7681', fontFamily: "'JetBrains Mono', monospace" }}>
+                No custom strategies yet.
+              </div>
+            ) : filteredCustomStrategies.map((strategy) => {
+              const isActive = activeCustomNames.has(strategy.id);
+              const summary = customStrategySummaryById[strategy.id];
+              const scoreText = typeof summary?.score === 'number' ? `${summary.score}` : 'n/a';
+              const stateColor = summary?.state === 'BUY'
+                ? '#38BDF8'
+                : summary?.state === 'SELL'
+                  ? '#FB923C'
+                  : '#8B949E';
+              return (
+                <div
+                  key={strategy.id}
                   style={{
-                    fontSize: 9,
-                    color: '#484F58',
-                    fontFamily: "'JetBrains Mono', monospace",
-                    flexShrink: 0,
+                    padding: '7px 12px',
+                    borderBottom: '1px solid rgba(255,255,255,0.04)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
                   }}
                 >
-                  {ind.shortName}
-                </span>
-              </button>
-            );
-          })
+                  <button
+                    onClick={() => onToggleCustomStrategy?.(strategy.id)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      textAlign: 'left',
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: isActive ? '#E6EDF3' : '#C9D1D9',
+                      padding: 0,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 11 }}>{strategy.name}</span>
+                      {isActive && <Check size={11} color="#00C853" />}
+                    </div>
+                    <div style={{ display: 'flex', gap: 10, marginTop: 2, fontSize: 9, fontFamily: "'JetBrains Mono', monospace" }}>
+                      <span style={{ color: '#6E7681' }}>Score {scoreText}</span>
+                      <span style={{ color: stateColor }}>{summary?.state ?? 'NEUTRAL'}</span>
+                    </div>
+                  </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                    <button
+                      onClick={() => onEditCustomStrategy?.(strategy.id)}
+                      style={{ background: 'transparent', border: 'none', color: '#8B949E', cursor: 'pointer', display: 'flex' }}
+                      title="Edit strategy"
+                    >
+                      <Pencil size={11} />
+                    </button>
+                    <button
+                      onClick={() => onDuplicateCustomStrategy?.(strategy.id)}
+                      style={{ background: 'transparent', border: 'none', color: '#8B949E', cursor: 'pointer', display: 'flex' }}
+                      title="Duplicate strategy"
+                    >
+                      <Copy size={11} />
+                    </button>
+                    <button
+                      onClick={() => onDeleteCustomStrategy?.(strategy.id)}
+                      style={{ background: 'transparent', border: 'none', color: '#8B949E', cursor: 'pointer', display: 'flex' }}
+                      title="Delete strategy"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </>
         ) : categories.map((cat) => {
           const items = filtered.filter((ind) => ind.category === cat.key);
           if (items.length === 0) return null;

@@ -64,18 +64,80 @@ type HeaderTintConfig = {
   ta?: Record<string, string>;
 };
 
+const SYMBOL_META_MAP = new Map(SEARCHABLE_SYMBOLS.map((item) => [item.symbol, item]));
+
 function evalCustomColumn(expr: string, quote: Quote | null, symbol: string): number | string | null {
-  if (!quote) return null;
+  const meta = SYMBOL_META_MAP.get(symbol);
+  const etf = getEtfInfo(symbol);
+  const quoteContext = quote
+    ? {
+        ...quote,
+        week52High: quote.week52High,
+        week52Low: quote.week52Low,
+        trailingPE: quote.trailingPE,
+        forwardPE: quote.forwardPE,
+        marketCap: quote.marketCap,
+      }
+    : null;
+  const metaContext = {
+    symbol,
+    name: quote?.name ?? getSymbolName(symbol),
+    sector: meta?.sector ?? "",
+    industry: meta?.industry ?? "",
+    indexWeight: meta?.indexWeight ?? null,
+  };
+  const etfContext = {
+    isEtf: Boolean(etf),
+    holdingCount: etf?.top_holdings.length ?? 0,
+    topHoldingSymbol: etf?.top_holdings[0]?.symbol ?? null,
+    topHoldingName: etf?.top_holdings[0]?.name ?? null,
+    topHoldingWeight: etf?.top_holdings[0]?.weight_pct ?? null,
+  };
+
   try {
-    // Build a sandbox with quote fields as local vars
     const fn = new Function(
       "last", "bid", "ask", "mid", "open", "high", "low",
-      "prevClose", "change", "changePct", "volume", "spread", "symbol",
+      "prevClose", "change", "changePct", "volume", "spread",
+      "week52High", "week52Low", "trailingPE", "forwardPE", "marketCap",
+      "symbol", "name", "sector", "industry", "indexWeight",
+      "quote", "meta", "etf", "nz", "pct", "between",
       `"use strict"; return (${expr});`,
     );
     const result = fn(
-      quote.last, quote.bid, quote.ask, quote.mid, quote.open, quote.high, quote.low,
-      quote.prevClose, quote.change, quote.changePct, quote.volume, quote.spread, symbol,
+      quote?.last ?? null,
+      quote?.bid ?? null,
+      quote?.ask ?? null,
+      quote?.mid ?? null,
+      quote?.open ?? null,
+      quote?.high ?? null,
+      quote?.low ?? null,
+      quote?.prevClose ?? null,
+      quote?.change ?? null,
+      quote?.changePct ?? null,
+      quote?.volume ?? null,
+      quote?.spread ?? null,
+      quote?.week52High ?? null,
+      quote?.week52Low ?? null,
+      quote?.trailingPE ?? null,
+      quote?.forwardPE ?? null,
+      quote?.marketCap ?? null,
+      symbol,
+      metaContext.name,
+      metaContext.sector,
+      metaContext.industry,
+      metaContext.indexWeight,
+      quoteContext,
+      metaContext,
+      etfContext,
+      (value: unknown, fallback = 0) => (typeof value === "number" && Number.isFinite(value) ? value : fallback),
+      (part: unknown, whole: unknown) =>
+        typeof part === "number" && typeof whole === "number" && whole !== 0 ? (part / whole) * 100 : null,
+      (value: unknown, min: unknown, max: unknown) =>
+        typeof value === "number" &&
+        typeof min === "number" &&
+        typeof max === "number"
+          ? value >= min && value <= max
+          : false,
     );
     if (result === undefined || result === null) return null;
     return typeof result === "number" ? result : String(result);
@@ -1164,11 +1226,19 @@ export default function WatchlistCard({
           <div ref={taPopoverRef} className="relative">
             <button
               onClick={() => setTaPopoverOpen((v) => !v)}
-              className={`flex h-3.5 w-3.5 items-center justify-center rounded-sm text-[10px] font-medium leading-none transition-colors duration-75 ${
-                taTimeframes.length > 0 || customColumns.length > 0
-                  ? "bg-blue/20 text-blue hover:bg-blue/30"
-                  : "text-white/30 hover:bg-white/[0.06] hover:text-white/50"
-              }`}
+              className="flex items-center justify-center rounded-sm font-medium leading-none transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
+              style={{
+                width: 16,
+                height: 16,
+                borderRadius: 2,
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: taPopoverOpen ? 'rgba(255,255,255,0.06)' : 'transparent',
+                color: '#FFFFFF',
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 11,
+                lineHeight: 1,
+              }}
               title="Columns"
             >
               +
@@ -1194,14 +1264,19 @@ export default function WatchlistCard({
           <div ref={fontSizeRef} className="relative">
             <button
               onClick={() => setFontSizeOpen((v) => !v)}
-              className={`flex h-3.5 items-center justify-center gap-[1px] rounded-sm px-0.5 leading-none transition-colors duration-75 ${
-                fontSizeOpen
-                  ? "bg-white/[0.06] text-white/80"
-                  : "text-white/30 hover:bg-white/[0.06] hover:text-white/50"
-              }`}
+              className="flex items-center justify-center gap-[1px] rounded-sm leading-none transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
+              style={{
+                height: 16,
+                padding: '0 4px',
+                borderRadius: 2,
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: fontSizeOpen ? 'rgba(255,255,255,0.06)' : 'transparent',
+                color: '#FFFFFF',
+              }}
               title="Font size"
             >
-              <span className="text-[8px] font-medium">a</span>
+              <span className="text-[9px] font-medium">a</span>
               <span className="text-[11px] font-medium">A</span>
             </button>
             {fontSizeOpen && (
@@ -1230,14 +1305,19 @@ export default function WatchlistCard({
           <div ref={settingsRef} className="relative">
             <button
               onClick={() => setSettingsOpen((v) => !v)}
-              className={`flex h-3.5 w-3.5 items-center justify-center rounded-sm transition-colors duration-75 ${
-                settingsOpen
-                  ? "bg-white/[0.06] text-white"
-                  : "text-white/70 hover:bg-white/[0.06] hover:text-white"
-              }`}
+              className="flex items-center justify-center rounded-sm transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
+              style={{
+                width: 16,
+                height: 16,
+                borderRadius: 2,
+                border: 'none',
+                cursor: 'pointer',
+                backgroundColor: settingsOpen ? 'rgba(255,255,255,0.06)' : 'transparent',
+                color: '#FFFFFF',
+              }}
               title="Settings"
             >
-              <Settings className="h-2.5 w-2.5" strokeWidth={1.5} />
+              <Settings className="h-[13px] w-[13px]" strokeWidth={2} />
             </button>
             {settingsOpen && (
               <div className="absolute right-0 top-full z-[100] mt-1 w-[170px] rounded-md border border-white/[0.08] bg-[#1C2128] p-2.5 shadow-xl shadow-black/40">
@@ -1278,9 +1358,22 @@ export default function WatchlistCard({
           />
           <button
             onClick={onClose}
-            className="rounded-sm p-0.5 text-white/70 transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
+            className="rounded-sm p-0 text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 16,
+              height: 16,
+              padding: 0,
+              border: 'none',
+              cursor: 'pointer',
+              backgroundColor: 'transparent',
+              color: '#FFFFFF',
+              borderRadius: 2,
+            }}
           >
-            <X className="h-2.5 w-2.5" strokeWidth={1.5} />
+            <X className="h-[12px] w-[12px]" strokeWidth={2} />
           </button>
         </div>
       </div>

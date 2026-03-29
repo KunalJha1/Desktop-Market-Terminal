@@ -19,15 +19,15 @@ from technicals import MIN_BARS, SUPPORTED_TIMEFRAMES, inspect_symbol_timeframe,
 
 logger = logging.getLogger(__name__)
 
-TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"]
+TIMEFRAMES = ["1m", "5m", "15m", "1h", "1d", "1w"]
 UNIVERSE_TIMEFRAMES = ["1d", "1w"]
 INTERVAL_S = 60
 UNIVERSE_INTERVAL_S = 300
-_SCORE_FIELDS = ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
+_SCORE_FIELDS = ("1m", "5m", "15m", "1h", "1d", "1w")
 
 
 def _upsert_scores(
-    rows: list[tuple[str, int | None, int | None, int | None, int | None, int | None, int | None, int | None]],
+    rows: list[tuple[str, int | None, int | None, int | None, int | None, int | None, int | None]],
     now_utc: datetime,
 ) -> None:
     """Write scored rows into technical_scores via upsert with retry."""
@@ -38,19 +38,18 @@ def _upsert_scores(
             conn,
             """
             INSERT INTO technical_scores
-                (symbol, score_1m, score_5m, score_15m, score_1h, score_4h, score_1d, score_1w, last_updated_utc)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (symbol, score_1m, score_5m, score_15m, score_1h, score_1d, score_1w, last_updated_utc)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (symbol) DO UPDATE SET
                 score_1m         = excluded.score_1m,
                 score_5m         = excluded.score_5m,
                 score_15m        = excluded.score_15m,
                 score_1h         = excluded.score_1h,
-                score_4h         = excluded.score_4h,
                 score_1d         = excluded.score_1d,
                 score_1w         = excluded.score_1w,
                 last_updated_utc = excluded.last_updated_utc
             """,
-            [(sym, s1m, s5m, s15m, s1h, s4h, s1d, s1w, now_utc) for sym, s1m, s5m, s15m, s1h, s4h, s1d, s1w in rows],
+            [(sym, s1m, s5m, s15m, s1h, s1d, s1w, now_utc) for sym, s1m, s5m, s15m, s1h, s1d, s1w in rows],
         )
 
 
@@ -67,7 +66,6 @@ def _compute_and_upsert(symbols: list[str]) -> None:
             scores.get("5m"),
             scores.get("15m"),
             scores.get("1h"),
-            scores.get("4h"),
             scores.get("1d"),
             scores.get("1w"),
         )
@@ -84,7 +82,7 @@ def _compute_and_upsert_universe(symbols: list[str]) -> None:
     scored = score_symbols(symbols, UNIVERSE_TIMEFRAMES)
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     rows = [
-        (sym, None, None, None, None, None, scores.get("1d"), scores.get("1w"))
+        (sym, None, None, None, None, scores.get("1d"), scores.get("1w"))
         for sym, scores in scored.items()
     ]
     if not rows:
@@ -101,7 +99,7 @@ def _compute_and_upsert_universe(symbols: list[str]) -> None:
                 score_1w         = excluded.score_1w,
                 last_updated_utc = excluded.last_updated_utc
             """,
-            [(sym, s1d, s1w, now_utc) for sym, _, _, _, _, _, s1d, s1w in rows],
+            [(sym, s1d, s1w, now_utc) for sym, _, _, _, _, s1d, s1w in rows],
         )
     logger.info("Universe tech scores (1d/1w) updated for %s symbol(s)", len(rows))
 
@@ -139,9 +137,8 @@ def _row_to_score_map(row: tuple | None) -> dict[str, int | None]:
         "5m": row[2],
         "15m": row[3],
         "1h": row[4],
-        "4h": row[5],
-        "1d": row[6],
-        "1w": row[7],
+        "1d": row[5],
+        "1w": row[6],
     }
 
 
@@ -149,7 +146,7 @@ def _merge_score_row(
     symbol: str,
     existing: dict[str, int | None],
     updates: dict[str, int | None],
-) -> tuple[str, int | None, int | None, int | None, int | None, int | None, int | None, int | None]:
+) -> tuple[str, int | None, int | None, int | None, int | None, int | None, int | None]:
     merged = {
         tf: updates[tf] if tf in updates else existing.get(tf)
         for tf in _SCORE_FIELDS
@@ -160,7 +157,6 @@ def _merge_score_row(
         merged["5m"],
         merged["15m"],
         merged["1h"],
-        merged["4h"],
         merged["1d"],
         merged["1w"],
     )
@@ -185,7 +181,7 @@ def read_scores_for_timeframes(
     with sync_db_session() as conn:
         rows = conn.execute(
             f"""
-            SELECT symbol, score_1m, score_5m, score_15m, score_1h, score_4h,
+            SELECT symbol, score_1m, score_5m, score_15m, score_1h,
                    score_1d, score_1w, last_updated_utc
             FROM technical_scores
             WHERE symbol IN ({placeholders})
@@ -201,7 +197,7 @@ def read_scores_for_timeframes(
             cached = _row_to_score_map(row)
             payload = {
                 "symbol": sym,
-                "last_updated_utc": row[8].isoformat() if row and hasattr(row[8], "isoformat") else (row[8] if row else None),
+                "last_updated_utc": row[7].isoformat() if row and hasattr(row[7], "isoformat") else (row[7] if row else None),
             }
             for tf in _SCORE_FIELDS:
                 payload[tf] = cached.get(tf)

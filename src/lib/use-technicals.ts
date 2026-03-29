@@ -333,7 +333,7 @@ export function resolveTechnicalScoreTimeframe(
     case "1H":
       return { requestTimeframe: "1h", label: "1H" };
     case "4H":
-      return { requestTimeframe: "4h", label: "4H" };
+      return { requestTimeframe: "1d", label: "1D proxy" };
     case "1D":
       return { requestTimeframe: "1d", label: "1D" };
     case "1W":

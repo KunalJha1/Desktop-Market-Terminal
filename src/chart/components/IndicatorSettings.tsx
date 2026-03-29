@@ -74,12 +74,14 @@ export default function IndicatorSettings({
               {meta.shortName}
             </span>
             {Object.entries(ind.params).map(([key, value]) => (
-              <InlineNumericInput
-                key={key}
-                value={value}
-                onChange={v => onUpdateParams(ind.id, { [key]: v })}
-                title={meta.paramLabels[key] || key}
-              />
+              ind.name === 'Probability Engine' && key === 'detailedStats' ? null : (
+                <InlineNumericInput
+                  key={key}
+                  value={value}
+                  onChange={v => onUpdateParams(ind.id, { [key]: v })}
+                  title={meta.paramLabels[key] || key}
+                />
+              )
             ))}
             <button
               onClick={() => onToggleVisibility(ind.id)}

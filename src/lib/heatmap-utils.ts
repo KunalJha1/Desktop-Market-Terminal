@@ -17,8 +17,7 @@ export const HEATMAP_METRIC_OPTIONS: { value: HeatmapMetricMode; label: string }
   { value: "tech-5m", label: "Tech Score 5M" },
   { value: "tech-15m", label: "Tech Score 15M" },
   { value: "tech-1h", label: "Tech Score 1H" },
-  { value: "tech-4h", label: "Tech Score 4H" },
-  { value: "tech-1d", label: "Tech Score 1D" },
+{ value: "tech-1d", label: "Tech Score 1D" },
   { value: "tech-1w", label: "Tech Score 1W" },
 ];
 

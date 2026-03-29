@@ -7,6 +7,7 @@ import WatchlistCard from "../components/WatchlistCard";
 import MiniChart from "../chart/components/MiniChart";
 import MiniScreenerCard from "../components/MiniScreenerCard";
 import MiniHeatmapCard from "../components/MiniHeatmapCard";
+import LiquiditySweepDetectorCard from "../components/LiquiditySweepDetectorCard";
 import { useTabs } from "../lib/tabs";
 import { useLayout } from "../lib/layout";
 import type { LayoutComponent } from "../lib/layout-types";
@@ -19,6 +20,7 @@ const COMPONENT_TYPES = [
   { type: "ibkr-portfolio", label: "Portfolio", defaultW: 8, defaultH: 12 },
   { type: "mini-screener", label: "Mini Screener", defaultW: 6, defaultH: 10 },
   { type: "mini-heatmap", label: "Mini Heatmap", defaultW: 6, defaultH: 10 },
+  { type: "liquidity-sweep-detector", label: "Liquidity Sweep Detector", defaultW: 5, defaultH: 9 },
 ] as const;
 
 export default function DashboardPage() {
@@ -134,6 +136,7 @@ export default function DashboardPage() {
       "ibkr-portfolio": {},
       "mini-screener": {},
       "mini-heatmap": {},
+      "liquidity-sweep-detector": { symbols: [], timeframe: "15m", lookbackBars: 3 },
     };
 
     // Drop at (0,0) — user can drag it wherever they want
@@ -249,6 +252,20 @@ export default function DashboardPage() {
       case "mini-heatmap":
         return (
           <MiniHeatmapCard
+            linkChannel={comp.linkChannel}
+            onSetLinkChannel={(ch) =>
+              setComponentLinkChannel(activeTabId, comp.id, ch)
+            }
+            onClose={() => removeComponent(activeTabId, comp.id)}
+            config={comp.config}
+            onConfigChange={(cfg) =>
+              updateComponent(activeTabId, comp.id, { config: cfg })
+            }
+          />
+        );
+      case "liquidity-sweep-detector":
+        return (
+          <LiquiditySweepDetectorCard
             linkChannel={comp.linkChannel}
             onSetLinkChannel={(ch) =>
               setComponentLinkChannel(activeTabId, comp.id, ch)

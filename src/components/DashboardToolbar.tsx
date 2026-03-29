@@ -177,14 +177,14 @@ export default function DashboardToolbar({
   const activeChannel = LINK_CHANNELS.find((c) => c.id === linkChannel);
 
   const btnClass =
-    "flex items-center gap-1.5 rounded-sm px-2 py-0.5 text-[10px] text-white/30 transition-colors duration-75 hover:bg-white/[0.04] hover:text-white/55";
+    "flex items-center gap-1.5 rounded-sm px-2 py-0.5 text-[10px] text-white transition-colors duration-75 hover:bg-white/[0.04] hover:text-white";
 
   return (
     <>
       <div className="flex h-7 shrink-0 items-center justify-between border-b border-white/[0.06] bg-base px-2">
         {/* Left: add component */}
         <button onClick={onAddComponent} className={btnClass}>
-          <Plus className="h-2.5 w-2.5" strokeWidth={1.5} />
+          <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
           <span>Add Component</span>
         </button>
 
@@ -196,9 +196,9 @@ export default function DashboardToolbar({
             className={btnClass}
           >
             {locked ? (
-              <Lock className="h-2.5 w-2.5 text-white/30" strokeWidth={1.5} />
+              <Lock className="h-3.5 w-3.5 text-white" strokeWidth={1.5} />
             ) : (
-              <Unlock className="h-2.5 w-2.5 text-green" strokeWidth={1.5} />
+              <Unlock className="h-3.5 w-3.5 text-green" strokeWidth={1.5} />
             )}
           </button>
 
@@ -208,7 +208,7 @@ export default function DashboardToolbar({
             className={btnClass}
             title="Save workspace (.diq)"
           >
-            <Save className="h-2.5 w-2.5" strokeWidth={1.5} />
+            <Save className="h-3.5 w-3.5" strokeWidth={1.5} />
           </button>
 
           {/* Load workspace */}
@@ -217,7 +217,7 @@ export default function DashboardToolbar({
             className={btnClass}
             title="Load workspace (.diq)"
           >
-            <FolderOpen className="h-2.5 w-2.5" strokeWidth={1.5} />
+            <FolderOpen className="h-3.5 w-3.5" strokeWidth={1.5} />
           </button>
 
           {/* Link dropdown */}
@@ -225,11 +225,10 @@ export default function DashboardToolbar({
             <button
               onClick={() => setShowLinkMenu((v) => !v)}
               className={btnClass}
-              style={activeChannel ? { color: activeChannel.color } : undefined}
             >
-              <Link2 className="h-2.5 w-2.5" strokeWidth={1.5} />
+              <Link2 className="h-3.5 w-3.5" strokeWidth={1.5} />
               {activeChannel && (
-                <span style={{ color: activeChannel.color }}>
+                <span>
                   {activeChannel.id}
                 </span>
               )}
@@ -287,29 +286,29 @@ export default function DashboardToolbar({
 
           {/* Zoom controls */}
           <button onClick={onZoomOut} className={btnClass} title="Zoom out (Cmd -)">
-            <ZoomOut className="h-2.5 w-2.5" strokeWidth={1.5} />
+            <ZoomOut className="h-3.5 w-3.5" strokeWidth={1.5} />
           </button>
           <button
             onClick={onZoomReset}
-            className="rounded-sm px-1 py-0.5 font-mono text-[10px] text-white/30 transition-colors duration-75 hover:bg-white/[0.04] hover:text-white/55"
+            className="rounded-sm px-1 py-0.5 font-mono text-[10px] text-white transition-colors duration-75 hover:bg-white/[0.04] hover:text-white"
             title="Reset zoom (Cmd 0)"
           >
             {Math.round(zoom * 100)}%
           </button>
           <button onClick={onZoomIn} className={btnClass} title="Zoom in (Cmd +)">
-            <ZoomIn className="h-2.5 w-2.5" strokeWidth={1.5} />
+            <ZoomIn className="h-3.5 w-3.5" strokeWidth={1.5} />
           </button>
 
           <div className="mx-1 h-3 w-px bg-white/[0.06]" />
 
-          <span className="font-mono text-[10px] text-white/40">
+          <span className="font-mono text-[10px] text-white">
             {timeStr}
           </span>
 
           <div className="mx-1 h-3 w-px bg-white/[0.06]" />
 
           <span
-            className={`font-mono text-[10px] ${marketOpen ? "text-green/70" : "text-white/30"}`}
+            className="font-mono text-[10px] text-white"
           >
             Time Till Open: {countdown}
           </span>

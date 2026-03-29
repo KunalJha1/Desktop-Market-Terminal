@@ -8,6 +8,19 @@ import { COLORS } from '../constants';
  * Indicator labels are handled by the IndicatorLegend HTML overlay.
  */
 export class Tooltip {
+  private visibleFields: Record<string, boolean> = {
+    O: true,
+    H: true,
+    L: true,
+    C: true,
+    V: true,
+    Δ: true,
+  };
+
+  setVisibleFields(fields: Record<string, boolean>) {
+    this.visibleFields = fields;
+  }
+
   render(
     renderer: Renderer,
     viewport: Viewport,
@@ -26,7 +39,7 @@ export class Tooltip {
     const deltaPct = bar.open !== 0 ? (delta / bar.open) * 100 : 0;
     const deltaStr = (bullish ? '+' : '') + delta.toFixed(2) + '  (' + (bullish ? '+' : '') + deltaPct.toFixed(2) + '%)';
 
-    const items = [
+    const allItems = [
       { label: 'O', value: bar.open.toFixed(2) },
       { label: 'H', value: bar.high.toFixed(2) },
       { label: 'L', value: bar.low.toFixed(2) },
@@ -35,10 +48,12 @@ export class Tooltip {
       { label: 'Δ', value: deltaStr },
     ];
 
+    const items = allItems.filter(item => this.visibleFields[item.label] !== false);
+
     for (let i = 0; i < items.length; i++) {
       const ix = x + i * spacing;
       renderer.text(items[i].label, ix, y, COLORS.textMuted, 'left');
-      renderer.text(items[i].value, ix + 12, y, i === 5 ? color : color, 'left');
+      renderer.text(items[i].value, ix + 12, y, items[i].label === 'Δ' ? color : color, 'left');
     }
   }
 }
