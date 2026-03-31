@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import type { ScriptResult, ScriptError } from '../types';
+import type { PersistedChartScript } from '../../lib/chart-state';
 import { X, Play, Square, Plus, ChevronDown, ChevronUp, AlertTriangle, Circle } from 'lucide-react';
 
 interface ScriptEditorProps {
@@ -12,7 +13,7 @@ interface ScriptEditorProps {
   onBuiltInViewerChange?: (viewer: { name: string; source: string } | null) => void;
   width?: number;
   /** When set, loads this script into the editor (creates a tab if not already open) */
-  scriptToLoad?: { id: string; name: string; source: string } | null;
+  scriptToLoad?: PersistedChartScript | null;
   /** Called when user clicks "Save to Library" on the current script */
   onSaveToLibrary?: (id: string, name: string, source: string) => void;
 }
@@ -187,13 +188,18 @@ export default function ScriptEditor({
   // Load an external script into a tab when scriptToLoad changes
   useEffect(() => {
     if (!scriptToLoad) return;
+    const tabName = scriptToLoad.name ?? 'Script';
     setScripts((prev) => {
       const existing = prev.find((s) => s.id === scriptToLoad.id);
       if (existing) {
-        return prev.map((s) => s.id === scriptToLoad.id ? { ...s, name: scriptToLoad.name, source: scriptToLoad.source } : s);
+        return prev.map((s) =>
+          s.id === scriptToLoad.id
+            ? { ...s, name: scriptToLoad.name ?? s.name, source: scriptToLoad.source }
+            : s,
+        );
       }
-      return [...prev, createScript(scriptToLoad.name, scriptToLoad.source)].map(
-        (s, _, arr) => s === arr[arr.length - 1] ? { ...s, id: scriptToLoad.id } : s,
+      return [...prev, createScript(tabName, scriptToLoad.source)].map(
+        (s, _, arr) => (s === arr[arr.length - 1] ? { ...s, id: scriptToLoad.id } : s),
       );
     });
     setActiveTabId(scriptToLoad.id);
