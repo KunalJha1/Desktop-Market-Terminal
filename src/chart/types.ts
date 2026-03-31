@@ -79,6 +79,10 @@ export interface IndicatorMeta {
     max?: number;
   };
   hidePaneScaleControls?: boolean;
+  /** When set, legend title omits the compact `(param, param, …)` summary (full params stay in settings). */
+  legendOmitParamSummary?: boolean;
+  /** Legend row: only these output keys as color swatches (default: every `outputs` entry). */
+  legendSwatchKeys?: string[];
   /** DailyIQ Script source — viewable and duplicatable by users */
   scriptSource?: string;
   /** True for indicators that ship with the app */

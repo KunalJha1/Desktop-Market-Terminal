@@ -241,7 +241,7 @@ fn probe_tws_ports() -> Option<ProbeResult> {
 
 /// Spawn a detached tab as a new native window (drag-out support)
 #[tauri::command]
-fn spawn_tab_window(
+async fn spawn_tab_window(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, SidecarState>,
     label: String,
@@ -296,7 +296,7 @@ fn spawn_tab_window(
 }
 
 #[tauri::command]
-fn spawn_test_window(
+async fn spawn_test_window(
     app_handle: tauri::AppHandle,
     label: String,
     title: String,

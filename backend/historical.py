@@ -1144,13 +1144,36 @@ async def get_historical_bars(
         fetch_source: str = ""
         mark_depth_complete: bool | None = None  # None = preserve existing flag
 
+        # For supported bar sizes on a cold cache (no bars at all), try DailyIQ
+        # first — it is fast (often a warm SQLite cache hit from startup warmup)
+        # and lets the frontend show data immediately while IBKR backfills in
+        # the background.  For incremental updates (last_ts_ms set) TWS is
+        # preferred because it delivers precise gap fills.
+        _diq_supported = what_to_show == "TRADES" and db_bar_size in ("5m", "15m", "1d")
+        if _diq_supported and last_ts_ms is None:
+            try:
+                from dailyiq_provider import fetch_bars_from_dailyiq_async
+                diq_limit = max(50, min(5000, lookback_days * ({"5m": 78, "15m": 26, "1d": 1}.get(db_bar_size, 1))))
+                diq_bars = await fetch_bars_from_dailyiq_async(symbol, timeframe=db_bar_size, limit=diq_limit)
+                if diq_bars:
+                    fetched_bars = diq_bars
+                    fetch_source = "dailyiq"
+                    logger.info(
+                        f"Fetched {len(diq_bars)} {cache_key} bars from DailyIQ for {symbol} (fast path)"
+                    )
+            except Exception as e:
+                logger.warning(f"DailyIQ historical fast-path failed for {symbol}: {e}")
+
         if tws_connected and ib is not None:
             try:
                 tws_bar = db_bar_size
                 tws_default_dur = DEFAULT_DAILY_DURATION if is_daily else duration
                 tws_dur = _incremental_tws_duration(last_ts_ms, tws_default_dur, is_daily)
-                if last_ts_ms is None:
-                    fetched_bars = await fetch_from_tws_paginated(
+                # On a cold cache, we already have DailyIQ bars; use TWS for incremental
+                # gap-fill (authoritative) rather than a slow full paginated fetch.
+                tws_last_ts = last_ts_ms if fetched_bars else None
+                if tws_last_ts is None and not fetched_bars:
+                    tws_bars = await fetch_from_tws_paginated(
                         ib,
                         symbol,
                         duration=tws_dur,
@@ -1158,25 +1181,33 @@ async def get_historical_bars(
                         what_to_show=what_to_show,
                     )
                 else:
-                    fetched_bars = await fetch_from_tws(ib, symbol, tws_dur, tws_bar, what_to_show)
-                if fetched_bars:
+                    # Incremental fetch: either we have cached bars (last_ts_ms set)
+                    # or DailyIQ already seeded the cache (use DailyIQ's max time as anchor).
+                    anchor_ts = last_ts_ms or (max(b["time"] for b in fetched_bars) if fetched_bars else None)
+                    tws_dur = _incremental_tws_duration(anchor_ts, tws_default_dur, is_daily)
+                    tws_bars = await fetch_from_tws(ib, symbol, tws_dur, tws_bar, what_to_show)
+                if tws_bars:
                     fetch_source = "tws"
+                    # TWS bars are authoritative: merge with DailyIQ seed if present
+                    if fetched_bars:
+                        existing_times = {b["time"] for b in fetched_bars}
+                        fetched_bars = fetched_bars + [b for b in tws_bars if b["time"] not in existing_times]
+                    else:
+                        fetched_bars = tws_bars
                     logger.info(
-                        f"Fetched {len(fetched_bars)} {cache_key} bars from TWS for {symbol} "
+                        f"Fetched {len(tws_bars)} {cache_key} bars from TWS for {symbol} "
                         f"(duration={tws_dur}, whatToShow={what_to_show})"
                     )
-                    # Full (non-incremental) paginated fetch: if earliest bar didn't move
-                    # backwards vs what we had, TWS has given us all available history.
-                    if last_ts_ms is None:
-                        new_earliest = min(b["time"] for b in fetched_bars)
+                    if last_ts_ms is None and tws_last_ts is None:
+                        new_earliest = min(b["time"] for b in tws_bars)
                         if earliest_ts_ms is None or new_earliest >= earliest_ts_ms - 86400_000:
                             mark_depth_complete = True
                             logger.info(f"Depth complete (TWS) for {symbol} {cache_key}")
             except Exception as e:
                 logger.warning(f"TWS historical fetch failed for {symbol}: {e}")
 
-        # ── Step 2b: DailyIQ fallback (5m/15m/1d only) ─────────────────
-        if not fetched_bars and what_to_show == "TRADES" and db_bar_size in ("5m", "15m", "1d"):
+        # ── Step 2b: DailyIQ fallback for incremental / non-cold paths ──
+        if not fetched_bars and _diq_supported:
             try:
                 from dailyiq_provider import fetch_bars_from_dailyiq_async
                 diq_limit = max(50, min(5000, lookback_days * ({"5m": 78, "15m": 26, "1d": 1}.get(db_bar_size, 1))))

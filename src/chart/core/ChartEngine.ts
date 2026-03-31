@@ -2032,7 +2032,9 @@ export class ChartEngine {
           if (!Number.isFinite(value)) continue;
           const valueColor = ind.name === 'Technical Score' && output.key === 'score'
             ? this.technicalScoreStrokeColor(value)
-            : (ind.colors?.[output.key] ?? output.color);
+            : ind.name === 'MACD' && output.key === 'histogram'
+              ? (value >= 0 ? '#00C853' : '#FF3D71')
+              : (ind.colors?.[output.key] ?? output.color);
 
           const prefix = output.label ? ` ${output.label} ` : ' ';
           segments.push({ text: prefix, color: COLORS.textMuted });
@@ -2179,6 +2181,7 @@ export class ChartEngine {
 
     if (ind.name === 'Liquidity Sweep (ICT/SMC)') {
       this.renderLiquiditySweepIctSmc(ind, toY, clipTop, clipBottom);
+      return;
     }
     if (ind.name === 'Liquidity Sweep Signal') {
       this.renderLiquiditySweepBox(ind, toY, clipTop, clipBottom);
@@ -2237,13 +2240,17 @@ export class ChartEngine {
         if (ind.name === 'Volume') {
           continue;
         }
+        const isMACDHistogram = ind.name === 'MACD' && output.key === 'histogram';
         const zeroY = toY(0);
         for (let i = start; i < end; i++) {
           if (i >= series.length || isNaN(series[i])) continue;
           const x = this.viewport.barToPixelX(i);
           const barW = Math.max(1, Math.min(this.viewport.getBarSlotWidth(i) * 0.6, this.viewport.getBarSlotWidth(i) - 1));
           const y = toY(series[i]);
-          this.renderer.rect(x - barW / 2, Math.min(y, zeroY), barW, Math.abs(y - zeroY), drawColor);
+          const barColor = isMACDHistogram
+            ? (series[i] >= 0 ? '#00C853' : '#FF3D71')
+            : drawColor;
+          this.renderer.rect(x - barW / 2, Math.min(y, zeroY), barW, Math.abs(y - zeroY), barColor);
         }
         continue;
       }
@@ -2486,8 +2493,8 @@ export class ChartEngine {
       const top = isBull ? bullTop[latestIndex] : bearTop[latestIndex];
       const bottom = isBull ? bullBottom[latestIndex] : bearBottom[latestIndex];
       const baseColor = isBull
-        ? (ind.colors?.buy ?? indicatorRegistry[ind.name].outputs.find((output) => output.key === 'buy')?.color ?? '#EAB308')
-        : (ind.colors?.sell ?? indicatorRegistry[ind.name].outputs.find((output) => output.key === 'sell')?.color ?? '#D946EF');
+        ? (ind.colors?.buy ?? indicatorRegistry[ind.name].outputs.find((output) => output.key === 'buy')?.color ?? '#009E48')
+        : (ind.colors?.sell ?? indicatorRegistry[ind.name].outputs.find((output) => output.key === 'sell')?.color ?? '#DB2958');
 
       const leftX = this.viewport.barToPixelX(latestIndex);
       const rightX = this.viewport.barToPixelX(latestIndex + extendBars);
@@ -2863,6 +2870,19 @@ export class ChartEngine {
         const vals = plot.values.filter(v => !isNaN(v));
         const avg = vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
         if (avg > this.viewport.priceMin * 0.5 && avg < this.viewport.priceMax * 2) continue;
+
+        if (plot.style === 'histogram') {
+          const zeroY = toY(0);
+          for (let i = start; i < end; i++) {
+            if (i >= plot.values.length || isNaN(plot.values[i])) continue;
+            const x = this.viewport.barToPixelX(i);
+            const barW = Math.max(1, Math.min(this.viewport.getBarSlotWidth(i) * 0.6, this.viewport.getBarSlotWidth(i) - 1));
+            const y = toY(plot.values[i]);
+            const barColor = plot.values[i] >= 0 ? '#00C853' : '#FF3D71';
+            this.renderer.rect(x - barW / 2, Math.min(y, zeroY), barW, Math.abs(y - zeroY), barColor);
+          }
+          continue;
+        }
 
         const points: [number, number][] = [];
         for (let i = start; i < end; i++) {

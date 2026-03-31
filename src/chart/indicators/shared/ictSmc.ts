@@ -400,6 +400,14 @@ function simulateFvgOnChart(
     const sourceIndex = findSourceIndexForTime(sourceBars, chartBars[i].time);
     if (sourceIndex >= 0 && isLastChartBarForSourceIndex(chartBars, sourceBars, i, sourceIndex)) {
       for (const event of eventsBySourceIndex.get(sourceIndex) ?? []) {
+        // Block new FVG if an unfilled zone of the same direction already exists from the same day
+        const eventDay = Math.floor(event.createdTime / 86_400_000);
+        const unfilledSameDayExists = zones.some(
+          (z) => z.isBull === event.isBull && Math.floor(z.createdTime / 86_400_000) === eventDay,
+        );
+        if (unfilledSameDayExists) continue;
+
+        // Remove stale zones of the same direction (from a prior day)
         for (let zi = zones.length - 1; zi >= 0; zi -= 1) {
           if (zones[zi].isBull === event.isBull) {
             zones.splice(zi, 1);

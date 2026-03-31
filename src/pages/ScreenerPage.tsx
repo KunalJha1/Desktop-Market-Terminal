@@ -8,7 +8,9 @@ import {
 } from "react";
 import { useTws } from "../lib/tws";
 import { useWatchlist } from "../lib/watchlist";
-import { SEARCHABLE_SYMBOLS, formatMarketCap, filterRankSymbolSearch } from "../lib/market-data";
+import { formatMarketCap } from "../lib/market-data";
+import SymbolSearchModal from "../components/SymbolSearchModal";
+import { Search } from "lucide-react";
 import CircularGauge from "../components/CircularGauge";
 
 import { LOGO_SYMBOLS } from "../lib/logo-symbols";
@@ -67,6 +69,7 @@ interface TechScores {
   "5m": number | null;
   "15m": number | null;
   "1h": number | null;
+  "4h": number | null;
   "1d": number | null;
   "1w": number | null;
 }
@@ -130,7 +133,7 @@ function parseSymbolsFromInput(text: string, limit = CUSTOM_SYMBOL_INPUT_LIMIT):
 }
 
 const ALL_TIMEFRAMES: TaScoreTimeframe[] = [...TA_SCORE_TIMEFRAMES];
-const SCREENER_TIMEFRAMES: TaScoreTimeframe[] = ["5m", "15m", "1h", "1d", "1w"];
+const SCREENER_TIMEFRAMES: TaScoreTimeframe[] = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"];
 const DEFAULT_VISIBLE_TFS: TaScoreTimeframe[] = ["1d", "1w"];
 
 function normalizeVisibleTimeframes(value: unknown): TaScoreTimeframe[] {
@@ -357,10 +360,8 @@ export default function ScreenerPage() {
   const [visibleTfs, setVisibleTfs] = useState<TaScoreTimeframe[]>(loadStoredVisibleTimeframes);
   const [sortKey, setSortKey] = useState<SortKey>("verdict");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
-  const searchRef = useRef<HTMLDivElement>(null);
 
   const [customSymbols, setCustomSymbols] = useState<string[]>(loadStoredCustomSymbols);
   const [customDraft, setCustomDraft] = useState("");
@@ -418,21 +419,6 @@ export default function ScreenerPage() {
   }, [customSymbols, filter, tiles, watchlistSymbols]);
   const technicals = useTechScores(symbolsForScores, ALL_TIMEFRAMES);
 
-  // ── Click outside to close search ────────────────────────────────
-
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (
-        searchRef.current &&
-        !searchRef.current.contains(e.target as Node)
-      ) {
-        setSearchOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
-
   // ── IntersectionObserver for virtual scroll ──────────────────────
 
   useEffect(() => {
@@ -449,13 +435,6 @@ export default function ScreenerPage() {
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
-
-  // ── Search suggestions ───────────────────────────────────────────
-
-  const searchSuggestions = useMemo(() => {
-    if (!searchQuery || searchQuery.length < 1) return [];
-    return filterRankSymbolSearch(SEARCHABLE_SYMBOLS, searchQuery, { limit: 8 });
-  }, [searchQuery]);
 
   // ── Resolve tech score for a row at a specific timeframe ─────────
 
@@ -499,6 +478,7 @@ export default function ScreenerPage() {
           "5m": technicals.get(t.symbol)?.get("5m")?.score ?? null,
           "15m": technicals.get(t.symbol)?.get("15m")?.score ?? null,
           "1h": technicals.get(t.symbol)?.get("1h")?.score ?? null,
+          "4h": technicals.get(t.symbol)?.get("4h")?.score ?? null,
           "1d": technicals.get(t.symbol)?.get("1d")?.score ?? t.techScore1d ?? null,
           "1w": technicals.get(t.symbol)?.get("1w")?.score ?? t.techScore1w ?? null,
         },
@@ -617,9 +597,7 @@ export default function ScreenerPage() {
   };
 
   const clearSearch = () => {
-    setSearchQuery("");
     setSelectedSymbol(null);
-    setSearchOpen(false);
   };
 
   useEffect(() => {
@@ -686,64 +664,37 @@ export default function ScreenerPage() {
           </div>
 
           {/* Search */}
-          <div className="relative" ref={searchRef}>
-            <div className="flex items-center">
-              <input
-                type="text"
-                placeholder="Search symbol..."
-                className="h-8 w-52 rounded-input border border-white/[0.08] bg-white/[0.04] px-3 font-mono text-[13px] text-white/80 placeholder:text-white/20 focus:border-blue/40 focus:outline-none"
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  if (selectedSymbol) setSelectedSymbol(null);
-                  setSearchOpen(true);
-                }}
-                onFocus={() => setSearchOpen(true)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") clearSearch();
-                  if (
-                    e.key === "Enter" &&
-                    searchSuggestions.length > 0
-                  ) {
-                    setSelectedSymbol(searchSuggestions[0].symbol);
-                    setSearchQuery(searchSuggestions[0].symbol);
-                    setSearchOpen(false);
-                  }
-                }}
-              />
-              {searchQuery && (
-                <button
-                  onClick={clearSearch}
-                  className="ml-1 text-[13px] text-white/30 hover:text-white/60"
-                >
-                  ✕
-                </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setSearchModalOpen(true)}
+              className="flex h-8 items-center gap-2 rounded-input border border-white/[0.08] bg-white/[0.04] px-3 font-mono text-[13px] text-white/40 transition-colors hover:border-white/[0.14] hover:bg-white/[0.07] hover:text-white/70"
+            >
+              <Search className="h-3.5 w-3.5 shrink-0" strokeWidth={1.8} />
+              {selectedSymbol ? (
+                <span className="text-white/80">{selectedSymbol}</span>
+              ) : (
+                <span>Search symbol...</span>
               )}
-            </div>
-
-            {searchOpen && searchSuggestions.length > 0 && (
-              <div className="absolute right-0 top-full z-50 mt-1 w-64 overflow-hidden rounded border border-white/[0.08] bg-panel shadow-xl">
-                {searchSuggestions.map((s) => (
-                  <button
-                    key={s.symbol}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-white/[0.06]"
-                    onClick={() => {
-                      setSelectedSymbol(s.symbol);
-                      setSearchQuery(s.symbol);
-                      setSearchOpen(false);
-                    }}
-                  >
-                    <span className="font-mono text-[13px] font-semibold text-white/80">
-                      {s.symbol}
-                    </span>
-                    <span className="truncate text-[12px] text-white/35">
-                      {s.name}
-                    </span>
-                  </button>
-                ))}
-              </div>
+            </button>
+            {selectedSymbol && (
+              <button
+                onClick={clearSearch}
+                className="text-[13px] text-white/30 hover:text-white/60"
+              >
+                ✕
+              </button>
             )}
           </div>
+          <SymbolSearchModal
+            isOpen={searchModalOpen}
+            onClose={() => setSearchModalOpen(false)}
+            onSelectSymbol={(sym) => {
+              setSelectedSymbol(sym);
+              setSearchModalOpen(false);
+            }}
+            title="Screener Search"
+            subtitle="Select a symbol to filter the screener"
+          />
         </div>
 
           {/* Filters row */}
@@ -769,7 +720,7 @@ export default function ScreenerPage() {
                 }}
                 className={`rounded-btn border border-transparent px-3 py-1 font-mono text-[12px] font-medium tracking-wide transition-colors ${
                   filter === key
-                    ? "border-blue-400/30 bg-blue-400/[0.12] text-blue-400"
+                    ? "border-blue bg-blue/30 text-white"
                     : "text-white/72 hover:border-white/[0.08] hover:bg-white/[0.05] hover:text-white"
                 }`}
               >
@@ -791,10 +742,10 @@ export default function ScreenerPage() {
                 <button
                   key={tf}
                   onClick={() => toggleTf(tf)}
-                  className={`rounded-btn border border-transparent px-2.5 py-1 font-mono text-[12px] font-medium transition-colors ${
+                  className={`rounded-btn border px-2.5 py-1 font-mono text-[12px] font-medium transition-colors ${
                     active
-                      ? "border-blue-400/30 bg-blue-400/[0.12] text-blue-400"
-                      : "text-white/72 hover:border-white/[0.08] hover:bg-white/[0.05] hover:text-white"
+                      ? "border-blue bg-blue/30 text-white"
+                      : "border-white/[0.06] bg-white/[0.03] text-white/50 hover:border-white/[0.12] hover:bg-white/[0.07] hover:text-white/80"
                   }`}
                 >
                   {TA_SCORE_TF_LABELS[tf]}

@@ -384,8 +384,8 @@ def fetch_watchlist_quotes_with_fallback(symbols: List[str]) -> tuple[str, List[
 
     # DailyIQ first — works for both regular and extended hours
     try:
-        from dailyiq_provider import fetch_watchlist_quotes_from_dailyiq
-        diq_quotes = fetch_watchlist_quotes_from_dailyiq(symbols)
+        from dailyiq_provider import fetch_watchlist_quotes_from_dailyiq_concurrent
+        diq_quotes = fetch_watchlist_quotes_from_dailyiq_concurrent(symbols)
         if diq_quotes:
             return "dailyiq", diq_quotes
         if dailyiq_api_key:
@@ -442,8 +442,8 @@ def fetch_universe_quotes_with_fallback(symbols: List[str]) -> tuple[str, List[d
 
     # DailyIQ first — works for both regular and extended hours
     try:
-        from dailyiq_provider import fetch_watchlist_quotes_from_dailyiq
-        diq_quotes = fetch_watchlist_quotes_from_dailyiq(symbols)
+        from dailyiq_provider import fetch_watchlist_quotes_from_dailyiq_concurrent
+        diq_quotes = fetch_watchlist_quotes_from_dailyiq_concurrent(symbols)
         if diq_quotes:
             return "dailyiq", diq_quotes
         if dailyiq_api_key:

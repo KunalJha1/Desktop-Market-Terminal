@@ -72,8 +72,7 @@ function getNextMarketOpen(): Date {
 }
 
 function formatCountdown(ms: number): string {
-  if (ms <= 0) return "Market Open";
-  const totalSec = Math.floor(ms / 1000);
+  const totalSec = Math.floor(Math.max(0, ms) / 1000);
   const h = Math.floor(totalSec / 3600);
   const m = Math.floor((totalSec % 3600) / 60);
   const s = totalSec % 60;
@@ -81,17 +80,67 @@ function formatCountdown(ms: number): string {
   return `${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 
-function isMarketOpen(): boolean {
+type MarketSession = "premarket" | "open" | "afterhours" | "closed";
+
+function getMarketSession(): MarketSession {
   const nowLocal = new Date();
-  const etStr = nowLocal.toLocaleString("en-US", {
-    timeZone: "America/New_York",
-  });
+  const etStr = nowLocal.toLocaleString("en-US", { timeZone: "America/New_York" });
   const et = new Date(etStr);
   const day = et.getDay();
-  if (day === 0 || day === 6) return false;
-  if (isMarketHoliday(et)) return false;
+  if (day === 0 || day === 6 || isMarketHoliday(et)) return "closed";
   const mins = et.getHours() * 60 + et.getMinutes();
-  return mins >= 570 && mins < 960;
+  if (mins >= 240 && mins < 570) return "premarket";
+  if (mins >= 570 && mins < 960) return "open";
+  if (mins >= 960 && mins < 1200) return "afterhours";
+  return "closed";
+}
+
+function getETDate(): { et: Date; diff: number } {
+  const nowLocal = new Date();
+  const etStr = nowLocal.toLocaleString("en-US", { timeZone: "America/New_York" });
+  const et = new Date(etStr);
+  return { et, diff: nowLocal.getTime() - et.getTime() };
+}
+
+function getNextMarketClose(): Date {
+  const { et, diff } = getETDate();
+  const closeET = new Date(et);
+  closeET.setHours(16, 0, 0, 0);
+  return new Date(closeET.getTime() + diff);
+}
+
+function getNextAfterHoursClose(): Date {
+  const { et, diff } = getETDate();
+  const closeET = new Date(et);
+  closeET.setHours(20, 0, 0, 0);
+  return new Date(closeET.getTime() + diff);
+}
+
+function getNextPreMarketOpen(): Date {
+  const nowLocal = new Date();
+  const etStr = nowLocal.toLocaleString("en-US", { timeZone: "America/New_York" });
+  const et = new Date(etStr);
+  const diff = nowLocal.getTime() - et.getTime();
+
+  // Start from tomorrow 4:00 AM ET
+  const candidate = new Date(et);
+  candidate.setHours(4, 0, 0, 0);
+  // If we haven't hit 4 AM today yet, use today
+  if (et.getHours() * 60 + et.getMinutes() < 240) {
+    const day = candidate.getDay();
+    if (day >= 1 && day <= 5 && !isMarketHoliday(candidate)) {
+      return new Date(candidate.getTime() + diff);
+    }
+  }
+  candidate.setDate(candidate.getDate() + 1);
+  for (let i = 0; i < 14; i++) {
+    const day = candidate.getDay();
+    if (day >= 1 && day <= 5 && !isMarketHoliday(candidate)) {
+      return new Date(candidate.getTime() + diff);
+    }
+    candidate.setDate(candidate.getDate() + 1);
+  }
+  return candidate;
 }
 
 interface DashboardToolbarProps {
@@ -169,10 +218,14 @@ export default function DashboardToolbar({
     hour12: true,
   });
 
-  const marketOpen = isMarketOpen();
-  const countdown = marketOpen
-    ? "Market Open"
-    : formatCountdown(getNextMarketOpen().getTime() - now.getTime());
+  const session = getMarketSession();
+  const SESSION_CONFIG: Record<MarketSession, { label: string; color: string; countdownLabel: string; target: Date }> = {
+    premarket:  { label: "Pre-Market",    color: "#F59E0B", countdownLabel: "Time Till Open",        target: getNextMarketOpen() },
+    open:       { label: "Market Open",   color: "#00C853", countdownLabel: "Time Till Close",       target: getNextMarketClose() },
+    afterhours: { label: "After-Hours",   color: "#F59E0B", countdownLabel: "Time Till Close",       target: getNextAfterHoursClose() },
+    closed:     { label: "Market Closed", color: "#ffffff55", countdownLabel: "Time Till Pre-Market", target: getNextPreMarketOpen() },
+  };
+  const sessionInfo = SESSION_CONFIG[session];
 
   const activeChannel = LINK_CHANNELS.find((c) => c.id === linkChannel);
 
@@ -226,9 +279,13 @@ export default function DashboardToolbar({
               onClick={() => setShowLinkMenu((v) => !v)}
               className={btnClass}
             >
-              <Link2 className="h-3.5 w-3.5" strokeWidth={1.5} />
+              <Link2
+                className="h-3.5 w-3.5"
+                strokeWidth={1.5}
+                style={{ color: activeChannel ? activeChannel.color : undefined }}
+              />
               {activeChannel && (
-                <span>
+                <span style={{ color: activeChannel.color }}>
                   {activeChannel.id}
                 </span>
               )}
@@ -307,10 +364,13 @@ export default function DashboardToolbar({
 
           <div className="mx-1 h-3 w-px bg-white/[0.06]" />
 
-          <span
-            className="font-mono text-[10px] text-white"
-          >
-            Time Till Open: {countdown}
+          <span className="font-mono text-[10px]" style={{ color: sessionInfo.color }}>
+            {sessionInfo.label}
+          </span>
+          <div className="mx-1 h-3 w-px bg-white/[0.06]" />
+          <span className="font-mono text-[10px] text-white/50">
+            {sessionInfo.countdownLabel}:{" "}
+            <span className="text-white">{formatCountdown(sessionInfo.target.getTime() - now.getTime())}</span>
           </span>
         </div>
       </div>

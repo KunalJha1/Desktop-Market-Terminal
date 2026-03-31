@@ -169,8 +169,8 @@ export default function ChartToolbar({
       <div className="relative mx-1" ref={dropdownRef}>
         <button
           onClick={() => setChartTypeOpen(!chartTypeOpen)}
-          className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-text-secondary
-                     hover:text-text-primary hover:bg-hover rounded-btn transition-colors duration-120"
+          className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-white
+                     hover:text-white hover:bg-hover rounded-btn transition-colors duration-120"
         >
           {chartTypeIcon()}
           <span className="font-mono">{CHART_TYPES.find(ct => ct.value === chartType)?.label}</span>
@@ -201,8 +201,8 @@ export default function ChartToolbar({
       <div className="relative mx-1">
         <button
           onClick={onIndicatorPanelToggle}
-          className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-text-secondary
-                     hover:text-text-primary hover:bg-hover rounded-btn transition-colors duration-120"
+          className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-white
+                     hover:text-white hover:bg-hover rounded-btn transition-colors duration-120"
         >
           <Activity size={12} />
           <span className="font-mono">Indicators</span>
@@ -220,8 +220,8 @@ export default function ChartToolbar({
       <div className="relative">
         <button
           onClick={onStrategyPanelToggle}
-          className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-text-secondary
-                     hover:text-text-primary hover:bg-hover rounded-btn transition-colors duration-120"
+          className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-white
+                     hover:text-white hover:bg-hover rounded-btn transition-colors duration-120"
         >
           <BrainCircuit size={13} />
           <span className="font-mono">Strategies</span>
@@ -250,21 +250,21 @@ export default function ChartToolbar({
       <div className="flex items-center gap-1 mx-1">
         <button
           onClick={onZoomOut}
-          className="p-1 text-text-secondary hover:text-text-primary hover:bg-hover rounded-btn transition-colors duration-120"
+          className="p-1 text-white hover:text-white hover:bg-hover rounded-btn transition-colors duration-120"
           title="Zoom out"
         >
           <ZoomOut size={12} />
         </button>
         <button
           onClick={onZoomIn}
-          className="p-1 text-text-secondary hover:text-text-primary hover:bg-hover rounded-btn transition-colors duration-120"
+          className="p-1 text-white hover:text-white hover:bg-hover rounded-btn transition-colors duration-120"
           title="Zoom in"
         >
           <ZoomIn size={12} />
         </button>
         <button
           onClick={onZoomReset}
-          className="p-1 text-text-secondary hover:text-text-primary hover:bg-hover rounded-btn transition-colors duration-120"
+          className="p-1 text-white hover:text-white hover:bg-hover rounded-btn transition-colors duration-120"
           title="Reset zoom"
         >
           <RotateCcw size={12} />
@@ -285,6 +285,7 @@ export default function ChartToolbar({
 
       <div className="w-px h-4 bg-border-default" />
 
+      {/* DISABLED: import/export not yet functional
       <div className="flex items-center gap-1 mx-1">
         <button
           onClick={onImportChart}
@@ -307,6 +308,7 @@ export default function ChartToolbar({
       </div>
 
       <div className="w-px h-4 bg-border-default" />
+      */}
 
       {/* Link channel */}
       <ComponentLinkMenu

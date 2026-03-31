@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import type { ActiveIndicator, ScriptResult } from '../types';
+import type { ActiveIndicator, IndicatorOutput, ScriptResult } from '../types';
 import { indicatorRegistry } from '../indicators/registry';
 import { Eye, EyeOff, X, Settings, ChevronUp, ChevronDown, Pencil } from 'lucide-react';
 
@@ -465,6 +465,7 @@ export default function IndicatorLegend({
 
   return (
     <div
+      data-no-drag
       style={{
         position: 'absolute',
         top: 30,
@@ -534,6 +535,11 @@ export default function IndicatorLegend({
         const colors = ind.colors ?? {};
         const isChopZone = ind.name === 'Chop Zone';
         const canDrag = ind.name !== 'Probability Engine';
+        const legendSwatchOutputs: IndicatorOutput[] = meta.legendSwatchKeys?.length
+          ? meta.legendSwatchKeys
+            .map((key) => meta.outputs.find((o) => o.key === key))
+            .filter((o): o is IndicatorOutput => o != null)
+          : meta.outputs;
 
         return (
           <div
@@ -571,8 +577,8 @@ export default function IndicatorLegend({
                 minHeight: 20,
               }}
             >
-              {/* Color swatches — one per output (display only; picker opens in settings panel) */}
-              {meta.outputs.map(output => {
+              {/* Color swatches — subset when `legendSwatchKeys` is set (picker in expanded settings) */}
+              {legendSwatchOutputs.map(output => {
                 const c = colors[output.key] ?? output.color;
                 return (
                   <div key={output.key} style={{ display: 'flex', alignItems: 'center' }}>
@@ -603,7 +609,7 @@ export default function IndicatorLegend({
                 }}
               >
                 {meta.shortName}
-                {Object.keys(ind.params).length > 0 && (
+                {!meta.legendOmitParamSummary && Object.keys(ind.params).length > 0 && (
                   <span style={{ color: ind.visible ? '#E6EDF3' : '#2D3340' }}>
                     {' ('}
                     {Object.values(ind.params).join(', ')}

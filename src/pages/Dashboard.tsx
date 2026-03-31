@@ -50,6 +50,7 @@ export default function Dashboard() {
     sidecarStatus,
     finnhubStatus,
     finnhubHasKey,
+    dailyiqHasKey,
     ibStatus,
     backendState,
     backendMessage,
@@ -60,15 +61,13 @@ export default function Dashboard() {
 
   const dataProvider = status === "connected"
     ? "live"
-    : observedMarketDataSource === "dailyiq"
+    : observedMarketDataSource === "dailyiq" || (dailyiqHasKey && observedMarketDataSource == null)
       ? "dailyiq"
       : observedMarketDataSource === "finnhub"
         ? "finnhub"
         : observedMarketDataSource === "yahoo"
           ? "yahoo"
-          : sidecarStatus !== "disconnected"
-            ? "offline"
-            : "offline";
+          : "offline";
   const finnhubIndicatorState =
     finnhubStatus === "connected"
       ? "connected"
@@ -223,39 +222,43 @@ export default function Dashboard() {
 
       {/* Bottom status bar */}
       <footer className="flex h-6 shrink-0 items-center justify-between border-t border-white/[0.06] bg-base px-3 text-[10px] tracking-wide">
-        <p className="font-light text-white/20">
+        <p className="font-light text-white">
           For research purposes only. Questions?{" "}
           <a
             href="mailto:dailyiqme@gmail.com"
-            className="text-white/30 underline decoration-white/10 underline-offset-2 transition-colors duration-100 hover:text-white/50"
+            className="text-white underline decoration-white/30 underline-offset-2 transition-colors duration-100 hover:text-white/70"
           >
             dailyiqme@gmail.com
           </a>
         </p>
 
-        <div className="flex items-center gap-3 font-mono text-[10px] text-white/30">
+        <div className="flex items-center gap-3 font-mono text-[10px] text-white">
           {/* Data provider */}
           <div className="flex items-center gap-1.5">
             <span
               className={`inline-block h-1.5 w-1.5 rounded-full ${
                 dataProvider === "live"
                   ? "bg-green"
-                  : dataProvider === "dailyiq" || dataProvider === "finnhub" || dataProvider === "yahoo"
-                    ? "bg-blue"
-                    : "bg-red/60"
+                  : dataProvider === "dailyiq"
+                    ? "bg-sky-400"
+                    : dataProvider === "finnhub" || dataProvider === "yahoo"
+                      ? "bg-blue"
+                      : "bg-red/60"
               }`}
             />
             <span className={
               dataProvider === "live"
                 ? "text-green"
-                : dataProvider === "dailyiq" || dataProvider === "finnhub" || dataProvider === "yahoo"
-                  ? "text-blue"
-                  : "text-red/60"
+                : dataProvider === "dailyiq"
+                  ? "text-sky-400"
+                  : dataProvider === "finnhub" || dataProvider === "yahoo"
+                    ? "text-blue"
+                    : "text-red/60"
             }>
               {dataProvider === "live"
                 ? "LIVE"
                 : dataProvider === "dailyiq"
-                  ? "DAILYIQ API"
+                  ? "DAILYIQ"
                   : dataProvider === "finnhub"
                     ? "FINNHUB"
                 : dataProvider === "yahoo"
@@ -263,10 +266,10 @@ export default function Dashboard() {
                   : "OFFLINE"}
             </span>
           </div>
-          <span className="text-white/10">|</span>
+          <span className="text-white/30">|</span>
           {/* Backend status — clickable restart when not healthy */}
           {backendState === "healthy" ? (
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 text-green">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-green" />
               <span>BACKEND</span>
             </div>
@@ -277,7 +280,7 @@ export default function Dashboard() {
               className={`flex items-center gap-1.5 rounded px-1 transition-colors duration-120 ${
                 backendState === "restarting" || backendState === "starting"
                   ? "cursor-default text-amber"
-                  : "cursor-pointer text-red/70 hover:text-red hover:bg-red/10"
+                  : "cursor-pointer text-red hover:text-red/80 hover:bg-red/10"
               }`}
               disabled={backendState === "restarting" || backendState === "starting"}
             >
@@ -285,7 +288,7 @@ export default function Dashboard() {
                 className={`inline-block h-1.5 w-1.5 rounded-full ${
                   backendState === "starting" || backendState === "restarting" || backendState === "unhealthy"
                     ? "bg-amber animate-pulse"
-                    : "bg-red/60"
+                    : "bg-red"
                 }`}
               />
               <span>
@@ -299,50 +302,50 @@ export default function Dashboard() {
               </span>
             </button>
           )}
-          <span className="text-white/10">|</span>
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`inline-block h-1.5 w-1.5 rounded-full ${
-                finnhubIndicatorState === "connected"
-                  ? "bg-green"
-                  : finnhubIndicatorState === "testing" || finnhubIndicatorState === "saved"
-                    ? "bg-amber animate-pulse"
-                    : "bg-red/60"
-              }`}
-            />
-            <span
-              className={
-                finnhubIndicatorState === "connected"
-                  ? "text-green"
-                  : finnhubIndicatorState === "testing" || finnhubIndicatorState === "saved"
-                    ? "text-amber"
-                    : "text-red/60"
-              }
-            >
-              {finnhubIndicatorState === "connected"
-                ? "FINNHUB"
-                : finnhubIndicatorState === "testing"
-                  ? "FINNHUB TESTING"
-                  : finnhubIndicatorState === "saved"
-                    ? "FINNHUB SAVED"
-                  : "FINNHUB OFF"}
-            </span>
-          </div>
-          <span className="text-white/10">|</span>
+          <span className="text-white/30">|</span>
+          {finnhubIndicatorState !== "off" ? (
+            <>
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={`inline-block h-1.5 w-1.5 rounded-full ${
+                    finnhubIndicatorState === "connected"
+                      ? "bg-green"
+                      : "bg-amber animate-pulse"
+                  }`}
+                />
+                <span
+                  className={
+                    finnhubIndicatorState === "connected"
+                      ? "text-green"
+                      : "text-amber"
+                  }
+                >
+                  {finnhubIndicatorState === "connected"
+                    ? "FINNHUB"
+                    : finnhubIndicatorState === "testing"
+                      ? "FINNHUB TESTING"
+                      : "FINNHUB SAVED"}
+                </span>
+              </div>
+              <span className="text-white/30">|</span>
+            </>
+          ) : null}
           {status === "connected" && port !== null && clientId !== null ? (
             <>
               <span>
                 Port{" "}
-                <span className="text-white/15">{port}</span>
+                <span className="text-white/60">{port}</span>
               </span>
-              <span className="text-white/10">|</span>
+              <span className="text-white/30">|</span>
               <span>
                 Client ID{" "}
-                <span className="text-white/15">{clientId}</span>
+                <span className="text-white/60">{clientId}</span>
               </span>
             </>
           ) : null}
-          <span className="text-white/10">|</span>
+          {status === "connected" && port !== null && clientId !== null ? (
+            <span className="text-white/30">|</span>
+          ) : null}
           <div className="flex items-center gap-1.5">
             <span
               className={`inline-block h-1.5 w-1.5 rounded-full ${
@@ -353,7 +356,13 @@ export default function Dashboard() {
                     : "bg-red/60"
               }`}
             />
-            <span>
+            <span className={
+              status === "connected" && ibStatus === "connected"
+                ? "text-green"
+                : ibStatus === "reconnecting" || status === "probing"
+                  ? "text-amber"
+                  : "text-red"
+            }>
               {status === "connected" && ibStatus === "connected" && connectionType
                 ? CONNECTION_LABELS[connectionType]
                 : ibStatus === "reconnecting"

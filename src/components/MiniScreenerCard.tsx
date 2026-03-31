@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, memo } from "react";
-import { GripVertical, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Columns3, GripVertical, Search, X } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
 import CircularGauge from "./CircularGauge";
 import { useWatchlist } from "../lib/watchlist";
@@ -36,9 +37,11 @@ type SortKey =
   | `tech_${TaScoreTimeframe}`;
 
 interface TechScores {
+  "1m": number | null;
   "5m": number | null;
   "15m": number | null;
   "1h": number | null;
+  "4h": number | null;
   "1d": number | null;
   "1w": number | null;
 }
@@ -54,16 +57,17 @@ interface BuiltInColumnDef {
   width: number;
   minWidth: number;
   sortKey?: SortKey;
+  defaultVisible: boolean;
 }
 
 const BUILT_IN_COLUMNS: BuiltInColumnDef[] = [
-  { id: "symbol", label: "Symbol", width: 240, minWidth: 180, sortKey: "symbol" },
-  { id: "priceChange", label: "Price / Chg", width: 108, minWidth: 88, sortKey: "change" },
-  { id: "mcap", label: "Mkt Cap", width: 96, minWidth: 72, sortKey: "mcap" },
-  { id: "pe", label: "P/E", width: 76, minWidth: 60, sortKey: "pe" },
-  { id: "fpe", label: "Fwd P/E", width: 82, minWidth: 64, sortKey: "fpe" },
-  { id: "week52", label: "52W H / L", width: 108, minWidth: 84 },
-  { id: "verdict", label: "Verdict", width: 104, minWidth: 90, sortKey: "verdict" },
+  { id: "symbol", label: "Symbol", width: 240, minWidth: 180, sortKey: "symbol", defaultVisible: true },
+  { id: "priceChange", label: "Price / Chg", width: 108, minWidth: 88, sortKey: "change", defaultVisible: true },
+  { id: "mcap", label: "Mkt Cap", width: 96, minWidth: 72, sortKey: "mcap", defaultVisible: true },
+  { id: "pe", label: "P/E", width: 76, minWidth: 60, sortKey: "pe", defaultVisible: false },
+  { id: "fpe", label: "Fwd P/E", width: 82, minWidth: 64, sortKey: "fpe", defaultVisible: false },
+  { id: "week52", label: "52W H / L", width: 108, minWidth: 84, defaultVisible: false },
+  { id: "verdict", label: "Verdict", width: 104, minWidth: 90, sortKey: "verdict", defaultVisible: true },
 ];
 
 const BUILT_IN_COLUMN_MAP = new Map(BUILT_IN_COLUMNS.map((col) => [col.id, col] as const));
@@ -173,14 +177,18 @@ export default function MiniScreenerCard({
   const { symbols: watchlistSymbols } = useWatchlist();
   const tiles = useSp500HeatmapData();
   const containerRef = useRef<HTMLDivElement>(null);
-  const pickerRef = useRef<HTMLDivElement>(null);
+  const colPickerRef = useRef<HTMLDivElement>(null);
+  const colPickerButtonRef = useRef<HTMLButtonElement>(null);
+  const colPickerPanelRef = useRef<HTMLDivElement>(null);
+  const [colPickerRect, setColPickerRect] = useState<DOMRect | null>(null);
   const configuredVisibleColumns = useMemo(() => readVisibleColumns(config), [config]);
   const configuredColumnWidths = useMemo(() => readColumnWidths(config), [config]);
   const [visibleColumns, setVisibleColumns] = useState<ColumnId[]>(configuredVisibleColumns);
   const [columnWidths, setColumnWidths] = useState<Partial<Record<ColumnId, number>>>(configuredColumnWidths);
   const [sortKey, setSortKey] = useState<SortKey>("verdict");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [colPickerOpen, setColPickerOpen] = useState(false);
+  const [search, setSearch] = useState("");
   const [colDragState, setColDragState] = useState<ColumnDragState | null>(null);
   const [colInsertBeforeId, setColInsertBeforeId] = useState<ColumnId | null>(null);
   const headerCellRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -197,15 +205,26 @@ export default function MiniScreenerCard({
   }, [configuredColumnWidths]);
 
   useEffect(() => {
-    if (!pickerOpen) return;
-    const handleMouseDown = (event: MouseEvent) => {
-      if (!pickerRef.current?.contains(event.target as Node)) {
-        setPickerOpen(false);
+    if (!colPickerOpen) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        !colPickerButtonRef.current?.contains(target) &&
+        !colPickerPanelRef.current?.contains(target)
+      ) {
+        setColPickerOpen(false);
       }
     };
-    document.addEventListener("mousedown", handleMouseDown);
-    return () => document.removeEventListener("mousedown", handleMouseDown);
-  }, [pickerOpen]);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [colPickerOpen]);
+
+  function openColPicker() {
+    if (!colPickerOpen && colPickerButtonRef.current) {
+      setColPickerRect(colPickerButtonRef.current.getBoundingClientRect());
+    }
+    setColPickerOpen((v) => !v);
+  }
 
   const persistConfig = (patch: Record<string, unknown>) => {
     onConfigChange({ ...config, ...patch });
@@ -360,9 +379,11 @@ export default function MiniScreenerCard({
     const enriched: ScreenerRow[] = tiles.map((tile) => {
       const detailed = technicals.get(tile.symbol);
       const techScores: TechScores = {
+        "1m": detailed?.get("1m")?.score ?? null,
         "5m": detailed?.get("5m")?.score ?? null,
         "15m": detailed?.get("15m")?.score ?? null,
         "1h": detailed?.get("1h")?.score ?? null,
+        "4h": detailed?.get("4h")?.score ?? null,
         "1d": detailed?.get("1d")?.score ?? tile.techScore1d ?? null,
         "1w": detailed?.get("1w")?.score ?? tile.techScore1w ?? null,
       };
@@ -409,8 +430,12 @@ export default function MiniScreenerCard({
       }
     });
 
+    if (search.trim()) {
+      const q = search.trim().toUpperCase();
+      return enriched.filter((r) => r.symbol.includes(q) || r.name?.toUpperCase().includes(q));
+    }
     return enriched;
-  }, [tiles, technicals, visibleTimeframes, sortDir, sortKey]);
+  }, [tiles, technicals, visibleTimeframes, sortDir, sortKey, search]);
 
   const gridTemplateColumns = useMemo(
     () =>
@@ -434,80 +459,127 @@ export default function MiniScreenerCard({
     <div className="flex h-full flex-col overflow-hidden border border-white/[0.06] bg-panel">
       <div className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-medium text-white/80">Screener</span>
-          <span className="font-mono text-[11px] text-white/40">
-            {tiles.length > 0 ? `${rows.length}/${tiles.length}` : ""}
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <div ref={pickerRef} className="relative">
-            <button
-              onClick={() => setPickerOpen((open) => !open)}
-              className={`rounded-sm px-1.5 py-0.5 font-mono text-[10px] transition-colors duration-75 ${
-                pickerOpen || visibleColumns.length > DEFAULT_VISIBLE_COLUMNS.length
-                  ? "bg-blue/20 text-blue hover:bg-blue/30"
-                  : "text-white/55 hover:bg-white/[0.06] hover:text-white/80"
-              }`}
-              title="Columns"
-            >
-              Cols
-            </button>
-            {pickerOpen && (
-              <div className="absolute right-0 top-full z-[120] mt-1 w-[210px] rounded-md border border-white/[0.08] bg-[#1C2128] p-2 shadow-xl shadow-black/40">
-                <div className="mb-2 text-[9px] uppercase tracking-[0.14em] text-white/30">
-                  Metrics
-                </div>
-                <div className="grid grid-cols-2 gap-1">
-                  {BUILT_IN_COLUMNS.map((column) => {
-                    const active = visibleColumns.includes(column.id);
-                    const locked = column.id === "symbol";
-                    return (
-                      <button
-                        key={column.id}
-                        onClick={() => toggleColumn(column.id)}
-                        disabled={locked}
-                        className={`rounded-sm px-2 py-1 text-left font-mono text-[10px] transition-colors duration-75 ${
-                          active
-                            ? "bg-blue/20 text-blue"
-                            : "text-white/55 hover:bg-white/[0.06] hover:text-white/80"
-                        } ${locked ? "cursor-default opacity-90" : ""}`}
-                      >
-                        {column.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="mb-2 mt-3 text-[9px] uppercase tracking-[0.14em] text-white/30">
-                  TA Scores
-                </div>
-                <div className="grid grid-cols-3 gap-1">
-                  {TA_SCORE_TIMEFRAMES.map((tf) => {
-                    const colId = `ta:${tf}` as ColumnId;
-                    const active = visibleColumns.includes(colId);
-                    return (
-                      <button
-                        key={tf}
-                        onClick={() => toggleColumn(colId)}
-                        className={`rounded-sm px-2 py-1 text-center font-mono text-[10px] transition-colors duration-75 ${
-                          active
-                            ? "bg-purple/20 text-purple"
-                            : "text-white/55 hover:bg-white/[0.06] hover:text-white/80"
-                        }`}
-                      >
-                        {TA_SCORE_TF_LABELS[tf]}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+          <span className="shrink-0 text-[11px] font-medium text-white/80">Screener</span>
+          <div className="flex items-center gap-1 rounded-sm border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5">
+            <Search className="h-2.5 w-2.5 shrink-0 text-white/30" strokeWidth={1.5} />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search…"
+              className="w-20 bg-transparent font-mono text-[10px] text-white/80 placeholder-white/25 outline-none"
+            />
+            {search && (
+              <span className="font-mono text-[10px] text-white/35">{rows.length}</span>
             )}
           </div>
+        </div>
+        <div className="flex items-center gap-1">
+          <div ref={colPickerRef}>
+            <button
+              ref={colPickerButtonRef}
+              type="button"
+              onClick={openColPicker}
+              className="flex items-center gap-1 rounded-sm transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
+              style={{
+                height: 16,
+                padding: "0 6px",
+                borderRadius: 2,
+                border: "none",
+                cursor: "pointer",
+                backgroundColor: colPickerOpen ? "rgba(255,255,255,0.06)" : "transparent",
+                color: "#FFFFFF",
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 11,
+                lineHeight: 1,
+              }}
+            >
+              <Columns3 className="h-[13px] w-[13px]" strokeWidth={2} />
+              Cols
+            </button>
+          </div>
+          {colPickerOpen && colPickerRect
+            ? createPortal(
+                <div
+                  ref={colPickerPanelRef}
+                  className="fixed z-[9999] flex w-[230px] flex-col overflow-y-auto rounded-md border border-white/[0.10] bg-[#161B22] shadow-2xl shadow-black/60 scrollbar-dark"
+                  style={{
+                    top: colPickerRect.bottom + 4,
+                    right: window.innerWidth - colPickerRect.right,
+                    maxHeight: "min(440px, calc(100vh - 120px))",
+                  }}
+                >
+                  <div className="p-2">
+                    <p className="mb-1.5 text-[9px] uppercase tracking-[0.14em] text-white/28">Visible Columns</p>
+                    <div className="space-y-0.5">
+                      {BUILT_IN_COLUMNS.map((col) => (
+                        <label
+                          key={col.id}
+                          className={`flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 hover:bg-white/[0.04] ${col.id === "symbol" ? "pointer-events-none opacity-60" : ""}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={visibleColumns.includes(col.id)}
+                            onChange={() => toggleColumn(col.id)}
+                            disabled={col.id === "symbol"}
+                            className="h-3 w-3 accent-blue"
+                          />
+                          <span className="text-[10px] text-white/65">{col.label}</span>
+                          {!col.defaultVisible ? <span className="ml-auto text-[8px] text-white/22">opt</span> : null}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="border-t border-white/[0.08] bg-[#131920] p-2">
+                    <p className="mb-1.5 text-[9px] uppercase tracking-[0.14em] text-blue/70">TA Score Columns</p>
+                    <div className="flex flex-wrap gap-1">
+                      {TA_SCORE_TIMEFRAMES.map((tf) => {
+                        const colId = `ta:${tf}` as ColumnId;
+                        return (
+                          <button
+                            key={tf}
+                            type="button"
+                            onClick={() => toggleColumn(colId)}
+                            className={`rounded-sm px-2 py-0.5 text-[9px] font-mono transition-colors ${
+                              visibleColumns.includes(colId)
+                                ? "bg-blue/[0.22] text-blue"
+                                : "border border-white/[0.08] text-white/40 hover:border-white/[0.18] hover:text-white/72"
+                            }`}
+                          >
+                            {tf}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-1.5 text-[9px] text-white/28">
+                      {visibleTimeframes.length > 0
+                        ? "Toggle timeframes to show or hide score columns."
+                        : "Click a timeframe to add a score column"}
+                    </p>
+                  </div>
+                </div>,
+                document.body,
+              )
+            : null}
           <ComponentLinkMenu linkChannel={linkChannel} onSetLinkChannel={onSetLinkChannel} />
           <button
             onClick={onClose}
-            className="rounded-sm p-0.5 text-white/70 transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
+            className="rounded-sm p-0 text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 16,
+              height: 16,
+              padding: 0,
+              border: "none",
+              cursor: "pointer",
+              backgroundColor: "transparent",
+              color: "#FFFFFF",
+              borderRadius: 2,
+            }}
           >
-            <X className="h-2.5 w-2.5" strokeWidth={1.5} />
+            <X className="h-[12px] w-[12px]" strokeWidth={2} />
           </button>
         </div>
       </div>

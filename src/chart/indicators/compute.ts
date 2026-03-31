@@ -2,37 +2,48 @@ import type { OHLCVBar } from '../types';
 
 // --- Shared math helpers ---
 
-/** Simple Moving Average over an array of numbers */
+/** Simple Moving Average over an array of numbers (NaN-safe: skips leading NaN values) */
 export function sma(data: number[], period: number): number[] {
   const len = data.length;
   const result = new Array<number>(len).fill(NaN);
-  let sum = 0;
 
-  for (let i = 0; i < len; i++) {
-    sum += data[i];
-    if (i < period - 1) continue;
-    if (i >= period) sum -= data[i - period];
-    result[i] = sum / period;
+  for (let i = period - 1; i < len; i++) {
+    let sum = 0;
+    let valid = true;
+    for (let j = i - period + 1; j <= i; j++) {
+      if (isNaN(data[j])) { valid = false; break; }
+      sum += data[j];
+    }
+    if (valid) result[i] = sum / period;
   }
 
   return result;
 }
 
-/** Exponential Moving Average over an array of numbers */
+/** Exponential Moving Average over an array of numbers (NaN-safe: seeds from first valid window) */
 export function ema(data: number[], period: number): number[] {
   const len = data.length;
   const result = new Array<number>(len).fill(NaN);
   const k = 2 / (period + 1);
 
+  let seeded = false;
   let sum = 0;
+  let seedCount = 0;
+  let prev = NaN;
+
   for (let i = 0; i < len; i++) {
-    if (i < period - 1) {
+    if (isNaN(data[i])) continue;
+    if (!seeded) {
       sum += data[i];
-    } else if (i === period - 1) {
-      sum += data[i];
-      result[i] = sum / period;
+      seedCount++;
+      if (seedCount === period) {
+        prev = sum / period;
+        result[i] = prev;
+        seeded = true;
+      }
     } else {
-      result[i] = data[i] * k + result[i - 1] * (1 - k);
+      prev = data[i] * k + prev * (1 - k);
+      result[i] = prev;
     }
   }
 

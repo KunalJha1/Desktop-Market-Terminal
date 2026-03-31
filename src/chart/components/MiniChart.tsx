@@ -1,24 +1,26 @@
-import { useRef, useEffect, useMemo, useState, useCallback, type MouseEvent as ReactMouseEvent } from 'react';
+import { useRef, useEffect, useMemo, useState, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { interpretScript } from '../scripting/interpreter';
 import { ChartEngine } from '../core/ChartEngine';
 import { useChartData } from '../hooks/useChartData';
 import { indicatorRegistry } from '../indicators/registry';
 import { STRATEGY_KEYS } from '../indicators/strategyKeys';
-import type { Timeframe, ChartType, ActiveIndicator, YScaleMode } from '../types';
-import { PRICE_AXIS_CONTROL_HEIGHT, PRICE_AXIS_WIDTH } from '../constants';
+import type { Timeframe, ChartType, ActiveIndicator, YScaleMode, ChartLayout } from '../types';
+import {
+  createDefaultProbEngWidgetState,
+  type ProbEngWidgetState,
+} from '../../lib/chart-state';
+import { PRICE_AXIS_CONTROL_HEIGHT, PRICE_AXIS_WIDTH, VOLUME_PANE_RATIO } from '../constants';
 import { useTws } from '../../lib/tws';
 import { linkBus } from '../../lib/link-bus';
-import { X, ChevronDown, ChevronUp, Search, TrendingUp, BrainCircuit, RotateCcw, Minus, Maximize2, ChevronsUpDown, Save, FolderOpen } from 'lucide-react';
+import { X, ChevronDown, ChevronUp, Search, TrendingUp, BrainCircuit, RotateCcw, Minus, Maximize2, ChevronsUpDown, GripHorizontal, Lock, Unlock } from 'lucide-react';
 import ComponentLinkMenu from '../../components/ComponentLinkMenu';
 import IndicatorLegend from './IndicatorLegend';
-import {
-  dailyIqChartConfigToMiniChartConfig,
-  miniChartConfigToDailyIqChartConfig,
-} from '../../lib/chart-config';
-import {
-  exportChartConfigToFile,
-  importChartConfigFromFile,
-} from '../../lib/chart-config-storage';
+import SymbolSearchModal from '../../components/SymbolSearchModal';
+// DISABLED: import/export not yet functional
+// import {
+//   exportChartConfigToFile,
+//   importChartConfigFromFile,
+// } from '../../lib/chart-config-storage';
 
 interface MiniChartProps {
   config: Record<string, unknown>;
@@ -52,6 +54,227 @@ const CHART_TYPES: { label: string; short: string; value: ChartType }[] = [
 ];
 
 const SCRIPT_ID = 'mini_custom_script';
+
+// Probability Engine widget constants (mirrors ChartPage)
+const PROBENG_WIDGET_WIDTH = 188;
+const PROBENG_WIDGET_WIDTH_DETAILED = 230;
+/** Minimum inset from chart overlay edges (left/top/bottom). */
+const PROBENG_WIDGET_EDGE_PADDING = 8;
+/** Inset from overlay right edge only (keep 0 so the table can sit flush with the host). */
+const PROBENG_WIDGET_RIGHT_INSET = 0;
+const PROBENG_WIDGET_DRAG_THRESHOLD = 4;
+
+/** Match `clientWidth` / `clientHeight` — same box absolute `left`/`top` use; avoids maxX being too small vs pointer math when rect.width differs (fractional px, zoom). */
+function getMiniProbEngHostSize(host: HTMLElement): { width: number; height: number } {
+  return {
+    width: Math.max(0, host.clientWidth),
+    height: Math.max(0, host.clientHeight),
+  };
+}
+
+function getMiniProbEngWidgetHeight(widget: ProbEngWidgetState): number {
+  if (widget.detailed) return 128;
+  return 82;
+}
+
+/** Avoid new chartLayout state when geometry is unchanged — prevents prob-widget clamp fighting the drag on every indicator sync. */
+function chartLayoutsEquivalentForProbEng(a: ChartLayout | null, b: ChartLayout | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.width !== b.width || a.height !== b.height || a.priceAxisWidth !== b.priceAxisWidth
+    || a.mainTop !== b.mainTop || a.mainHeight !== b.mainHeight || a.timeAxisHeight !== b.timeAxisHeight) {
+    return false;
+  }
+  if (a.subPanes.length !== b.subPanes.length) return false;
+  for (let i = 0; i < a.subPanes.length; i++) {
+    const pa = a.subPanes[i];
+    const pb = b.subPanes[i];
+    if (pa.paneId !== pb.paneId || pa.top !== pb.top || pa.height !== pb.height) return false;
+  }
+  return true;
+}
+
+function clampMiniProbEngWidget(widget: ProbEngWidgetState, _layout: ChartLayout, hostWidth: number, hostHeight: number): ProbEngWidgetState {
+  const width = widget.detailed ? PROBENG_WIDGET_WIDTH_DETAILED : PROBENG_WIDGET_WIDTH;
+  const height = getMiniProbEngWidgetHeight(widget);
+  const minX = PROBENG_WIDGET_EDGE_PADDING;
+  // Full overlay width; right inset separate so we don’t leave a mystery gap when rect.width ≠ clientWidth.
+  const maxX = Math.max(minX, hostWidth - width - PROBENG_WIDGET_RIGHT_INSET);
+  const minY = PROBENG_WIDGET_EDGE_PADDING;
+  const maxY = Math.max(minY, hostHeight - height - PROBENG_WIDGET_EDGE_PADDING);
+  return { ...widget, x: Math.min(Math.max(widget.x, minX), maxX), y: Math.min(Math.max(widget.y, minY), maxY) };
+}
+
+function getDefaultMiniProbEngPosition(detailed: boolean, layout: ChartLayout, hostWidth: number): Pick<ProbEngWidgetState, 'x' | 'y'> {
+  const width = detailed ? PROBENG_WIDGET_WIDTH_DETAILED : PROBENG_WIDGET_WIDTH;
+  const maxX = Math.max(PROBENG_WIDGET_EDGE_PADDING, hostWidth - width - PROBENG_WIDGET_RIGHT_INSET);
+  return { x: Math.max(PROBENG_WIDGET_EDGE_PADDING, maxX), y: layout.mainTop + 12 };
+}
+
+function getProbEngSourceLabel(source: number): string {
+  switch (Math.round(source)) {
+    case 1: return 'EMA5-20 %';
+    case 2: return 'Close-EMA20 %';
+    case 3: return 'RSI 14';
+    case 4: return 'BB Position';
+    default: return 'Trend Angle';
+  }
+}
+
+function formatProbEngValue(value: number | undefined): string {
+  return value != null && Number.isFinite(value) ? `${value.toFixed(1)}%` : '--';
+}
+
+function mixProbChannel(start: number, end: number, t: number): number {
+  return Math.round(start + (end - start) * t);
+}
+
+function getProbEngStatColor(value: number | undefined): string {
+  if (!Number.isFinite(value)) return '#8B949E';
+  const v = Math.max(0, Math.min(100, value as number));
+  if (v >= 40 && v <= 60) {
+    const t = Math.abs(v - 50) / 10;
+    return `rgb(${mixProbChannel(245, 234, t)}, ${mixProbChannel(158, 179, t)}, ${mixProbChannel(11, 8, t)})`;
+  }
+  if (v > 60) {
+    const t = (v - 60) / 40;
+    return `rgb(${mixProbChannel(173, 0, t)}, ${mixProbChannel(213, 200, t)}, ${mixProbChannel(132, 83, t)})`;
+  }
+  const t = (40 - v) / 40;
+  return `rgb(${mixProbChannel(248, 255, t)}, ${mixProbChannel(163, 184, t)}, ${mixProbChannel(184, 113, t)})`;
+}
+
+function MiniProbEngWidget({
+  indicator,
+  widget,
+  dragging,
+  hovered,
+  onHeaderPointerDown,
+  onHeaderPointerMove,
+  onHeaderPointerUp,
+  onHeaderPointerCancel,
+  onToggleLock,
+  onMouseEnter,
+  onMouseLeave,
+}: {
+  indicator: ActiveIndicator;
+  widget: ProbEngWidgetState;
+  dragging: boolean;
+  hovered: boolean;
+  onHeaderPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  onHeaderPointerMove: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  onHeaderPointerUp: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  onHeaderPointerCancel: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  onToggleLock: () => void;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+}) {
+  const latestProb1 = [...(indicator.data[0] ?? [])].reverse().find((v) => Number.isFinite(v));
+  const latestProb3 = [...(indicator.data[1] ?? [])].reverse().find((v) => Number.isFinite(v));
+  const width = widget.detailed ? PROBENG_WIDGET_WIDTH_DETAILED : PROBENG_WIDGET_WIDTH;
+  const prob1Color = getProbEngStatColor(latestProb1);
+  const prob3Color = getProbEngStatColor(latestProb3);
+  const detailRows = [
+    { label: 'Source', value: getProbEngSourceLabel(indicator.params.source ?? 0) },
+    { label: 'Buckets', value: String(Math.round(indicator.params.buckets ?? 0)) },
+    { label: 'Alpha', value: (indicator.params.alpha ?? 0).toFixed(2) },
+    { label: 'Min Obs', value: String(Math.round(indicator.params.minObs ?? 0)) },
+    { label: 'Use Body', value: (indicator.params.useBody ?? 1) > 0 ? 'Yes' : 'No' },
+  ];
+
+  return (
+    <div
+      data-no-drag
+      title={widget.locked ? 'Placement locked' : 'Drag to reposition'}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onPointerDown={widget.locked ? undefined : onHeaderPointerDown}
+      onPointerMove={widget.locked ? undefined : onHeaderPointerMove}
+      onPointerUp={widget.locked ? undefined : onHeaderPointerUp}
+      onPointerCancel={widget.locked ? undefined : onHeaderPointerCancel}
+      style={{
+        position: 'absolute', left: widget.x, top: widget.y, width, zIndex: 18,
+        borderRadius: 8, overflow: 'hidden',
+        border: dragging ? '1px solid rgba(140,180,255,0.38)' : '1px solid rgba(255,255,255,0.1)',
+        backgroundColor: 'rgba(0,0,0,0.92)',
+        boxShadow: dragging ? '0 16px 36px rgba(0,0,0,0.52)' : '0 10px 24px rgba(0,0,0,0.42)',
+        pointerEvents: 'auto', opacity: dragging ? 0.96 : 1,
+        transform: dragging ? 'scale(1.01)' : 'scale(1)',
+        transition: dragging ? 'none' : 'box-shadow 120ms ease-out, border-color 120ms ease-out, opacity 120ms ease-out, transform 120ms ease-out',
+        cursor: widget.locked ? 'default' : dragging ? 'grabbing' : 'grab',
+        touchAction: widget.locked ? undefined : 'none',
+      }}
+    >
+      <div
+        style={{
+          minHeight: widget.locked ? 22 : 28,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: widget.locked ? '0 6px 0 8px' : '0 8px 0 6px',
+          borderBottom: '1px solid rgba(255,255,255,0.12)',
+          fontSize: 10, fontFamily: '"JetBrains Mono", monospace', color: '#E6EDF3',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+          background: widget.locked ? '#000000' : dragging
+            ? 'linear-gradient(180deg, rgba(39,56,82,0.98) 0%, rgba(19,28,43,0.98) 100%)'
+            : 'linear-gradient(180deg, rgba(28,33,40,0.98) 0%, rgba(15,23,32,0.98) 100%)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          {!widget.locked && (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: 16, height: 16, borderRadius: 4,
+              color: dragging ? '#C7D2FE' : '#8B949E',
+              background: dragging ? 'rgba(140,180,255,0.16)' : 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(255,255,255,0.08)', flexShrink: 0,
+            }}>
+              <GripHorizontal size={10} strokeWidth={1.7} />
+            </span>
+          )}
+          <span style={{ color: '#8B949E' }}>Probability Table</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          {(!widget.locked || hovered) && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); onToggleLock(); }}
+              style={{
+                border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4, background: 'transparent',
+                color: '#E6EDF3', width: 20, height: 20,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                lineHeight: 1, fontSize: 11, fontFamily: '"JetBrains Mono", monospace', padding: 0, cursor: 'pointer',
+              }}
+              title={widget.locked ? 'Unlock position' : 'Lock position'}
+            >
+              {widget.locked ? <Lock size={10} /> : <Unlock size={10} />}
+            </button>
+          )}
+        </div>
+      </div>
+      <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 9, color: '#8B949E' }}>1-bar Up</span>
+          <span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 13, fontWeight: 700, color: prob1Color }}>{formatProbEngValue(latestProb1)}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 9, color: '#8B949E' }}>3-bar Up</span>
+          <span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 13, fontWeight: 700, color: prob3Color }}>{formatProbEngValue(latestProb3)}</span>
+        </div>
+        {widget.detailed && (
+          <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {detailRows.map((row) => (
+              <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 9, color: '#8B949E' }}>{row.label}</span>
+                <span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 9, color: '#E6EDF3' }}>{row.value}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const INDICATOR_CATEGORIES = [
   { key: 'overlay' as const, label: 'Overlays' },
@@ -130,6 +353,25 @@ function parsePersistedIndicators(value: unknown): PersistedMiniIndicator[] {
   });
 }
 
+function parseProbEngWidgetState(value: unknown): ProbEngWidgetState {
+  if (!isRecord(value)) return createDefaultProbEngWidgetState();
+  return {
+    x: typeof value.x === 'number' ? value.x : 96,
+    y: typeof value.y === 'number' ? value.y : 64,
+    visible: typeof value.visible === 'boolean' ? value.visible : true,
+    detailed: typeof value.detailed === 'boolean' ? value.detailed : false,
+    locked: typeof value.locked === 'boolean' ? value.locked : false,
+  };
+}
+
+function probEngWidgetStateEqual(a: ProbEngWidgetState, b: ProbEngWidgetState): boolean {
+  return a.x === b.x
+    && a.y === b.y
+    && a.visible === b.visible
+    && a.detailed === b.detailed
+    && a.locked === b.locked;
+}
+
 function serializeIndicators(indicators: ActiveIndicator[]): PersistedMiniIndicator[] {
   return indicators.map((indicator) => ({
     name: indicator.name,
@@ -162,6 +404,30 @@ function recordsEqual(a: Record<string, unknown> | undefined, b: Record<string, 
   return JSON.stringify(aEntries) === JSON.stringify(bEntries);
 }
 
+/** Persisted configs often omit lineWidths/lineStyles/colors; treat empty expected as compatible with engine defaults. */
+function optionalDecoratorsMatch(
+  expected: Record<string, unknown> | undefined,
+  actual: Record<string, unknown> | undefined,
+): boolean {
+  const exp = expected ?? {};
+  if (Object.keys(exp).length === 0) return true;
+  return recordsEqual(exp, actual);
+}
+
+/** When persisted colors are partial, only compare keys that were stored. */
+function colorMapsCompatible(
+  expected: Record<string, unknown> | undefined,
+  actual: Record<string, unknown> | undefined,
+): boolean {
+  const exp = expected ?? {};
+  const act = actual ?? {};
+  if (Object.keys(exp).length === 0) return true;
+  for (const [k, v] of Object.entries(exp)) {
+    if (act[k] !== v) return false;
+  }
+  return true;
+}
+
 function buildIndicatorFingerprint(indicators: PersistedMiniIndicator[]): string {
   return indicators
     .map((indicator) => (
@@ -171,6 +437,13 @@ function buildIndicatorFingerprint(indicators: PersistedMiniIndicator[]): string
     ))
     .join('|');
 }
+
+const INDICATOR_SEARCH_ALIASES: Record<string, string[]> = {
+  'Probability Engine': ['probability table', 'prob table', 'probability'],
+  'Liquidity Sweep (ICT/SMC)': ['ict liquidity sweep', 'smc liquidity sweep', 'ict sweep'],
+  FVG: ['fair value gap'],
+  'FVG Momentum': ['fair value gap momentum', 'fvg'],
+};
 
 export default function MiniChart({
   config,
@@ -185,6 +458,8 @@ export default function MiniChart({
   const engineRef = useRef<ChartEngine | null>(null);
   const hasHydratedIndicatorsRef = useRef(false);
   const lastRestoredFingerprintRef = useRef<string>('');
+  /** Fingerprint of indicators last pushed via onConfigChange; avoids wiping the engine when props/config lags one frame. */
+  const lastWrittenIndicatorsFingerprintRef = useRef<string>('');
   const configRef = useRef(config);
   useEffect(() => { configRef.current = config; }, [config]);
 
@@ -213,13 +488,29 @@ export default function MiniChart({
   /** Bumps when ChartEngine is (re)created so indicator reconcile runs against the new instance. */
   const [engineVersion, setEngineVersion] = useState(0);
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [paneLayout, setPaneLayout] = useState<Array<{ paneId: string; top: number; height: number; yScaleMode: YScaleMode; showScaleControls: boolean; collapsed: boolean; maximized: boolean }>>([]);
   const [priceSectionHeight, setPriceSectionHeight] = useState(0);
   const [scriptSource, setScriptSource] = useState('');
   const [scriptErrors, setScriptErrors] = useState<string[]>([]);
   const [draggingIndicatorId, setDraggingIndicatorId] = useState<string | null>(null);
+  const [dragState, setDragState] = useState<{ indicatorId: string; sourcePaneId: string } | null>(null);
+  const [draggingMouse, setDraggingMouse] = useState<{ x: number; y: number } | null>(null);
+  const [dragHoverPaneId, setDragHoverPaneId] = useState<string | null>(null);
   const [yAxisHovered, setYAxisHovered] = useState(false);
   const [chartNotice, setChartNotice] = useState<string | null>(null);
+  const [chartLayout, setChartLayout] = useState<ChartLayout | null>(null);
+  const [probEngWidget, setProbEngWidget] = useState<ProbEngWidgetState>(() => parseProbEngWidgetState(config.probEngWidget));
+  const [probEngDragging, setProbEngDragging] = useState(false);
+  const [probEngHovered, setProbEngHovered] = useState(false);
+  const probEngDragRef = useRef<{
+    pointerId: number;
+    offsetX: number;
+    offsetY: number;
+    startClientX: number;
+    startClientY: number;
+    moved: boolean;
+  } | null>(null);
   const dragStateRef = useRef<{
     paneId: string;
     startY: number;
@@ -249,6 +540,8 @@ export default function MiniChart({
     sidecarPort,
   });
   const stopperPx = (config.stopperPx as number) ?? 40;
+  const legendCollapsed =
+    typeof config.legendCollapsed === 'boolean' ? config.legendCollapsed : false;
   const lastDatasetKeyRef = useRef<string | null>(null);
 
   const handleCanvasPointerMove = useCallback((event: ReactMouseEvent<HTMLCanvasElement>) => {
@@ -339,6 +632,9 @@ export default function MiniChart({
     const layout = engine.getLayout();
     setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode, showScaleControls: p.showScaleControls, collapsed: p.collapsed, maximized: p.maximized })));
     setPriceSectionHeight(layout.mainHeight);
+    setChartLayout((prev) => (
+      chartLayoutsEquivalentForProbEng(prev, layout) ? (prev ?? layout) : layout
+    ));
   }, []);
 
   useEffect(() => {
@@ -512,7 +808,14 @@ export default function MiniChart({
     if (!indicatorSearch.trim()) return allIndicators;
     const q = indicatorSearch.toLowerCase();
     return allIndicators.filter(
-      (ind) => ind.name.toLowerCase().includes(q) || ind.shortName.toLowerCase().includes(q),
+      (ind) => {
+        const haystack = [
+          ind.name.toLowerCase(),
+          ind.shortName.toLowerCase(),
+          ...(INDICATOR_SEARCH_ALIASES[ind.key] ?? []),
+        ];
+        return haystack.some((value) => value.includes(q));
+      },
     );
   }, [indicatorSearch, allIndicators]);
   const standardIndicators = useMemo(
@@ -537,6 +840,10 @@ export default function MiniChart({
   const emptyScripts = useMemo(() => new Map(), []);
   const indicatorColorDefaults =
     (config.indicatorColorDefaults as Record<string, Record<string, string>> | undefined) ?? {};
+  const persistedProbEngWidget = useMemo(
+    () => parseProbEngWidgetState(config.probEngWidget),
+    [config.probEngWidget],
+  );
   const persistedIndicators = useMemo(() => {
     if (!Object.prototype.hasOwnProperty.call(config, 'indicators')) {
       return getDefaultMiniIndicators();
@@ -557,6 +864,22 @@ export default function MiniChart({
     () => buildIndicatorFingerprint(persistedIndicators),
     [persistedIndicators],
   );
+  const activeProbEngIndicator = activeIndicators.find(
+    (indicator) => indicator.name === 'Probability Engine' && indicator.visible,
+  );
+
+  useEffect(() => {
+    if (probEngDragRef.current) return;
+    setProbEngWidget((prev) => (
+      probEngWidgetStateEqual(prev, persistedProbEngWidget) ? prev : persistedProbEngWidget
+    ));
+  }, [persistedProbEngWidget]);
+
+  useEffect(() => {
+    const current = parseProbEngWidgetState(configRef.current.probEngWidget);
+    if (probEngWidgetStateEqual(current, probEngWidget)) return;
+    onConfigChange({ ...configRef.current, probEngWidget: probEngWidget });
+  }, [probEngWidget, onConfigChange]);
 
   useEffect(() => {
     setHighlightedIndicatorIndex(standardIndicators.length > 0 ? 0 : -1);
@@ -594,9 +917,11 @@ export default function MiniChart({
   const syncIndicators = useCallback((persist = true) => {
     const nextIndicators = syncIndicatorsFromEngine();
     if (persist) {
+      const persisted = serializeIndicators(nextIndicators);
+      lastWrittenIndicatorsFingerprintRef.current = buildIndicatorFingerprint(persisted);
       onConfigChange({
         ...configRef.current,
-        indicators: serializeIndicators(nextIndicators),
+        indicators: persisted,
       });
     }
   }, [onConfigChange, syncIndicatorsFromEngine]);
@@ -651,10 +976,10 @@ export default function MiniChart({
         && expectedIndicator.paneId === engineIndicator.paneId
         && expectedIndicator.visible === engineIndicator.visible
         && recordsEqual(expectedIndicator.params, engineIndicator.params)
-        && recordsEqual(expectedIndicator.textParams, engineIndicator.textParams)
-        && recordsEqual(expectedIndicator.colors, engineIndicator.colors)
-        && recordsEqual(expectedIndicator.lineWidths, engineIndicator.lineWidths)
-        && recordsEqual(expectedIndicator.lineStyles, engineIndicator.lineStyles);
+        && optionalDecoratorsMatch(expectedIndicator.textParams, engineIndicator.textParams)
+        && colorMapsCompatible(expectedIndicator.colors, engineIndicator.colors)
+        && optionalDecoratorsMatch(expectedIndicator.lineWidths, engineIndicator.lineWidths)
+        && optionalDecoratorsMatch(expectedIndicator.lineStyles, engineIndicator.lineStyles);
     });
   }, []);
 
@@ -703,7 +1028,7 @@ export default function MiniChart({
 
   useEffect(() => {
     const engine = engineRef.current;
-    if (!engine || bars.length === 0) return;
+    if (!engine) return;
 
     const engineIndicators = engine.getActiveIndicators();
 
@@ -711,7 +1036,16 @@ export default function MiniChart({
     const needsRestore = engineIndicators.length === 0 && persistedIndicators.length > 0;
     if (fingerprintChanged || needsRestore) {
       if (!persistedIndicatorsMatch(persistedIndicators, engineIndicators)) {
-        applyPersistedIndicators(engine, persistedIndicators);
+        const engineFp = buildIndicatorFingerprint(serializeIndicators(engineIndicators));
+        const configFp = persistedIndicatorsFingerprint;
+        const writtenFp = lastWrittenIndicatorsFingerprintRef.current;
+        const configLagsLocal =
+          writtenFp.length > 0
+          && engineFp === writtenFp
+          && configFp !== writtenFp;
+        if (!configLagsLocal) {
+          applyPersistedIndicators(engine, persistedIndicators);
+        }
       }
       lastRestoredFingerprintRef.current = persistedIndicatorsFingerprint;
       syncIndicatorsFromEngine();
@@ -722,14 +1056,16 @@ export default function MiniChart({
       setActiveIndicators([]);
     }
 
-    if (persistedScript) {
-      const result = interpretScript(persistedScript.source, bars);
-      engine.setScriptResult(persistedScript.id, result);
-      setScriptSource(persistedScript.source);
-    } else if (scriptSource) {
-      engine.clearAllScripts();
-      setScriptSource('');
-      setScriptErrors([]);
+    if (bars.length > 0) {
+      if (persistedScript) {
+        const result = interpretScript(persistedScript.source, bars);
+        engine.setScriptResult(persistedScript.id, result);
+        setScriptSource(persistedScript.source);
+      } else if (scriptSource) {
+        engine.clearAllScripts();
+        setScriptSource('');
+        setScriptErrors([]);
+      }
     }
   }, [
     bars,
@@ -744,13 +1080,19 @@ export default function MiniChart({
 
   useEffect(() => {
     const engine = engineRef.current;
-    if (!engine || bars.length === 0 || !hasHydratedIndicatorsRef.current) return;
+    if (!engine || !hasHydratedIndicatorsRef.current) return;
 
     const desiredIndicators = serializeIndicators(activeIndicators);
     const engineIndicators = engine.getActiveIndicators();
 
     if (desiredIndicators.length === 0) {
       if (engineIndicators.length > 0) {
+        // `setActiveIndicators` from the hydrate effect above does not flush until after this effect
+        // runs in the same commit. Without this guard we clear a freshly restored engine on every mount
+        // (navigation, HMR), so indicators never appear to persist.
+        if (persistedIndicators.length > 0) {
+          return;
+        }
         applyPersistedIndicators(engine, desiredIndicators);
         syncIndicatorsFromEngine();
       }
@@ -762,9 +1104,9 @@ export default function MiniChart({
     applyPersistedIndicators(engine, desiredIndicators);
     syncIndicatorsFromEngine();
   }, [
-    bars,
     engineVersion,
     activeIndicators,
+    persistedIndicators,
     persistedIndicatorsMatch,
     applyPersistedIndicators,
     syncIndicatorsFromEngine,
@@ -774,11 +1116,45 @@ export default function MiniChart({
     syncDailyIQScorePane();
   }, [activeIndicators, syncDailyIQScorePane]);
 
+  useEffect(() => {
+    if (!activeProbEngIndicator) return;
+    const detailed = (activeProbEngIndicator.params.detailedStats ?? 0) > 0;
+    setProbEngWidget((prev) => (
+      prev.detailed === detailed && prev.visible
+        ? prev
+        : { ...prev, detailed, visible: true }
+    ));
+  }, [activeProbEngIndicator]);
+
+  useEffect(() => {
+    if (!chartLayout || probEngDragRef.current) return;
+    const hostWidth = containerRef.current?.clientWidth ?? chartLayout.width;
+    const hostHeight = containerRef.current?.clientHeight ?? chartLayout.height;
+    setProbEngWidget((prev) => {
+      const next = clampMiniProbEngWidget(prev, chartLayout, hostWidth, hostHeight);
+      return next.x === prev.x && next.y === prev.y ? prev : next;
+    });
+  }, [chartLayout]);
+
+  useEffect(() => {
+    if (!chartLayout || !activeProbEngIndicator || probEngDragRef.current) return;
+    const hostWidth = containerRef.current?.clientWidth ?? chartLayout.width;
+    setProbEngWidget((prev) => {
+      const defaultLike = (prev.x === 16 && prev.y === 44) || (prev.x === 96 && prev.y === 64);
+      if (!defaultLike) return prev;
+      const pos = getDefaultMiniProbEngPosition(prev.detailed, chartLayout, hostWidth);
+      return { ...prev, ...pos, visible: true };
+    });
+  }, [chartLayout, activeProbEngIndicator]);
+
   const addIndicator = (name: string) => {
     const engine = engineRef.current;
     if (!engine) return;
     const id = engine.addIndicator(name);
     if (id) {
+      if (name === 'Probability Engine') {
+        engine.setIndicatorPane(id, 'main');
+      }
       const defaults =
         (config.indicatorColorDefaults as Record<string, Record<string, string>> | undefined)?.[name];
       if (defaults) {
@@ -948,6 +1324,195 @@ export default function MiniChart({
     syncPaneLayout();
   };
 
+  const beginIndicatorDrag = useCallback((indicatorId: string, sourcePaneId: string, clientX: number, clientY: number) => {
+    setDragState({ indicatorId, sourcePaneId });
+    const host = containerRef.current;
+    if (!host) return;
+    const rect = host.getBoundingClientRect();
+    setDraggingMouse({
+      x: clientX - rect.left,
+      y: clientY - rect.top,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!dragState || !chartLayout) return;
+
+    const updateDragState = (clientX: number, clientY: number) => {
+      const host = containerRef.current;
+      if (!host) return;
+      const rect = host.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      setDraggingMouse({ x, y });
+
+      const rightBound = rect.width - chartLayout.priceAxisWidth;
+      if (x < 0 || x > rightBound) {
+        setDragHoverPaneId(null);
+        return;
+      }
+
+      const newPaneHeight = 20;
+      const newPaneTop = rect.height - newPaneHeight - (source === 'tws' ? 24 : 4);
+      if (y >= newPaneTop && y <= newPaneTop + newPaneHeight) {
+        setDragHoverPaneId('__new__');
+        return;
+      }
+
+      const hoveredPane = chartLayout.subPanes.find(
+        (pane) => y >= pane.top && y <= pane.top + pane.height,
+      );
+      if (hoveredPane) {
+        if (hoveredPane.collapsed) {
+          const engine = engineRef.current;
+          if (engine) {
+            engine.expandPane(hoveredPane.paneId);
+            syncPaneLayout();
+          }
+        }
+        setDragHoverPaneId(hoveredPane.paneId === dragState.sourcePaneId ? null : hoveredPane.paneId);
+        return;
+      }
+
+      if (y >= chartLayout.mainTop && y <= chartLayout.mainTop + chartLayout.mainHeight) {
+        setDragHoverPaneId(dragState.sourcePaneId === 'main' ? null : 'main');
+        return;
+      }
+
+      setDragHoverPaneId(null);
+    };
+
+    const handleMouseMove = (event: MouseEvent) => {
+      updateDragState(event.clientX, event.clientY);
+    };
+
+    const handleMouseUp = () => {
+      if (dragHoverPaneId) {
+        if (dragHoverPaneId === '__new__') {
+          moveIndicatorToPane(dragState.indicatorId, makeDetachedPaneId());
+        } else {
+          moveIndicatorToPane(dragState.indicatorId, dragHoverPaneId);
+        }
+      }
+      setDragState(null);
+      setDraggingMouse(null);
+      setDragHoverPaneId(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp, { once: true });
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [chartLayout, dragHoverPaneId, dragState, makeDetachedPaneId, moveIndicatorToPane, source, syncPaneLayout]);
+
+  const clearProbEngDrag = useCallback((target?: HTMLDivElement | null) => {
+    const drag = probEngDragRef.current;
+    if (drag && target?.hasPointerCapture?.(drag.pointerId)) {
+      target.releasePointerCapture(drag.pointerId);
+    }
+    probEngDragRef.current = null;
+    setProbEngDragging(false);
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  }, []);
+
+  const handleProbEngPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (probEngWidget.locked || event.button !== 0) return;
+    const host = containerRef.current;
+    const widgetEl = event.currentTarget;
+    if (!host || !widgetEl || !chartLayout) return;
+    const hostRect = host.getBoundingClientRect();
+    const widgetRect = widgetEl.getBoundingClientRect();
+    probEngDragRef.current = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - widgetRect.left,
+      offsetY: event.clientY - widgetRect.top,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'grab';
+    const { width: hostW, height: hostH } = getMiniProbEngHostSize(host);
+    setProbEngWidget((prev) => clampMiniProbEngWidget({
+      ...prev,
+      x: widgetRect.left - hostRect.left,
+      y: widgetRect.top - hostRect.top,
+    }, chartLayout, hostW, hostH));
+  }, [probEngWidget, chartLayout]);
+
+  const handleProbEngPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = probEngDragRef.current;
+    const host = containerRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !host || !chartLayout) return;
+    const moveDistance = Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY);
+    if (!drag.moved && moveDistance < PROBENG_WIDGET_DRAG_THRESHOLD) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      setProbEngDragging(true);
+      document.body.style.cursor = 'grabbing';
+    }
+    const rect = host.getBoundingClientRect();
+    const { width: hostW, height: hostH } = getMiniProbEngHostSize(host);
+    setProbEngWidget((prev) => {
+      const unclamped = {
+        ...prev,
+        x: event.clientX - rect.left - drag.offsetX,
+        y: event.clientY - rect.top - drag.offsetY,
+      };
+      return clampMiniProbEngWidget(unclamped, chartLayout, hostW, hostH);
+    });
+  }, [chartLayout]);
+
+  const handleProbEngPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = probEngDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    clearProbEngDrag(event.currentTarget);
+  }, [clearProbEngDrag]);
+
+  const handleProbEngPointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = probEngDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    clearProbEngDrag(event.currentTarget);
+  }, [clearProbEngDrag]);
+
+  useEffect(() => () => {
+    probEngDragRef.current = null;
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  }, []);
+
+  const draggableVolumePanes = chartLayout
+    ? chartLayout.subPanes.flatMap((pane) => {
+        const volumeIndicator = activeIndicators.find(
+          (indicator) => pane.indicatorIds.includes(indicator.id) && indicator.name === 'Volume',
+        );
+        return volumeIndicator ? [{ pane, indicatorId: volumeIndicator.id }] : [];
+      })
+    : [];
+  const mainVolumeIndicator = activeIndicators.find(
+    (indicator) => indicator.name === 'Volume' && indicator.visible && indicator.paneId === 'main',
+  );
+
+  const draggableTechScorePanes = chartLayout
+    ? chartLayout.subPanes.flatMap((pane) => {
+        const tsIndicator = activeIndicators.find(
+          (indicator) => pane.indicatorIds.includes(indicator.id) && indicator.name === 'Technical Score',
+        );
+        return tsIndicator ? [{ pane, indicatorId: tsIndicator.id }] : [];
+      })
+    : [];
+  const mainTechScoreIndicator = activeIndicators.find(
+    (indicator) => indicator.name === 'Technical Score' && indicator.visible && indicator.paneId === 'main',
+  );
+
+  const draggedIndicatorName = dragState
+    ? (activeIndicators.find((ind) => ind.id === dragState.indicatorId)?.name ?? '')
+    : '';
+
   const runScript = useCallback((source: string) => {
     const engine = engineRef.current;
     if (!engine || bars.length === 0) return;
@@ -970,35 +1535,29 @@ export default function MiniChart({
     return () => window.clearTimeout(timer);
   }, [chartNotice]);
 
-  const handleExportChart = useCallback(async () => {
-    const ok = await exportChartConfigToFile(miniChartConfigToDailyIqChartConfig(configRef.current, linkChannel));
-    if (!ok) {
-      setChartNotice('Chart export failed.');
-    } else {
-      setChartNotice('Chart exported.');
-    }
-  }, [linkChannel]);
+  // DISABLED: import/export not yet functional
+  // const handleExportChart = useCallback(async () => {
+  //   const ok = await exportChartConfigToFile(miniChartConfigToDailyIqChartConfig(configRef.current, linkChannel));
+  //   if (!ok) { setChartNotice('Chart export failed.'); } else { setChartNotice('Chart exported.'); }
+  // }, [linkChannel]);
 
-  const handleImportChart = useCallback(async () => {
-    const result = await importChartConfigFromFile();
-    if (result.status === 'canceled') {
-      return;
-    }
-    if (result.status !== 'success') {
-      setChartNotice(result.status === 'invalid' ? 'Invalid .diqc file.' : 'Chart import failed.');
-      return;
-    }
-
-    const importedConfig = dailyIqChartConfigToMiniChartConfig(result.file.chart);
-    lastRestoredFingerprintRef.current = '';
-    hasHydratedIndicatorsRef.current = false;
-    setActiveIndicators([]);
-    setScriptSource('');
-    setScriptErrors([]);
-    onSetLinkChannel(result.file.chart.linkChannel);
-    onConfigChange(importedConfig);
-    setChartNotice('Chart imported.');
-  }, [onConfigChange, onSetLinkChannel]);
+  // const handleImportChart = useCallback(async () => {
+  //   const result = await importChartConfigFromFile();
+  //   if (result.status === 'canceled') return;
+  //   if (result.status !== 'success') {
+  //     setChartNotice(result.status === 'invalid' ? 'Invalid .diqc file.' : 'Chart import failed.');
+  //     return;
+  //   }
+  //   const importedConfig = dailyIqChartConfigToMiniChartConfig(result.file.chart);
+  //   lastRestoredFingerprintRef.current = '';
+  //   hasHydratedIndicatorsRef.current = false;
+  //   setActiveIndicators([]);
+  //   setScriptSource('');
+  //   setScriptErrors([]);
+  //   onSetLinkChannel(result.file.chart.linkChannel);
+  //   onConfigChange(importedConfig);
+  //   setChartNotice('Chart imported.');
+  // }, [onConfigChange, onSetLinkChannel]);
 
   return (
     <div
@@ -1023,12 +1582,29 @@ export default function MiniChart({
         </div>
       )}
 
-      {/* Toolbar: symbol on the left, controls on the right */}
+      {/* Toolbar: symbol on the left, controls on the right — data-no-drag so dashboard GridLayout does not start a widget drag from gaps / menu surfaces (was breaking indicator clicks e.g. MACD). */}
       <div
         className="flex h-9 shrink-0 select-none items-center justify-between border-b border-white/[0.10] bg-base px-2"
+        data-no-drag
       >
-        {/* Left: symbol + price */}
+        {/* Left: search + symbol + price */}
         <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+          <button
+            onClick={() => setSearchOpen((v) => !v)}
+            className="flex items-center justify-center rounded-sm text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
+            style={{
+              width: 16,
+              height: 16,
+              border: 'none',
+              borderRadius: 2,
+              cursor: 'pointer',
+              backgroundColor: searchOpen ? 'rgba(255,255,255,0.06)' : 'transparent',
+              color: '#FFFFFF',
+              flexShrink: 0,
+            }}
+          >
+            <Search className="h-[13px] w-[13px]" strokeWidth={2} />
+          </button>
           <span
             style={{
               fontFamily: '"JetBrains Mono", monospace',
@@ -1218,7 +1794,7 @@ export default function MiniChart({
                       border: 'none',
                       outline: 'none',
                       fontFamily: '"JetBrains Mono", monospace',
-                      fontSize: 10,
+                      fontSize: 12,
                       color: '#E6EDF3',
                     }}
                   />
@@ -1235,7 +1811,7 @@ export default function MiniChart({
                           style={{
                             padding: '4px 8px 2px',
                             fontFamily: '"JetBrains Mono", monospace',
-                            fontSize: 8,
+                            fontSize: 10,
                             color: '#484F58',
                             textTransform: 'uppercase',
                             letterSpacing: '0.05em',
@@ -1244,7 +1820,6 @@ export default function MiniChart({
                           {cat.label}
                         </div>
                         {items.map((ind) => {
-                          const isActive = activeIndicators.some((ai) => ai.name === ind.key);
                           const optionIndex = standardIndicators.findIndex((item) => item.key === ind.key);
                           const isHighlighted = optionIndex === highlightedIndicatorIndex;
                           return (
@@ -1256,8 +1831,8 @@ export default function MiniChart({
                               className="flex items-center justify-between w-full px-2 py-1 hover:bg-[#1C2128] text-left"
                               style={{
                                 fontFamily: '"JetBrains Mono", monospace',
-                                fontSize: 10,
-                                color: isActive ? '#E6EDF3' : '#8B949E',
+                                fontSize: 12,
+                                color: '#E6EDF3',
                                 border: 'none',
                                 background: isHighlighted ? '#1C2128' : 'none',
                                 cursor: 'pointer',
@@ -1265,7 +1840,7 @@ export default function MiniChart({
                               }}
                             >
                               <span>{ind.name}</span>
-                              <span style={{ fontSize: 8, color: '#484F58' }}>{ind.shortName}</span>
+                              <span style={{ fontSize: 10, color: '#8B949E' }}>{ind.shortName}</span>
                             </button>
                           );
                         })}
@@ -1276,7 +1851,7 @@ export default function MiniChart({
                     <div style={{
                       padding: '12px 8px',
                       fontFamily: '"JetBrains Mono", monospace',
-                      fontSize: 10,
+                      fontSize: 12,
                       color: '#484F58',
                       textAlign: 'center',
                     }}>
@@ -1291,8 +1866,8 @@ export default function MiniChart({
                     className="flex items-center justify-between w-full px-1 py-1 hover:bg-[#1C2128] rounded"
                     style={{
                       fontFamily: '"JetBrains Mono", monospace',
-                      fontSize: 10,
-                      color: persistedScript ? '#8B5CF6' : '#8B949E',
+                      fontSize: 12,
+                      color: persistedScript ? '#8B5CF6' : '#E6EDF3',
                       border: 'none',
                       background: 'none',
                       cursor: 'pointer',
@@ -1301,7 +1876,7 @@ export default function MiniChart({
                     }}
                   >
                     <span>Custom Script</span>
-                    {persistedScript && <span style={{ fontSize: 8, color: '#8B5CF6' }}>●</span>}
+                    {persistedScript && <span style={{ fontSize: 10, color: '#8B5CF6' }}>●</span>}
                   </button>
                 </div>
               </div>
@@ -1370,7 +1945,7 @@ export default function MiniChart({
                       border: 'none',
                       outline: 'none',
                       fontFamily: '"JetBrains Mono", monospace',
-                      fontSize: 10,
+                      fontSize: 12,
                       color: '#E6EDF3',
                     }}
                   />
@@ -1378,7 +1953,6 @@ export default function MiniChart({
 
                 <div className="scrollbar-panel" style={{ maxHeight: 220, overflowY: 'auto' }}>
                   {strategyIndicators.map((ind) => {
-                    const isActive = activeIndicators.some((ai) => ai.name === ind.key);
                     const optionIndex = strategyIndicators.findIndex((item) => item.key === ind.key);
                     const isHighlighted = optionIndex === highlightedStrategyIndex;
                     return (
@@ -1390,8 +1964,8 @@ export default function MiniChart({
                         className="flex items-center justify-between w-full px-2 py-1 hover:bg-[#1C2128] text-left"
                         style={{
                           fontFamily: '"JetBrains Mono", monospace',
-                          fontSize: 10,
-                          color: isActive ? '#E6EDF3' : '#8B949E',
+                          fontSize: 12,
+                          color: '#E6EDF3',
                           border: 'none',
                           background: isHighlighted ? '#1C2128' : 'none',
                           cursor: 'pointer',
@@ -1399,7 +1973,7 @@ export default function MiniChart({
                         }}
                       >
                         <span>{ind.name}</span>
-                        <span style={{ fontSize: 8, color: '#484F58' }}>{ind.shortName}</span>
+                        <span style={{ fontSize: 10, color: '#8B949E' }}>{ind.shortName}</span>
                       </button>
                     );
                   })}
@@ -1407,7 +1981,7 @@ export default function MiniChart({
                     <div style={{
                       padding: '12px 8px',
                       fontFamily: '"JetBrains Mono", monospace',
-                      fontSize: 10,
+                      fontSize: 12,
                       color: '#484F58',
                       textAlign: 'center',
                     }}>
@@ -1473,18 +2047,11 @@ export default function MiniChart({
 
           </>)}
 
-          {/* Compact mode toggle */}
+          {/* DISABLED: import/export not yet functional
           <button
             onClick={() => { void handleImportChart(); }}
             className="flex items-center justify-center rounded-sm text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
-            style={{
-              width: 16,
-              height: 16,
-              borderRadius: 2,
-              border: 'none',
-              background: 'transparent',
-              cursor: 'pointer',
-            }}
+            style={{ width: 16, height: 16, borderRadius: 2, border: 'none', background: 'transparent', cursor: 'pointer' }}
             title="Import .diqc"
           >
             <FolderOpen size={13} strokeWidth={2} />
@@ -1492,18 +2059,12 @@ export default function MiniChart({
           <button
             onClick={() => { void handleExportChart(); }}
             className="flex items-center justify-center rounded-sm text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-white"
-            style={{
-              width: 16,
-              height: 16,
-              borderRadius: 2,
-              border: 'none',
-              background: 'transparent',
-              cursor: 'pointer',
-            }}
+            style={{ width: 16, height: 16, borderRadius: 2, border: 'none', background: 'transparent', cursor: 'pointer' }}
             title="Export .diqc"
           >
             <Save size={13} strokeWidth={2} />
           </button>
+          */}
 
           <button
             onClick={() => setToolbarCollapsed(v => !v)}
@@ -1658,6 +2219,191 @@ export default function MiniChart({
           onMouseLeave={handleCanvasPointerLeave}
           style={{ cursor: yAxisHovered ? 'ns-resize' : 'crosshair' }}
         />
+
+        {chartLayout && mainVolumeIndicator && (
+          <div
+            data-no-drag
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              beginIndicatorDrag(mainVolumeIndicator.id, 'main', e.clientX, e.clientY);
+            }}
+            title="Drag volume out to its own pane"
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: chartLayout.priceAxisWidth,
+              top: chartLayout.mainTop + chartLayout.mainHeight * (1 - VOLUME_PANE_RATIO),
+              height: Math.max(36, chartLayout.mainHeight * VOLUME_PANE_RATIO),
+              cursor: 'grab',
+              pointerEvents: dragState ? 'none' : 'auto',
+              background: 'transparent',
+              zIndex: 4,
+            }}
+          />
+        )}
+        {draggableVolumePanes.map(({ pane, indicatorId }) => (
+          <div
+            key={`${pane.paneId}-volume-drag`}
+            data-no-drag
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              beginIndicatorDrag(indicatorId, pane.paneId, e.clientX, e.clientY);
+            }}
+            title="Drag volume onto chart"
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: chartLayout?.priceAxisWidth ?? PRICE_AXIS_WIDTH,
+              top: pane.top,
+              height: pane.height,
+              cursor: 'grab',
+              pointerEvents: dragState ? 'none' : 'auto',
+              background: 'transparent',
+              zIndex: 4,
+            }}
+          />
+        ))}
+
+        {chartLayout && mainTechScoreIndicator && (
+          <div
+            data-no-drag
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              beginIndicatorDrag(mainTechScoreIndicator.id, 'main', e.clientX, e.clientY);
+            }}
+            title="Drag Tech Score out to its own pane"
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: chartLayout.priceAxisWidth,
+              top: chartLayout.mainTop + chartLayout.mainHeight * 0.67,
+              height: Math.max(48, chartLayout.mainHeight * 0.3),
+              cursor: 'grab',
+              pointerEvents: dragState ? 'none' : 'auto',
+              background: 'transparent',
+              zIndex: 5,
+            }}
+          />
+        )}
+        {draggableTechScorePanes.map(({ pane, indicatorId }) => (
+          <div
+            key={`${pane.paneId}-techscore-drag`}
+            data-no-drag
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              beginIndicatorDrag(indicatorId, pane.paneId, e.clientX, e.clientY);
+            }}
+            title="Drag Tech Score onto chart"
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: chartLayout?.priceAxisWidth ?? PRICE_AXIS_WIDTH,
+              top: pane.top,
+              height: pane.height,
+              cursor: 'grab',
+              pointerEvents: dragState ? 'none' : 'auto',
+              background: 'transparent',
+              zIndex: 4,
+            }}
+          />
+        ))}
+
+        {dragState && chartLayout && (
+          <>
+            <div
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: chartLayout.priceAxisWidth,
+                top: chartLayout.mainTop,
+                height: chartLayout.mainHeight,
+                border: dragHoverPaneId === 'main' ? '1px dashed rgba(26,86,219,0.8)' : '1px dashed rgba(26,86,219,0.35)',
+                backgroundColor: dragHoverPaneId === 'main' ? 'rgba(26,86,219,0.14)' : 'rgba(26,86,219,0.06)',
+                color: '#8B949E',
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 10,
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'flex-end',
+                padding: 6,
+                zIndex: 30,
+                pointerEvents: 'none',
+              }}
+            >
+              Overlay on Price
+            </div>
+            {chartLayout.subPanes.map((pane) => (
+              <div
+                key={`${pane.paneId}-mouse-drop`}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  right: chartLayout.priceAxisWidth,
+                  top: pane.top,
+                  height: pane.height,
+                  border: dragHoverPaneId === pane.paneId ? '1px dashed rgba(139,148,158,0.7)' : '1px dashed rgba(139,148,158,0.35)',
+                  backgroundColor: dragHoverPaneId === pane.paneId ? 'rgba(139,148,158,0.12)' : 'rgba(139,148,158,0.06)',
+                  color: '#8B949E',
+                  fontFamily: '"JetBrains Mono", monospace',
+                  fontSize: 10,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: 6,
+                  zIndex: 31,
+                  pointerEvents: 'none',
+                }}
+              >
+                Merge Pane
+              </div>
+            ))}
+            <div
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: chartLayout.priceAxisWidth,
+                bottom: source === 'tws' ? 24 : 4,
+                height: 20,
+                borderTop: dragHoverPaneId === '__new__' ? '1px dashed rgba(245,158,11,0.9)' : '1px dashed rgba(245,158,11,0.5)',
+                backgroundColor: dragHoverPaneId === '__new__' ? 'rgba(245,158,11,0.14)' : 'rgba(245,158,11,0.08)',
+                color: '#F59E0B',
+                fontFamily: '"JetBrains Mono", monospace',
+                fontSize: 10,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 30,
+                pointerEvents: 'none',
+              }}
+            >
+              New Pane
+            </div>
+            {draggingMouse && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: draggingMouse.x + 10,
+                  top: draggingMouse.y + 10,
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  background: 'rgba(13,17,23,0.92)',
+                  color: '#E6EDF3',
+                  fontFamily: '"JetBrains Mono", monospace',
+                  fontSize: 10,
+                  zIndex: 35,
+                  pointerEvents: 'none',
+                }}
+              >
+                {draggedIndicatorName}
+              </div>
+            )}
+          </>
+        )}
 
         {draggingIndicatorId && (
           <>
@@ -2073,9 +2819,30 @@ export default function MiniChart({
             </span>
           </div>
         )}
+        {chartLayout && activeProbEngIndicator && probEngWidget.visible && (
+          <MiniProbEngWidget
+            indicator={activeProbEngIndicator}
+            widget={probEngWidget}
+            dragging={probEngDragging}
+            hovered={probEngHovered}
+            onHeaderPointerDown={handleProbEngPointerDown}
+            onHeaderPointerMove={handleProbEngPointerMove}
+            onHeaderPointerUp={handleProbEngPointerUp}
+            onHeaderPointerCancel={handleProbEngPointerCancel}
+            onMouseEnter={() => setProbEngHovered(true)}
+            onMouseLeave={() => setProbEngHovered(false)}
+            onToggleLock={() => {
+              setProbEngWidget((prev) => ({ ...prev, locked: !prev.locked }));
+            }}
+          />
+        )}
         <IndicatorLegend
           indicators={activeIndicators}
           activeScripts={emptyScripts}
+          allCollapsed={legendCollapsed}
+          onCollapsedChange={(v) => {
+            onConfigChange({ ...configRef.current, legendCollapsed: v });
+          }}
           onUpdateParams={updateIndicatorParams}
           onUpdateTextParams={updateIndicatorTextParams}
           onUpdateColor={updateIndicatorColor}
@@ -2088,12 +2855,14 @@ export default function MiniChart({
           onDragStart={setDraggingIndicatorId}
           onDragEnd={() => setDraggingIndicatorId(null)}
           onSetDefaultColor={(indicatorName, outputKey, color) => {
+            const defaults =
+              (configRef.current.indicatorColorDefaults as Record<string, Record<string, string>> | undefined) ?? {};
             onConfigChange({
-              ...config,
+              ...configRef.current,
               indicatorColorDefaults: {
-                ...indicatorColorDefaults,
+                ...defaults,
                 [indicatorName]: {
-                  ...(indicatorColorDefaults[indicatorName] ?? {}),
+                  ...(defaults[indicatorName] ?? {}),
                   [outputKey]: color,
                 },
               },
@@ -2101,6 +2870,17 @@ export default function MiniChart({
           }}
         />
       </div>
+
+      <SymbolSearchModal
+        isOpen={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onSelectSymbol={(sym) => {
+          onConfigChange({ ...configRef.current, symbol: sym });
+          if (linkChannel) linkBus.publish(linkChannel, sym);
+          setSearchOpen(false);
+        }}
+        excludeSymbol={symbol}
+      />
     </div>
   );
 }

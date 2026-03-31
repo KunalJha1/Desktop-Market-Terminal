@@ -19,19 +19,21 @@ logger = logging.getLogger(__name__)
 
 # Minimum resampled candles required before we attempt indicator math
 MIN_BARS = 60
-SUPPORTED_TIMEFRAMES = ("1m", "5m", "15m", "1h", "1d", "1w")
-INTRADAY_TIMEFRAMES = {"1m", "5m", "15m", "1h"}
+SUPPORTED_TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
+INTRADAY_TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h"}
 
 # How many 1m bars to pull per intraday timeframe (enough for 100+ resampled bars)
 _TF_1M_FETCH: dict[str, int] = {
     "5m":  5  * 200,   # 200 × 5m bars
     "15m": 15 * 200,   # 200 × 15m bars
     "1h":  60 * 200,   # 200 × 1h bars
+    "4h":  240 * 200,  # 200 × 4h bars
 }
 _TF_RESAMPLE_MINUTES: dict[str, int] = {
     "5m":  5,
     "15m": 15,
     "1h":  60,
+    "4h":  240,
 }
 
 
@@ -728,7 +730,7 @@ def detect_liquidity_sweeps_for_symbols(
 ) -> dict[str, dict[str, int | float | str | None]]:
     result: dict[str, dict[str, int | float | str | None]] = {}
     normalized_timeframe = timeframe.strip().lower()
-    if normalized_timeframe not in {"5m", "15m", "1h", "1d", "1w"}:
+    if normalized_timeframe not in {"5m", "15m", "1h", "4h", "1d", "1w"}:
         return {
             sym: {"direction": None, "eventTs": None, "ageBars": None, "source": None}
             for sym in symbols

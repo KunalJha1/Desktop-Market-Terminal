@@ -248,6 +248,7 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     name: 'Liquidity Sweep (ICT/SMC)',
     shortName: 'ICT Liq',
     category: 'overlay',
+    legendOmitParamSummary: true,
     defaultParams: {
       liqOn: 1,
       liqUseCloseConfirm: 1,
@@ -284,7 +285,10 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       liqActionXBars: 'Action X Bars',
       liqActionYOffsetTicks: 'Action Y Ticks',
     },
-    outputs: [],
+    outputs: [
+      { key: 'buy', label: 'Bull sweep', color: '#009E48', style: 'markers' },
+      { key: 'sell', label: 'Bear sweep', color: '#DB2958', style: 'markers' },
+    ],
   },
 
   FVG: {
@@ -573,12 +577,13 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
 
   'Chop Zone': {
     name: 'Chop Zone',
-    shortName: 'CZ',
+    shortName: 'Chop Zone',
     category: 'oscillator',
     defaultParams: { period: 30 },
     paramLabels: { period: 'Length' },
     paneRange: { min: 0, max: 1 },
     hidePaneScaleControls: true,
+    legendSwatchKeys: ['darkGreen', 'yellow', 'darkRed'],
     outputs: [
       { key: 'turquoise', label: 'Strong Bull', color: '#26C6DA', style: 'histogram', lineWidth: 1 },
       { key: 'darkGreen', label: 'Bull', color: '#43A047', style: 'histogram', lineWidth: 1 },
@@ -668,6 +673,7 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     name: 'Probability Engine',
     shortName: 'ProbEng',
     category: 'oscillator',
+    legendOmitParamSummary: true,
     defaultParams: {
       source: 0,
       buckets: 9,

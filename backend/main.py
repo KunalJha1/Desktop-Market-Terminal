@@ -745,17 +745,17 @@ def _enrich_with_tech_scores(conn, payloads: list[dict]) -> None:
     try:
         rows = conn.execute(
             f"""
-            SELECT symbol, score_1m, score_5m, score_15m, score_1h,
+            SELECT symbol, score_1m, score_5m, score_15m, score_1h, score_4h,
                    score_1d, score_1w
             FROM technical_scores
             WHERE symbol IN ({placeholders})
             """,
             symbols,
         ).fetchall()
-        score_map = {r[0]: r[1:7] for r in rows}
+        score_map = {r[0]: r[1:8] for r in rows}
     except Exception:
         score_map = {}
-    tf_keys = ("1m", "5m", "15m", "1h", "1d", "1w")
+    tf_keys = ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
     for p in payloads:
         tup = score_map.get(p["symbol"])
         if tup is None:
@@ -765,8 +765,8 @@ def _enrich_with_tech_scores(conn, payloads: list[dict]) -> None:
             continue
         padded = tuple(tup[: len(tf_keys)]) + (None,) * max(0, len(tf_keys) - len(tup))
         p["techScores"] = {tf_keys[i]: padded[i] for i in range(len(tf_keys))}
-        p["techScore1d"] = padded[4]
-        p["techScore1w"] = padded[5]
+        p["techScore1d"] = padded[5]
+        p["techScore1w"] = padded[6]
 
 
 def _format_option_expiration_label(expiration_ms: int) -> str:
@@ -1062,6 +1062,57 @@ def create_app() -> FastAPI:
             logger.warning("TWS not reachable at startup; portfolio connection will be attempted on first request")
 
         _app.state.pool = pool
+
+        # Fire-and-forget: pre-warm DailyIQ data for watchlist symbols so the
+        # frontend sees data immediately on first load (before IBKR backfill).
+        async def _startup_warmup() -> None:
+            try:
+                watchlist_syms = await run_db(read_watchlist_symbols)
+                if not watchlist_syms:
+                    return
+                logger.info(
+                    "[Warmup] Pre-fetching DailyIQ data for %d watchlist symbol(s): %s",
+                    len(watchlist_syms),
+                    ", ".join(watchlist_syms[:10]),
+                )
+                from dailyiq_provider import (
+                    fetch_watchlist_quotes_from_dailyiq_concurrent,
+                    fetch_bars_batch_concurrent,
+                )
+                loop = asyncio.get_event_loop()
+
+                # Concurrent quote snapshots — populates dailyiq_cache so
+                # /market/snapshots returns immediately on first poll.
+                quotes = await loop.run_in_executor(
+                    None,
+                    fetch_watchlist_quotes_from_dailyiq_concurrent,
+                    watchlist_syms,
+                )
+                logger.info("[Warmup] Fetched %d DailyIQ quotes", len(quotes))
+
+                # Concurrent bars: 1d + 5m for each watchlist symbol.
+                # This populates the dailyiq_cache table so that when the
+                # frontend calls /historical, DailyIQ fetch_bars returns
+                # immediately from cache, then writes into the OHLCV tables.
+                pairs = (
+                    [(sym, "1d") for sym in watchlist_syms]
+                    + [(sym, "5m") for sym in watchlist_syms]
+                )
+                bar_results = await loop.run_in_executor(
+                    None,
+                    lambda: fetch_bars_batch_concurrent(pairs, limit=500),
+                )
+                total_bars = sum(len(bars) for _, _, bars in bar_results)
+                logger.info(
+                    "[Warmup] DailyIQ pre-warm complete — %d total bars across %d series",
+                    total_bars,
+                    len(bar_results),
+                )
+            except Exception as exc:
+                logger.warning("[Warmup] DailyIQ pre-warm failed: %s", exc)
+
+        asyncio.create_task(_startup_warmup())
+
         try:
             yield
         finally:
@@ -1111,6 +1162,14 @@ def create_app() -> FastAPI:
     @app.get("/settings/finnhub/status")
     async def finnhub_status():
         return _current_finnhub_status()
+
+    @app.get("/settings/dailyiq/status")
+    async def dailyiq_status():
+        has_key = bool(os.getenv("DAILYIQ_API_KEY", "").strip())
+        return {
+            "hasKey": has_key,
+            "status": "connected" if has_key else "disconnected",
+        }
 
     class FinnhubValidationPayload(BaseModel):
         apiKey: str = ""

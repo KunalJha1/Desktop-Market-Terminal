@@ -19,15 +19,15 @@ from technicals import MIN_BARS, SUPPORTED_TIMEFRAMES, inspect_symbol_timeframe,
 
 logger = logging.getLogger(__name__)
 
-TIMEFRAMES = ["1m", "5m", "15m", "1h", "1d", "1w"]
+TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"]
 UNIVERSE_TIMEFRAMES = ["1d", "1w"]
 INTERVAL_S = 60
 UNIVERSE_INTERVAL_S = 300
-_SCORE_FIELDS = ("1m", "5m", "15m", "1h", "1d", "1w")
+_SCORE_FIELDS = ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
 
 
 def _upsert_scores(
-    rows: list[tuple[str, int | None, int | None, int | None, int | None, int | None, int | None]],
+    rows: list[tuple[str, int | None, int | None, int | None, int | None, int | None, int | None, int | None]],
     now_utc: datetime,
 ) -> None:
     """Write scored rows into technical_scores via upsert with retry."""
@@ -38,18 +38,19 @@ def _upsert_scores(
             conn,
             """
             INSERT INTO technical_scores
-                (symbol, score_1m, score_5m, score_15m, score_1h, score_1d, score_1w, last_updated_utc)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (symbol, score_1m, score_5m, score_15m, score_1h, score_4h, score_1d, score_1w, last_updated_utc)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (symbol) DO UPDATE SET
                 score_1m         = excluded.score_1m,
                 score_5m         = excluded.score_5m,
                 score_15m        = excluded.score_15m,
                 score_1h         = excluded.score_1h,
+                score_4h         = excluded.score_4h,
                 score_1d         = excluded.score_1d,
                 score_1w         = excluded.score_1w,
                 last_updated_utc = excluded.last_updated_utc
             """,
-            [(sym, s1m, s5m, s15m, s1h, s1d, s1w, now_utc) for sym, s1m, s5m, s15m, s1h, s1d, s1w in rows],
+            [(sym, s1m, s5m, s15m, s1h, s4h, s1d, s1w, now_utc) for sym, s1m, s5m, s15m, s1h, s4h, s1d, s1w in rows],
         )
 
 
@@ -66,6 +67,7 @@ def _compute_and_upsert(symbols: list[str]) -> None:
             scores.get("5m"),
             scores.get("15m"),
             scores.get("1h"),
+            scores.get("4h"),
             scores.get("1d"),
             scores.get("1w"),
         )

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { DollarSign, List, BarChart2, Briefcase, SlidersHorizontal, LayoutGrid, Activity } from "lucide-react";
 import DashboardToolbar from "../components/DashboardToolbar";
 import GridLayout from "../components/GridLayout";
 import QuoteCard from "../components/QuoteCard";
@@ -12,15 +13,20 @@ import { useTabs } from "../lib/tabs";
 import { useLayout } from "../lib/layout";
 import type { LayoutComponent } from "../lib/layout-types";
 import { useWatchlist } from "../lib/watchlist";
+import {
+  readMiniChartConfig,
+  removeMiniChartConfig,
+  writeMiniChartConfig,
+} from "../lib/minichart-config-storage";
 
 const COMPONENT_TYPES = [
-  { type: "quote", label: "Quote Card", defaultW: 4, defaultH: 8 },
-  { type: "watchlist", label: "Watchlist", defaultW: 4, defaultH: 10 },
-  { type: "minichart", label: "Mini Chart", defaultW: 4, defaultH: 8 },
-  { type: "ibkr-portfolio", label: "Portfolio", defaultW: 8, defaultH: 12 },
-  { type: "mini-screener", label: "Mini Screener", defaultW: 6, defaultH: 10 },
-  { type: "mini-heatmap", label: "Mini Heatmap", defaultW: 6, defaultH: 10 },
-  { type: "liquidity-sweep-detector", label: "Liquidity Sweep Detector", defaultW: 5, defaultH: 9 },
+  { type: "quote", label: "Quote Card", defaultW: 4, defaultH: 8, icon: DollarSign },
+  { type: "watchlist", label: "Watchlist", defaultW: 4, defaultH: 10, icon: List },
+  { type: "minichart", label: "Mini Chart", defaultW: 4, defaultH: 8, icon: BarChart2 },
+  { type: "ibkr-portfolio", label: "Portfolio", defaultW: 8, defaultH: 12, icon: Briefcase },
+  { type: "mini-screener", label: "Mini Screener", defaultW: 6, defaultH: 10, icon: SlidersHorizontal },
+  { type: "mini-heatmap", label: "Mini Heatmap", defaultW: 6, defaultH: 10, icon: LayoutGrid },
+  { type: "liquidity-sweep-detector", label: "Liquidity Sweep Detector", defaultW: 5, defaultH: 9, icon: Activity },
 ] as const;
 
 export default function DashboardPage() {
@@ -163,6 +169,40 @@ export default function DashboardPage() {
     updateComponent(activeTabId, id, update);
   };
 
+  const resolveMiniChartConfig = useCallback((componentId: string, config: Record<string, unknown>) => {
+    const persisted = readMiniChartConfig(activeTabId, componentId);
+    if (!persisted) return config;
+    const merged = { ...persisted, ...config };
+    // `updateMiniChartConfig` writes the full chart config (including oscillators) to localStorage on every
+    // MiniChart change. The tab layout `config` can still carry a stale `indicators` array from the last
+    // saved workspace file, which would otherwise overwrite localStorage here and strip MACD and similar panes.
+    if (Array.isArray(persisted.indicators)) {
+      merged.indicators = persisted.indicators;
+    }
+    if (typeof persisted.legendCollapsed === "boolean") {
+      merged.legendCollapsed = persisted.legendCollapsed;
+    }
+    // Same for Probability Table placement: workspace JSON often carries default x/y and would reset drag position.
+    const pw = persisted.probEngWidget;
+    if (
+      pw &&
+      typeof pw === "object" &&
+      !Array.isArray(pw) &&
+      typeof (pw as { x?: unknown }).x === "number" &&
+      typeof (pw as { y?: unknown }).y === "number"
+    ) {
+      merged.probEngWidget = { ...(pw as Record<string, unknown>) };
+    }
+    return merged;
+  }, [activeTabId]);
+
+  const updateMiniChartConfig = useCallback((componentId: string, currentConfig: Record<string, unknown>, nextConfig: Record<string, unknown>) => {
+    const persisted = readMiniChartConfig(activeTabId, componentId) ?? {};
+    const merged = { ...persisted, ...currentConfig, ...nextConfig };
+    writeMiniChartConfig(activeTabId, componentId, merged);
+    updateComponent(activeTabId, componentId, { config: merged });
+  }, [activeTabId, updateComponent]);
+
   // When a watchlist row is clicked, update all linked components on the same channel
   const handleSymbolSelect = (sourceComp: LayoutComponent, symbol: string) => {
     if (!sourceComp.linkChannel) return;
@@ -221,19 +261,25 @@ export default function DashboardPage() {
           />
         );
       case "minichart":
+        {
+          const resolvedConfig = resolveMiniChartConfig(comp.id, comp.config);
         return (
           <MiniChart
             linkChannel={comp.linkChannel}
             onSetLinkChannel={(ch) =>
               setComponentLinkChannel(activeTabId, comp.id, ch)
             }
-            onClose={() => removeComponent(activeTabId, comp.id)}
-            config={comp.config}
+            onClose={() => {
+              removeMiniChartConfig(activeTabId, comp.id);
+              removeComponent(activeTabId, comp.id);
+            }}
+            config={resolvedConfig}
             onConfigChange={(cfg) =>
-              updateComponent(activeTabId, comp.id, { config: cfg })
+              updateMiniChartConfig(comp.id, comp.config, cfg)
             }
           />
         );
+        }
       case "mini-screener":
         return (
           <MiniScreenerCard
@@ -322,15 +368,19 @@ export default function DashboardPage() {
             ref={addMenuRef}
             className="absolute left-2 top-full z-[100] mt-1 min-w-[160px] rounded-md border border-white/[0.08] bg-[#1C2128] py-1 shadow-xl shadow-black/40"
           >
-            {COMPONENT_TYPES.map((ct) => (
-              <button
-                key={ct.type}
-                onClick={() => handleAddComponent(ct.type)}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-white/50 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/80"
-              >
-                {ct.label}
-              </button>
-            ))}
+            {COMPONENT_TYPES.map((ct) => {
+              const Icon = ct.icon;
+              return (
+                <button
+                  key={ct.type}
+                  onClick={() => handleAddComponent(ct.type)}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-white transition-colors duration-75 hover:bg-white/[0.06]"
+                >
+                  <Icon className="h-3 w-3 shrink-0" strokeWidth={1.5} />
+                  {ct.label}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>

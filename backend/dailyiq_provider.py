@@ -13,7 +13,9 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from typing import Sequence
 
 import requests
 
@@ -30,7 +32,9 @@ CACHE_TTL_FUNDAMENTALS = 86_400     # 24 hr
 # Supported bar timeframes
 SUPPORTED_TIMEFRAMES = {"5m", "15m", "1d", "1w"}
 
-HTTP_TIMEOUT = 15  # seconds
+HTTP_TIMEOUT_QUOTE = 5   # seconds — fast path for quotes
+HTTP_TIMEOUT = 15        # seconds — bars and other endpoints
+HTTP_TIMEOUT_BARS = 15   # alias for clarity
 
 
 # ── API key ──────────────────────────────────────────────────────────
@@ -85,6 +89,7 @@ def _dailyiq_get_json(
     endpoint: str,
     params: dict | None = None,
     ttl_s: float = CACHE_TTL_SNAPSHOT,
+    timeout: float = HTTP_TIMEOUT,
 ) -> dict | None:
     """GET a DailyIQ endpoint with local response cache.
 
@@ -107,7 +112,7 @@ def _dailyiq_get_json(
 
     url = f"{base}/{endpoint.lstrip('/')}"
     try:
-        r = requests.get(url, params=params, timeout=HTTP_TIMEOUT)
+        r = requests.get(url, params=params, timeout=timeout)
         if r.status_code == 429:
             logger.warning("DailyIQ rate limited on %s — backing off", endpoint)
             return None
@@ -215,7 +220,7 @@ def fetch_quote_from_dailyiq(symbol: str) -> dict | None:
 
     Returns a dict matching the yahoo_to_quote() shape, or None on failure.
     """
-    data = _dailyiq_get_json(f"snapshot/{symbol}", ttl_s=CACHE_TTL_SNAPSHOT)
+    data = _dailyiq_get_json(f"snapshot/{symbol}", ttl_s=CACHE_TTL_SNAPSHOT, timeout=HTTP_TIMEOUT_QUOTE)
     if not data:
         return None
 
@@ -248,13 +253,71 @@ def fetch_quote_from_dailyiq(symbol: str) -> dict | None:
 
 
 def fetch_watchlist_quotes_from_dailyiq(symbols: list[str]) -> list[dict]:
-    """Fetch quotes for multiple symbols from DailyIQ."""
+    """Fetch quotes for multiple symbols from DailyIQ (sequential)."""
     quotes = []
     for sym in symbols:
         q = fetch_quote_from_dailyiq(sym)
         if q and q.get("last"):
             quotes.append(q)
     return quotes
+
+
+def fetch_watchlist_quotes_from_dailyiq_concurrent(
+    symbols: Sequence[str],
+    max_workers: int = 10,
+) -> list[dict]:
+    """Fetch quotes for multiple symbols from DailyIQ concurrently.
+
+    Uses a ThreadPoolExecutor so all symbols are fetched in parallel,
+    reducing wall-clock time from O(n * network_latency) to ~O(network_latency).
+    """
+    if not symbols:
+        return []
+    quotes: list[dict] = []
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(symbols))) as pool:
+        futures = {pool.submit(fetch_quote_from_dailyiq, sym): sym for sym in symbols}
+        for fut in as_completed(futures):
+            try:
+                q = fut.result()
+                if q and q.get("last"):
+                    quotes.append(q)
+            except Exception as exc:
+                logger.debug("DailyIQ concurrent quote failed for %s: %s", futures[fut], exc)
+    return quotes
+
+
+def fetch_bars_batch_concurrent(
+    symbol_timeframe_pairs: Sequence[tuple[str, str]],
+    limit: int = 365,
+    max_workers: int = 8,
+) -> list[tuple[str, str, list[dict]]]:
+    """Fetch bars for multiple (symbol, timeframe) pairs concurrently.
+
+    Returns list of (symbol, timeframe, bars) tuples (empty bars on failure).
+    Only fetches supported timeframes; unsupported pairs return empty bars.
+    """
+    if not symbol_timeframe_pairs:
+        return []
+
+    supported = [(s, tf) for s, tf in symbol_timeframe_pairs if tf in SUPPORTED_TIMEFRAMES]
+    if not supported:
+        return []
+
+    results: list[tuple[str, str, list[dict]]] = []
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(supported))) as pool:
+        futures = {
+            pool.submit(fetch_bars_from_dailyiq, sym, tf, limit): (sym, tf)
+            for sym, tf in supported
+        }
+        for fut in as_completed(futures):
+            sym, tf = futures[fut]
+            try:
+                bars = fut.result()
+                results.append((sym, tf, bars))
+            except Exception as exc:
+                logger.debug("DailyIQ concurrent bars failed for %s/%s: %s", sym, tf, exc)
+                results.append((sym, tf, []))
+    return results
 
 
 # ── Fundamentals ─────────────────────────────────────────────────────

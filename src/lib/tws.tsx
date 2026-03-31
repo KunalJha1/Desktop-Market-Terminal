@@ -93,6 +93,7 @@ interface TwsContextValue {
   finnhubMessage: string;
   finnhubHasKey: boolean;
   validateFinnhubKey: (apiKey: string) => Promise<FinnhubValidateResponse>;
+  dailyiqHasKey: boolean;
   ibStatus: IbStatus;
   backendState: BackendState;
   backendMessage: string;
@@ -133,6 +134,7 @@ export function TwsProvider({ children }: { children: ReactNode }) {
   const [finnhubStatus, setFinnhubStatus] = useState<FinnhubStatus>("disconnected");
   const [finnhubMessage, setFinnhubMessage] = useState("No API key saved");
   const [finnhubHasKey, setFinnhubHasKey] = useState(false);
+  const [dailyiqHasKey, setDailyiqHasKey] = useState(false);
   const [ibStatus, setIbStatus] = useState<IbStatus>("disconnected");
   const [backendState, setBackendState] = useState<BackendState>("stopped");
   const [backendMessage, setBackendMessage] = useState("Backend stopped");
@@ -272,6 +274,28 @@ export function TwsProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(id);
   }, [sidecarPort, refreshFinnhubStatus]);
 
+  const refreshDailyiqStatus = useCallback(async () => {
+    if (!sidecarPort || backendState !== "healthy") {
+      setDailyiqHasKey(false);
+      return;
+    }
+    try {
+      const res = await fetch(`http://127.0.0.1:${sidecarPort}/settings/dailyiq/status`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const payload = (await res.json()) as { hasKey: boolean; status: string };
+      setDailyiqHasKey(payload.hasKey);
+    } catch {
+      setDailyiqHasKey(false);
+    }
+  }, [backendState, sidecarPort]);
+
+  useEffect(() => {
+    refreshDailyiqStatus();
+    if (!sidecarPort) return;
+    const id = setInterval(refreshDailyiqStatus, 15_000);
+    return () => clearInterval(id);
+  }, [sidecarPort, refreshDailyiqStatus]);
+
   const refreshIbStatus = useCallback(async () => {
     if (!sidecarPort || backendState !== "healthy") {
       setIbStatus("disconnected");
@@ -375,6 +399,7 @@ export function TwsProvider({ children }: { children: ReactNode }) {
       finnhubMessage,
       finnhubHasKey,
       validateFinnhubKey,
+      dailyiqHasKey,
       ibStatus,
       backendState,
       backendMessage,
@@ -394,6 +419,7 @@ export function TwsProvider({ children }: { children: ReactNode }) {
       finnhubMessage,
       finnhubHasKey,
       validateFinnhubKey,
+      dailyiqHasKey,
       ibStatus,
       backendState,
       backendMessage,

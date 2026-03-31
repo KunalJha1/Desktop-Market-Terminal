@@ -24,10 +24,11 @@ import {
   chartStateToDailyIqChartConfig,
   dailyIqChartConfigToChartState,
 } from '../lib/chart-config';
-import {
-  exportChartConfigToFile,
-  importChartConfigFromFile,
-} from '../lib/chart-config-storage';
+// DISABLED: import/export not yet functional
+// import {
+//   exportChartConfigToFile,
+//   importChartConfigFromFile,
+// } from '../lib/chart-config-storage';
 import { VOLUME_PANE_RATIO, getTimeframeMs } from '../chart/constants';
 import CustomStrategyModal from '../chart/components/CustomStrategyModal';
 import {
@@ -190,6 +191,8 @@ function ProbEngFloatingWidget({
           fontSize: 10,
           fontFamily: '"JetBrains Mono", monospace',
           color: '#E6EDF3',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
           background: widget.locked
             ? '#000000'
             : dragging
@@ -228,6 +231,7 @@ function ProbEngFloatingWidget({
           {(!widget.locked || hovered) && (
             <button
               type="button"
+              onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();
                 onToggleLock();
@@ -1046,60 +1050,31 @@ export default function ChartPage({ tabId }: ChartPageProps) {
     return () => window.clearTimeout(timer);
   }, [chartNotice]);
 
-  const handleExportChart = useCallback(async () => {
-    const ok = await exportChartConfigToFile(chartStateToDailyIqChartConfig({
-      symbol,
-      timeframe,
-      chartType,
-      yScaleMode,
-      linkChannel,
-      indicators: serializeIndicators(activeIndicators),
-      stopperPx,
-      indicatorColorDefaults,
-      scripts: activeScriptSources,
-      customStrategies,
-      activeCustomStrategyIds,
-      probEngWidget,
-      tooltipFields,
-    }));
-    if (!ok) {
-      setChartNotice('Chart export failed.');
-    } else {
-      setChartNotice('Chart exported.');
-    }
-  }, [
-    symbol,
-    timeframe,
-    chartType,
-    yScaleMode,
-    linkChannel,
-    activeIndicators,
-    stopperPx,
-    indicatorColorDefaults,
-    activeScriptSources,
-    customStrategies,
-    activeCustomStrategyIds,
-    probEngWidget,
-    tooltipFields,
-    serializeIndicators,
-  ]);
+  // DISABLED: import/export not yet functional
+  // const handleExportChart = useCallback(async () => {
+  //   const ok = await exportChartConfigToFile(chartStateToDailyIqChartConfig({
+  //     symbol, timeframe, chartType, yScaleMode, linkChannel,
+  //     indicators: serializeIndicators(activeIndicators), stopperPx,
+  //     indicatorColorDefaults, scripts: activeScriptSources, customStrategies,
+  //     activeCustomStrategyIds, probEngWidget, tooltipFields,
+  //   }));
+  //   if (!ok) { setChartNotice('Chart export failed.'); } else { setChartNotice('Chart exported.'); }
+  // }, [symbol, timeframe, chartType, yScaleMode, linkChannel, activeIndicators, stopperPx,
+  //   indicatorColorDefaults, activeScriptSources, customStrategies, activeCustomStrategyIds,
+  //   probEngWidget, tooltipFields, serializeIndicators]);
 
-  const handleImportChart = useCallback(async () => {
-    const result = await importChartConfigFromFile();
-    if (result.status === 'canceled') {
-      return;
-    }
-    if (result.status !== 'success') {
-      setChartNotice(result.status === 'invalid' ? 'Invalid .diqc file.' : 'Chart import failed.');
-      return;
-    }
-    const importedState = dailyIqChartConfigToChartState(result.file.chart);
-    applyChartState(importedState);
-    if (tabId) {
-      saveChartState(tabId, importedState);
-    }
-    setChartNotice('Chart imported.');
-  }, [applyChartState, tabId]);
+  // const handleImportChart = useCallback(async () => {
+  //   const result = await importChartConfigFromFile();
+  //   if (result.status === 'canceled') return;
+  //   if (result.status !== 'success') {
+  //     setChartNotice(result.status === 'invalid' ? 'Invalid .diqc file.' : 'Chart import failed.');
+  //     return;
+  //   }
+  //   const importedState = dailyIqChartConfigToChartState(result.file.chart);
+  //   applyChartState(importedState);
+  //   if (tabId) { saveChartState(tabId, importedState); }
+  //   setChartNotice('Chart imported.');
+  // }, [applyChartState, tabId]);
 
   const handleEngineReady = useCallback(() => {
     setEngineVersion(v => v + 1);
@@ -1389,8 +1364,8 @@ export default function ChartPage({ tabId }: ChartPageProps) {
         onZoomIn={() => engineRef.current?.zoomIn()}
         onZoomOut={() => engineRef.current?.zoomOut()}
         onZoomReset={() => engineRef.current?.resetZoom()}
-        onExportChart={() => { void handleExportChart(); }}
-        onImportChart={() => { void handleImportChart(); }}
+        // onExportChart={() => { void handleExportChart(); }}
+        // onImportChart={() => { void handleImportChart(); }}
       />
 
       {chartNotice && (

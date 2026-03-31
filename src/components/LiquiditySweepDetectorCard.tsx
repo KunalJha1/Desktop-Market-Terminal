@@ -251,7 +251,7 @@ export default function LiquiditySweepDetectorCard({
           <button
             onClick={() => setSearchOpen(true)}
             disabled={symbols.length >= MAX_SYMBOLS}
-            className="rounded-sm px-1.5 py-0.5 font-mono text-[10px] text-white/55 transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/80 disabled:cursor-not-allowed disabled:opacity-35"
+            className="rounded-sm px-1.5 py-0.5 font-mono text-[10px] text-white transition-colors duration-75 hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-35"
             title={symbols.length >= MAX_SYMBOLS ? "Max 10 symbols" : "Add symbol"}
           >
             Add
@@ -259,9 +259,22 @@ export default function LiquiditySweepDetectorCard({
           <ComponentLinkMenu linkChannel={linkChannel} onSetLinkChannel={onSetLinkChannel} />
           <button
             onClick={onClose}
-            className="rounded-sm p-0.5 text-white/70 transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
+            className="rounded-sm p-0 text-white transition-colors duration-75 hover:bg-white/[0.06] hover:text-red"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 16,
+              height: 16,
+              padding: 0,
+              border: "none",
+              cursor: "pointer",
+              backgroundColor: "transparent",
+              color: "#FFFFFF",
+              borderRadius: 2,
+            }}
           >
-            <X className="h-2.5 w-2.5" strokeWidth={1.5} />
+            <X className="h-[12px] w-[12px]" strokeWidth={2} />
           </button>
         </div>
       </div>
@@ -308,7 +321,7 @@ export default function LiquiditySweepDetectorCard({
 
       <div
         ref={scrollRef}
-        className="min-h-0 flex-1 overflow-auto"
+        className="min-h-0 flex-1 overflow-auto scrollbar-none"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerEnd}
