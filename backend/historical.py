@@ -56,6 +56,7 @@ BAR_SIZE_TARGET_DURATIONS = {
     "1d": "30 Y",
 }
 MIN_INCREMENTAL_DAYS = 1
+MIN_INCREMENTAL_DAILY_DAYS = 30  # 1m minimum window for daily bar incremental fetches
 MAX_INCREMENTAL_INTRADAY_DAYS = 14
 
 # Per-symbol async locks to prevent concurrent fetches for the same symbol+bar_size.
@@ -226,7 +227,8 @@ def _dedupe_bars(bars: list[dict]) -> list[dict]:
 
 
 def _days_to_ib_duration(days: int, is_daily: bool) -> str:
-    days = max(MIN_INCREMENTAL_DAYS, int(days))
+    _min = MIN_INCREMENTAL_DAILY_DAYS if is_daily else MIN_INCREMENTAL_DAYS
+    days = max(_min, int(days))
     if not is_daily:
         return f"{min(days, MAX_INCREMENTAL_INTRADAY_DAYS)} D"
     if days <= 365:
@@ -1078,6 +1080,7 @@ async def get_historical_bars(
     duration: str = DEFAULT_INTRADAY_DURATION,
     bar_size: str = "1 min",
     what_to_show: str = "TRADES",
+    force_deep: bool = False,
 ) -> tuple[list[dict], str]:
     """
     Get historical bars for a symbol. Returns (bars, source).
@@ -1173,13 +1176,24 @@ async def get_historical_bars(
                 # gap-fill (authoritative) rather than a slow full paginated fetch.
                 tws_last_ts = last_ts_ms if fetched_bars else None
                 if tws_last_ts is None and not fetched_bars:
-                    tws_bars = await fetch_from_tws_paginated(
-                        ib,
-                        symbol,
-                        duration=tws_dur,
-                        bar_size=tws_bar,
-                        what_to_show=what_to_show,
-                    )
+                    if is_daily or force_deep:
+                        # Daily or explicit deep-backfill request: paginate the full duration.
+                        tws_bars = await fetch_from_tws_paginated(
+                            ib,
+                            symbol,
+                            duration=tws_dur,
+                            bar_size=tws_bar,
+                            what_to_show=what_to_show,
+                        )
+                    else:
+                        # Fast seed for cold-cache intraday: return a small window
+                        # immediately so the chart isn't blank. The background
+                        # backfill_loop fills out the full history with force_deep=True.
+                        _cold_seed = {"1m": "1 D", "5m": "1 D", "15m": "1 D"}
+                        seed_dur = _cold_seed.get(db_bar_size, "1 D")
+                        tws_bars = await fetch_from_tws(
+                            ib, symbol, seed_dur, tws_bar, what_to_show
+                        )
                 else:
                     # Incremental fetch: either we have cached bars (last_ts_ms set)
                     # or DailyIQ already seeded the cache (use DailyIQ's max time as anchor).

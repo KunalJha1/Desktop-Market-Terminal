@@ -40,6 +40,7 @@ export interface HeatmapTile {
   techScore1w: number | null;
   /** All cached horizons from `/heatmap/sp500` when sidecar provides them. */
   techScores?: Partial<Record<HeatmapTechTimeframe, number | null>>;
+  sentimentScore?: number | null;
   // ScreenerPage extras (optional)
   week52High?: number | null;
   week52Low?: number | null;

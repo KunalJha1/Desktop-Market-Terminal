@@ -71,7 +71,7 @@ SNAPSHOT_STALE_S = 300.0
 UNIVERSE_BATCH_SIZE = 8
 YAHOO_HISTORICAL_REQUEST_SLEEP_S = 5.0
 YAHOO_HISTORICAL_SYMBOL_SLEEP_S = 10.0
-TWS_HISTORICAL_REQUEST_SLEEP_S = 1.0
+TWS_HISTORICAL_REQUEST_SLEEP_S = 0.3
 URGENT_HISTORICAL_BATCH_SIZE = 4
 SUBSCRIPTION_PACE_S = 2.0
 REALTIME_PACE_S = 3.0
@@ -82,6 +82,8 @@ SHARD_THRESHOLD = 20
 MAX_SHARDS = 3
 UNIVERSE_SNAPSHOT_SLEEP_S = 10.0
 UNIVERSE_SNAPSHOT_CYCLE_PAUSE_S = 60.0
+UNIVERSE_QUOTE_REQUEST_SLEEP_S = 0.8   # gap between per-symbol DailyIQ/Yahoo requests
+UNIVERSE_QUOTE_REQUEST_TIMEOUT_S = 20.0  # per-symbol fetch timeout
 UNIVERSE_YAHOO_INTERVAL_S = 43200.0  # Re-fetch Yahoo prices/market-caps for full universe every 12h
 UNIVERSE_YAHOO_FAST_RETRY_S = 10.0   # Retry interval when market_cap still NULL for some symbols
 
@@ -433,6 +435,26 @@ def fetch_watchlist_quotes_with_fallback(symbols: List[str]) -> tuple[str, List[
             except Exception as exc:
                 logger.warning("Finnhub watchlist fallback also failed: %s", exc)
         return "yahoo", []
+
+
+def fetch_single_universe_quote_sync(symbol: str) -> dict | None:
+    """Fetch a single universe quote via DailyIQ → Yahoo. Returns a quote dict or None."""
+    try:
+        from dailyiq_provider import fetch_quote_from_dailyiq
+        q = fetch_quote_from_dailyiq(symbol)
+        if q and q.get("last"):
+            return q
+    except Exception as exc:
+        logger.debug("[UniversePrice] DailyIQ single quote failed for %s: %s", symbol, exc)
+    try:
+        ticker = YahooTicker(symbol, asynchronous=False)
+        price_data = ticker.price
+        data = price_data.get(symbol) if isinstance(price_data, dict) else None
+        if isinstance(data, dict):
+            return yahoo_to_quote(symbol, data)
+    except Exception as exc:
+        logger.debug("[UniversePrice] Yahoo single quote failed for %s: %s", symbol, exc)
+    return None
 
 
 def fetch_universe_quotes_with_fallback(symbols: List[str]) -> tuple[str, List[dict]]:
@@ -1138,6 +1160,10 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
     synthetic_5m: Dict[str, dict] = {}         # symbol -> current accumulating 5m bar
     synthetic_15m: Dict[str, dict] = {}        # symbol -> current accumulating 15m bar
     SYNTHETIC_RT_STALE_S = 30.0                # seconds without RT bar before synthetic kicks in
+    # Dedicated IB connection for historical backfill (isolated from quote shards)
+    backfill_ib: IB = IB()
+    backfill_ib_client_id: int = 0
+    backfill_ib_connected: bool = False
     # Dedicated IB connection for the active chart symbol (unthrottled)
     chart_ib: IB = IB()
     chart_ib_client_id: int = 0
@@ -1431,9 +1457,12 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
         asyncio.create_task(asyncio.to_thread(upsert_quote, q))
 
         # Build synthetic bars from quote ticks when realtime bars aren't flowing.
-        # Activates during off-hours (reqRealTimeBars unavailable) or if RT bars stall.
-        # Only for active_symbols (symbols the user has open in a chart view).
-        if symbol in active_symbols:
+        # During market hours: active chart symbols only.
+        # During overnight/extended hours: expand to all subscribed watchlist symbols
+        # so the idle shard connections contribute to building overnight bar history.
+        _in_market = _is_regular_market_hours()
+        _eligible = symbol in active_symbols or (not _in_market and symbol in watchlist)
+        if _eligible:
             last_rt = last_rt_bar_time.get(symbol, 0)
             if (now - last_rt) > SYNTHETIC_RT_STALE_S:
                 was_synthetic = symbol in synthetic_1m
@@ -1760,7 +1789,8 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
         backfill_cursor = 0
         while True:
             await asyncio.sleep(1.0)
-            ib = _primary_ib()
+            # Prefer the dedicated backfill client; fall back to primary shard if needed.
+            ib = backfill_ib if backfill_ib.isConnected() else _primary_ib()
             tws_connected = ib.isConnected()
             urgent_requests = await asyncio.to_thread(
                 pop_historical_priority_requests,
@@ -1824,6 +1854,7 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                             tws_connected=tws_connected,
                             duration=target_duration_for_bar_size(backfill_bar_size),
                             bar_size=backfill_bar_size,
+                            force_deep=True,
                         )
                         if backfill_bar_size != "1 day":
                             if tws_connected:
@@ -1839,6 +1870,7 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                             duration="30 D",
                             bar_size="1 min",
                             what_to_show="BID",
+                            force_deep=True,
                         )
                         await asyncio.sleep(TWS_HISTORICAL_REQUEST_SLEEP_S)
                         await get_historical_bars(
@@ -1848,6 +1880,7 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                             duration="30 D",
                             bar_size="1 min",
                             what_to_show="ASK",
+                            force_deep=True,
                         )
                         await asyncio.sleep(TWS_HISTORICAL_REQUEST_SLEEP_S)
                     else:
@@ -1887,82 +1920,40 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
     async def universe_price_loop():
         """Slowly pull snapshot quotes for the full ticker universe (for heatmap).
 
-        Iterates one symbol at a time. When TWS is connected it uses snapshots.
-        When TWS is disconnected it falls back to Finnhub first, then Yahoo.
+        Always uses DailyIQ → Yahoo per symbol (never TWS snapshots), regardless of
+        whether TWS is connected. 0.8s gap between symbols, 20s timeout per request.
         """
         await asyncio.sleep(15)  # Let other loops settle first
         while True:
-            ib = _primary_ib()
             watchlist_set = set(watchlist)
             queue = [sym for sym in universe_symbols if sym not in watchlist_set]
             if not queue:
                 await asyncio.sleep(UNIVERSE_SNAPSHOT_CYCLE_PAUSE_S)
                 continue
 
-            if ib.isConnected():
-                logger.info("[UniversePrice] Starting slow TWS cycle: %d symbols (skipping %d watchlist)",
-                            len(queue), len(watchlist_set))
-                fetched = 0
-                total = len(queue)
-                for i, sym in enumerate(queue):
-                    if not ib.isConnected():
-                        break
-                    q = None
-                    try:
-                        contract = Stock(sym, "SMART", "USD")
-                        snap_ticker = ib.reqMktData(contract, genericTickList="", snapshot=True)
-                        # Give TWS time to fill the snapshot; yield to event loop
-                        for _ in range(5):
-                            await asyncio.sleep(0.1)
-                        q = ticker_to_quote(sym, snap_ticker)
-                        if q is not None:
-                            snapshot = _snapshot_from_quote(q)
-                            await asyncio.to_thread(_upsert_market_snapshot, snapshot)
-                            fetched += 1
-                        else:
-                            # Even without a valid quote, write what we have so the
-                            # heatmap shows the symbol exists (with stale/pending status)
-                            await asyncio.to_thread(refresh_snapshot_from_db, sym)
-                        try:
-                            ib.cancelMktData(contract)
-                        except Exception:
-                            pass
-                    except Exception as exc:
-                        logger.debug(f"[UniversePrice] Snapshot failed for {sym}: {exc}")
-
-                    await asyncio.sleep(UNIVERSE_SNAPSHOT_SLEEP_S)
-
-                    logger.info("[UniversePrice] %d/%d %s %s",
-                                i + 1, total, sym,
-                                f"last={q['last']}" if q else "no data")
-
-                logger.info("[UniversePrice] TWS cycle complete: %d/%d symbols updated, next cycle in %ds",
-                            fetched, len(queue), int(UNIVERSE_SNAPSHOT_CYCLE_PAUSE_S))
-            else:
-                _reg_hrs = _is_regular_market_hours()
-                source_hint = ("Finnhub" if _load_finnhub_api_key() else "Yahoo") if _reg_hrs else "Yahoo"
-                logger.info(
-                    "[UniversePrice] Starting %s fallback cycle: %d symbols (skipping %d watchlist) [%s hours]",
-                    source_hint,
-                    len(queue),
-                    len(watchlist_set),
-                    "regular" if _reg_hrs else "extended",
-                )
+            logger.info("[UniversePrice] Starting cycle: %d symbols (skipping %d watchlist)",
+                        len(queue), len(watchlist_set))
+            fetched = 0
+            for sym in queue:
                 try:
-                    selected_source, quotes = await asyncio.to_thread(
-                        fetch_universe_quotes_with_fallback, queue
+                    q = await asyncio.wait_for(
+                        asyncio.to_thread(fetch_single_universe_quote_sync, sym),
+                        timeout=UNIVERSE_QUOTE_REQUEST_TIMEOUT_S,
                     )
-                    for q in quotes:
-                        await asyncio.to_thread(upsert_quote, q)
-                    logger.info(
-                        "[UniversePrice] %s fallback cycle complete: %d/%d symbols updated, next cycle in %ds",
-                        selected_source,
-                        len(quotes),
-                        len(queue),
-                        int(UNIVERSE_SNAPSHOT_CYCLE_PAUSE_S),
-                    )
+                    if q is not None:
+                        snapshot = _snapshot_from_quote(q)
+                        await asyncio.to_thread(_upsert_market_snapshot, snapshot)
+                        fetched += 1
+                    else:
+                        await asyncio.to_thread(refresh_snapshot_from_db, sym)
+                except asyncio.TimeoutError:
+                    logger.debug("[UniversePrice] Timeout for %s", sym)
                 except Exception as exc:
-                    logger.warning("[UniversePrice] Fallback cycle failed: %s", exc)
+                    logger.debug("[UniversePrice] Failed for %s: %s", sym, exc)
+                await asyncio.sleep(UNIVERSE_QUOTE_REQUEST_SLEEP_S)
+
+            logger.info("[UniversePrice] Cycle complete: %d/%d updated, next cycle in %ds",
+                        fetched, len(queue), int(UNIVERSE_SNAPSHOT_CYCLE_PAUSE_S))
             await asyncio.sleep(UNIVERSE_SNAPSHOT_CYCLE_PAUSE_S)
 
     async def reconnect_loop():
@@ -2032,6 +2023,18 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
         if ok:
             shard_client_ids[0] = new_id
 
+        # Connect dedicated backfill client (isolated from quote shards; uses client_id + 25)
+        backfill_ok, backfill_cid = await connect_ib_with_manager(
+            backfill_ib, host, ports, client_id + 25, client_id_mgr
+        )
+        backfill_ib_client_id = backfill_cid
+        if backfill_ok:
+            backfill_ib_connected = True
+            logger.info("Backfill client connected (clientId=%d)", backfill_cid)
+        else:
+            backfill_ib_connected = False
+            logger.warning("Backfill client failed to connect; will fall back to primary shard")
+
         # Connect dedicated chart client (uses a client ID just above the primary)
         chart_ok, chart_cid = await connect_ib_with_manager(
             chart_ib, host, ports, client_id + 50, client_id_mgr
@@ -2058,6 +2061,10 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
             reconnect_loop(),
         )
     finally:
+        if backfill_ib.isConnected():
+            backfill_ib.disconnect()
+        if backfill_ib_client_id:
+            client_id_mgr.release(backfill_ib_client_id)
         cancel_chart_subscription()
         if chart_ib.isConnected():
             chart_ib.disconnect()

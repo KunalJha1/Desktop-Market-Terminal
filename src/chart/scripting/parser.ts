@@ -596,6 +596,20 @@ export class Parser {
       return expr;
     }
 
+    // input.bool / input.float / input.int / input.string used as namespace in expressions
+    if (tok.type === TokenType.KW_Input) {
+      this.advance();
+      if (this.check(TokenType.Dot)) {
+        this.advance(); // consume .
+        const propName = this.expect(TokenType.Identifier).value;
+        if (this.check(TokenType.LParen)) {
+          return this.parseNamespacedCallArgs('input', propName, tok.line);
+        }
+        return { kind: 'Identifier', name: `input.${propName}`, line: tok.line } as Identifier;
+      }
+      return { kind: 'Identifier', name: 'input', line: tok.line } as Identifier;
+    }
+
     throw new Error(`Unexpected token: ${tok.type} "${tok.value}" at line ${tok.line}`);
   }
 

@@ -1777,7 +1777,16 @@ function ChartPage({ tabId }: ChartPageProps) {
           }}
           onRunScript={handleRunScript}
           onStopScript={handleStopScript}
-          onScriptsChange={setActiveScriptSources}
+          onScriptsChange={(activeScripts) => {
+            setActiveScriptSources(prev => {
+              const map = new Map(prev.map(s => [s.id, s]));
+              for (const a of activeScripts) {
+                const ex = map.get(a.id);
+                map.set(a.id, { id: a.id, source: a.source, name: ex?.name, savedAt: ex?.savedAt });
+              }
+              return Array.from(map.values());
+            });
+          }}
           builtInViewer={builtInScriptViewer}
           onBuiltInViewerChange={setBuiltInScriptViewer}
           width={scriptEditorWidth}

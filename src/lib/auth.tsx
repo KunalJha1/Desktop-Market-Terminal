@@ -6,7 +6,7 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import { supabase } from "./supabase";
+import { getSupabase } from "./supabase";
 import type { Session } from "@supabase/supabase-js";
 import { open } from "@tauri-apps/api/shell";
 import { invoke } from "@tauri-apps/api/tauri";
@@ -51,7 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authError, setAuthError] = useState<string | null>(null);
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
+    await getSupabase().auth.signOut();
     setSession(null);
   }, []);
 
@@ -73,7 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       port = 17284;
     }
 
-    const { data, error } = await supabase.auth.signInWithOAuth({
+    const { data, error } = await getSupabase().auth.signInWithOAuth({
       provider: "google",
       options: {
         skipBrowserRedirect: true,
@@ -97,7 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    supabase.auth
+    getSupabase().auth
       .getSession()
       .then(({ data: { session } }) => {
         setSession(session);
@@ -112,7 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = getSupabase().auth.onAuthStateChange((_event, session) => {
       setSession(session);
     });
 
@@ -122,7 +122,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (handled) return; // prevent double-handling from both listeners
       handled = true;
       console.log("[auth] Received OAuth tokens, setting session...");
-      const { data, error } = await supabase.auth.setSession({
+      const { data, error } = await getSupabase().auth.setSession({
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
       });

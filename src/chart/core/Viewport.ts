@@ -140,6 +140,10 @@ export class Viewport {
     return this.startIndex >= this.getDefaultEndStart() - thresholdBars;
   }
 
+  isLastBarVisible(): boolean {
+    return this.startIndex + this.barsVisible > this.totalBars - 1;
+  }
+
   scrollToEnd() {
     this.startIndex = this.getDefaultEndStart();
   }

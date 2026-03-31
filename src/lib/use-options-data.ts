@@ -112,13 +112,15 @@ export function useOptionsSummary(symbol: string): {
     }
 
     let cancelled = false;
+    let hasFetched = false;
     async function fetchSummary() {
-      setLoading(true);
+      if (!hasFetched) setLoading(true);
       try {
         const res = await fetch(`http://127.0.0.1:${sidecarPort}/options/summary?symbol=${encodeURIComponent(normalized)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const payload = await res.json() as OptionsSummary;
         if (!cancelled) {
+          hasFetched = true;
           setSummary(payload);
           setError(null);
         }
@@ -164,14 +166,16 @@ export function useOptionsChain(symbol: string, expiration: number | null): {
     }
 
     let cancelled = false;
+    let hasFetched = false;
     async function fetchChain() {
-      setLoading(true);
+      if (!hasFetched) setLoading(true);
       try {
         const url = `http://127.0.0.1:${sidecarPort}/options/chain?symbol=${encodeURIComponent(normalized)}&expiration=${expiration}`;
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const payload = await res.json() as OptionsChain;
         if (!cancelled) {
+          hasFetched = true;
           setChain(payload);
           setError(null);
         }

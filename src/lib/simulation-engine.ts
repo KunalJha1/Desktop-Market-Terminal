@@ -3,17 +3,20 @@ import type { ScriptResult } from "../chart/types";
 import { evaluateCustomStrategy } from "../chart/customStrategies";
 import type { CustomStrategyDefinition } from "../chart/customStrategies";
 import { getTimeframeMs } from "../chart/constants";
+import { interpretScript } from "../chart/scripting/interpreter";
 
 export type SessionFilter = "regular" | "extended" | "all";
 
 export interface SimConfig {
   symbol: string;
-  strategy: CustomStrategyDefinition;
+  strategy?: CustomStrategyDefinition;
   timeframe: string;
   rawBars: OHLCVBar[];
   startBarIndex: number;
   sessionFilter: SessionFilter;
   rollDays: boolean;
+  positionSize?: number;
+  scriptSource?: string;
 }
 
 export interface SimTrade {
@@ -55,20 +58,30 @@ const EMPTY_METRICS: SimMetrics = {
   avgPnl: 0,
 };
 
-// ET offset approximation: UTC-5 hours (ignores DST)
-const ET_OFFSET_MS = 5 * 60 * 60 * 1000;
+const _etFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  hour: "numeric",
+  minute: "numeric",
+  hour12: false,
+});
+
+function etMinutesFromMidnight(timeMs: number): number {
+  const parts = _etFormatter.formatToParts(new Date(timeMs));
+  const h = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+  const m = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+  // hour12:false returns 24 as midnight in some engines; normalise
+  return (h === 24 ? 0 : h) * 60 + m;
+}
 
 function isInSession(timeMs: number, filter: SessionFilter): boolean {
   if (filter === "all") return true;
-  const etMs = timeMs - ET_OFFSET_MS;
-  const date = new Date(etMs);
-  const minutesFromMidnight = date.getUTCHours() * 60 + date.getUTCMinutes();
+  const min = etMinutesFromMidnight(timeMs);
   if (filter === "regular") {
     // 9:30 (570) to 16:00 (960)
-    return minutesFromMidnight >= 570 && minutesFromMidnight < 960;
+    return min >= 570 && min < 960;
   }
   // extended: pre-market (240-570) and after-hours (960-1200) — 4am to 8pm ET
-  return minutesFromMidnight >= 240 && minutesFromMidnight < 1200;
+  return min >= 240 && min < 1200;
 }
 
 function bucketMs(timeMs: number, tfMs: number): number {
@@ -121,10 +134,68 @@ function computeMetrics(closedTrades: SimTrade[]): SimMetrics {
   };
 }
 
+/** Build all TF bars from filtered 1m bars (no incremental state). */
+function buildAllTfBars(filteredBars: OHLCVBar[], tfMs: number): OHLCVBar[] {
+  const result: OHLCVBar[] = [];
+  let partial: OHLCVBar | null = null;
+  let partialBucket = -1;
+  for (const bar of filteredBars) {
+    const bucket = bucketMs(bar.time, tfMs);
+    if (partial === null || bucket !== partialBucket) {
+      if (partial !== null) result.push(partial);
+      partialBucket = bucket;
+      partial = { ...bar, time: bucket };
+    } else {
+      partial = {
+        time: partial.time,
+        open: partial.open,
+        high: Math.max(partial.high, bar.high),
+        low: Math.min(partial.low, bar.low),
+        close: bar.close,
+        volume: partial.volume + bar.volume,
+      };
+    }
+  }
+  if (partial !== null) result.push(partial);
+  return result;
+}
+
+/** Extract a BUY/SELL/NEUTRAL signal per bar from a ScriptResult. */
+function extractSignals(result: ScriptResult, barCount: number): Array<"BUY" | "SELL" | "NEUTRAL"> {
+  const signals: Array<"BUY" | "SELL" | "NEUTRAL"> = new Array(barCount).fill("NEUTRAL");
+  for (const shape of result.shapes) {
+    const style = shape.style.toLowerCase();
+    const text = shape.text.toUpperCase();
+    const isBuy = style === "triangleup" || text.includes("BUY");
+    const isSell = style === "triangledown" || text.includes("SELL");
+    for (let i = 0; i < Math.min(shape.values.length, barCount); i++) {
+      if (!Number.isNaN(shape.values[i])) {
+        if (isBuy) signals[i] = "BUY";
+        else if (isSell) signals[i] = "SELL";
+      }
+    }
+  }
+  return signals;
+}
+
+/** Slice all arrays in a ScriptResult to `length` bars. */
+function sliceScriptResult(result: ScriptResult, length: number): ScriptResult {
+  return {
+    ...result,
+    plots: result.plots.map((p) => ({ ...p, values: p.values.slice(0, length) })),
+    shapes: result.shapes.map((s) => ({ ...s, values: s.values.slice(0, length) })),
+    fills: result.fills,
+    hlines: result.hlines,
+    inputs: result.inputs,
+    errors: result.errors,
+  };
+}
+
 export class SimulationEngine {
   private filteredBars: OHLCVBar[];
   private tfMs: number;
-  private strategy: CustomStrategyDefinition;
+  private strategy: CustomStrategyDefinition | undefined;
+  private positionSize: number;
 
   private currentIndex = 0;
   private tfBars: OHLCVBar[] = [];
@@ -136,9 +207,14 @@ export class SimulationEngine {
   private scriptResult: ScriptResult | null = null;
   private metrics: SimMetrics = EMPTY_METRICS;
 
+  // Script mode: precomputed signals and full result for slicing
+  private scriptSignals: Array<"BUY" | "SELL" | "NEUTRAL"> = [];
+  private fullScriptResult: ScriptResult | null = null;
+
   constructor(config: SimConfig) {
     this.strategy = config.strategy;
     this.tfMs = getTimeframeMs(config.timeframe);
+    this.positionSize = config.positionSize ?? 1;
 
     // Slice from startBarIndex and filter by session
     const sliced = config.rawBars.slice(config.startBarIndex);
@@ -146,6 +222,19 @@ export class SimulationEngine {
       this.filteredBars = sliced;
     } else {
       this.filteredBars = sliced.filter((bar) => isInSession(bar.time, config.sessionFilter));
+    }
+
+    // Precompute script signals if scriptSource provided
+    if (config.scriptSource && config.scriptSource.trim()) {
+      const allTfBars = buildAllTfBars(this.filteredBars, this.tfMs);
+      try {
+        const result = interpretScript(config.scriptSource, allTfBars);
+        this.fullScriptResult = result;
+        this.scriptSignals = extractSignals(result, allTfBars.length);
+      } catch {
+        this.fullScriptResult = null;
+        this.scriptSignals = [];
+      }
     }
   }
 
@@ -189,11 +278,22 @@ export class SimulationEngine {
   private onTfBarCompleted(): void {
     if (this.tfBars.length < 2) return;
 
-    const evaluation = evaluateCustomStrategy(this.strategy, this.tfBars);
-    this.scriptResult = evaluation.scriptResult;
-
-    const latestState = evaluation.stateSeries[evaluation.stateSeries.length - 1];
     const lastBar = this.tfBars[this.tfBars.length - 1];
+    let latestState: "BUY" | "SELL" | "NEUTRAL";
+
+    if (this.fullScriptResult !== null) {
+      // Script mode: use precomputed signals, slice result for chart rendering
+      const idx = this.tfBars.length - 1;
+      latestState = this.scriptSignals[idx] ?? "NEUTRAL";
+      this.scriptResult = sliceScriptResult(this.fullScriptResult, this.tfBars.length);
+    } else if (this.strategy) {
+      // Strategy mode
+      const evaluation = evaluateCustomStrategy(this.strategy, this.tfBars);
+      this.scriptResult = evaluation.scriptResult;
+      latestState = evaluation.stateSeries[evaluation.stateSeries.length - 1] as "BUY" | "SELL" | "NEUTRAL";
+    } else {
+      return;
+    }
 
     if (latestState === "BUY" && this.openPosition === null) {
       // Enter long
@@ -207,7 +307,7 @@ export class SimulationEngine {
       };
     } else if (latestState === "SELL" && this.openPosition !== null) {
       // Close long
-      const pnl = lastBar.close - this.openPosition.entryPrice;
+      const pnl = (lastBar.close - this.openPosition.entryPrice) * this.positionSize;
       const closed: SimTrade = {
         ...this.openPosition,
         exitTime: lastBar.time,

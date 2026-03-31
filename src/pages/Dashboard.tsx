@@ -57,8 +57,14 @@ export default function Dashboard() {
   } = useTws();
   const observedMarketDataSource = useObservedMarketDataSource();
   const { isMac } = usePlatform();
+  const isIbConnected = ibStatus === "connected";
+  const isIbReconnecting = ibStatus === "reconnecting";
+  const footerConnectionLabel =
+    connectionType && status === "connected"
+      ? CONNECTION_LABELS[connectionType]
+      : "IBKR CONNECTED";
 
-  const dataProvider = status === "connected"
+  const dataProvider = isIbConnected
     ? "live"
     : observedMarketDataSource === "dailyiq" || (dailyiqHasKey && observedMarketDataSource == null)
       ? "dailyiq"
@@ -348,23 +354,23 @@ export default function Dashboard() {
           <div className="flex items-center gap-1.5">
             <span
               className={`inline-block h-1.5 w-1.5 rounded-full ${
-                status === "connected" && ibStatus === "connected"
+                isIbConnected
                   ? "bg-green"
-                  : status === "probing" || ibStatus === "reconnecting"
+                  : status === "probing" || isIbReconnecting
                     ? "bg-amber animate-pulse"
                     : "bg-red/60"
               }`}
             />
             <span className={
-              status === "connected" && ibStatus === "connected"
+              isIbConnected
                 ? "text-green"
-                : ibStatus === "reconnecting" || status === "probing"
+                : isIbReconnecting || status === "probing"
                   ? "text-amber"
                   : "text-red"
             }>
-              {status === "connected" && ibStatus === "connected" && connectionType
-                ? CONNECTION_LABELS[connectionType]
-                : ibStatus === "reconnecting"
+              {isIbConnected
+                ? footerConnectionLabel
+                : isIbReconnecting
                   ? "Reconnecting..."
                   : status === "probing"
                     ? "Probing..."

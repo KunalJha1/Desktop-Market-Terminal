@@ -588,13 +588,6 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
                 <p className="mt-1 break-all font-mono text-[10px] leading-5 text-white/50">
                   {executablePath}
                 </p>
-                <p className="mt-2 text-[10px] leading-4 text-white/28">
-                  After an update, compare this path to the one shown when the issue happens: open Task
-                  Manager, right-click DailyIQ, choose Open file location, and check whether the path
-                  matches. If your desktop or taskbar shortcut Target points somewhere else, you may
-                  have two installs; uninstall duplicates and pin only the folder that matches this
-                  path.
-                </p>
               </div>
             ) : null}
 

@@ -657,6 +657,7 @@ export default function ScriptEditor({
             onKeyDown={handleKeyDown}
             spellCheck={false}
             readOnly={isBuiltInView}
+            className="scrollbar-dark"
             style={{
               position: 'relative',
               zIndex: 1,
@@ -715,6 +716,7 @@ export default function ScriptEditor({
           </button>
           {errorsExpanded && (
             <div
+              className="scrollbar-dark"
               style={{
                 maxHeight: 96,
                 overflowY: 'auto',

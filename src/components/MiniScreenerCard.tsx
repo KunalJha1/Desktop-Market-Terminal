@@ -22,6 +22,7 @@ type BuiltInColumnId =
   | "symbol"
   | "priceChange"
   | "mcap"
+  | "sentiment"
   | "pe"
   | "fpe"
   | "week52"
@@ -31,6 +32,7 @@ type SortKey =
   | "symbol"
   | "change"
   | "mcap"
+  | "sentiment"
   | "pe"
   | "fpe"
   | "verdict"
@@ -64,6 +66,7 @@ const BUILT_IN_COLUMNS: BuiltInColumnDef[] = [
   { id: "symbol", label: "Symbol", width: 240, minWidth: 180, sortKey: "symbol", defaultVisible: true },
   { id: "priceChange", label: "Price / Chg", width: 108, minWidth: 88, sortKey: "change", defaultVisible: true },
   { id: "mcap", label: "Mkt Cap", width: 96, minWidth: 72, sortKey: "mcap", defaultVisible: true },
+  { id: "sentiment", label: "Sentiment", width: 88, minWidth: 68, sortKey: "sentiment", defaultVisible: true },
   { id: "pe", label: "P/E", width: 76, minWidth: 60, sortKey: "pe", defaultVisible: false },
   { id: "fpe", label: "Fwd P/E", width: 82, minWidth: 64, sortKey: "fpe", defaultVisible: false },
   { id: "week52", label: "52W H / L", width: 108, minWidth: 84, defaultVisible: false },
@@ -71,7 +74,7 @@ const BUILT_IN_COLUMNS: BuiltInColumnDef[] = [
 ];
 
 const BUILT_IN_COLUMN_MAP = new Map(BUILT_IN_COLUMNS.map((col) => [col.id, col] as const));
-const DEFAULT_VISIBLE_COLUMNS: ColumnId[] = ["symbol", "priceChange", "mcap", "ta:1d", "verdict"];
+const DEFAULT_VISIBLE_COLUMNS: ColumnId[] = ["symbol", "priceChange", "mcap", "sentiment", "ta:1d", "verdict"];
 const DEFAULT_TA_COL_WIDTH = 68;
 const MIN_TA_COL_WIDTH = 52;
 
@@ -252,6 +255,7 @@ function MiniScreenerCard({
       (sortKey === "symbol" && visibleColumns.includes("symbol")) ||
       (sortKey === "change" && visibleColumns.includes("priceChange")) ||
       (sortKey === "mcap" && visibleColumns.includes("mcap")) ||
+      (sortKey === "sentiment" && visibleColumns.includes("sentiment")) ||
       (sortKey === "pe" && visibleColumns.includes("pe")) ||
       (sortKey === "fpe" && visibleColumns.includes("fpe")) ||
       (sortKey === "verdict" && visibleColumns.includes("verdict")) ||
@@ -416,6 +420,10 @@ function MiniScreenerCard({
         case "fpe":
           va = a.forwardPE ?? -999999;
           vb = b.forwardPE ?? -999999;
+          return (va - vb) * dir;
+        case "sentiment":
+          va = a.sentimentScore ?? -1;
+          vb = b.sentimentScore ?? -1;
           return (va - vb) * dir;
         case "verdict":
           va = verdictScore(a.verdictScore);
@@ -669,7 +677,7 @@ function MiniScreenerCard({
           </div>
 
           {tiles.length === 0 ? (
-            <div className="flex h-full min-h-[160px] items-center justify-center font-mono text-[12px] text-white/20">
+            <div className="flex h-full min-h-[160px] items-center justify-center font-mono text-[12px] text-white/35">
               Loading...
             </div>
           ) : (
@@ -696,7 +704,7 @@ function MiniScreenerCard({
                             <p className="font-mono text-[13px] font-semibold leading-tight text-white/90">
                               {row.symbol}
                             </p>
-                            <p className="mt-0.5 text-[11px] leading-tight text-white/35">
+                            <p className="mt-0.5 text-[11px] leading-tight text-white/60">
                               {row.name}
                             </p>
                           </div>
@@ -719,15 +727,23 @@ function MiniScreenerCard({
 
                     if (col === "mcap") {
                       return (
-                        <div key={col} className="px-1.5 text-right font-mono text-[11px] text-white/60">
+                        <div key={col} className="px-1.5 text-right font-mono text-[11px] text-white/80">
                           {formatMarketCap(row.marketCap)}
+                        </div>
+                      );
+                    }
+
+                    if (col === "sentiment") {
+                      return (
+                        <div key={col} className="flex justify-center">
+                          <CircularGauge score={row.sentimentScore ?? null} size={28} />
                         </div>
                       );
                     }
 
                     if (col === "pe") {
                       return (
-                        <div key={col} className="px-1.5 text-right font-mono text-[11px] text-white/60">
+                        <div key={col} className="px-1.5 text-right font-mono text-[11px] text-white/80">
                           {row.trailingPE != null ? row.trailingPE.toFixed(1) : "\u2014"}
                         </div>
                       );
@@ -735,7 +751,7 @@ function MiniScreenerCard({
 
                     if (col === "fpe") {
                       return (
-                        <div key={col} className="px-1.5 text-right font-mono text-[11px] text-white/60">
+                        <div key={col} className="px-1.5 text-right font-mono text-[11px] text-white/80">
                           {row.forwardPE != null ? row.forwardPE.toFixed(1) : "\u2014"}
                         </div>
                       );
@@ -743,9 +759,9 @@ function MiniScreenerCard({
 
                     if (col === "week52") {
                       return (
-                        <div key={col} className="px-1.5 text-right font-mono text-[11px] leading-tight text-white/55">
+                        <div key={col} className="px-1.5 text-right font-mono text-[11px] leading-tight text-white/80">
                           <div>{row.week52High != null ? row.week52High.toFixed(0) : "\u2014"}</div>
-                          <div className="mt-0.5 text-white/30">{row.week52Low != null ? row.week52Low.toFixed(0) : "\u2014"}</div>
+                          <div className="mt-0.5 text-white/55">{row.week52Low != null ? row.week52Low.toFixed(0) : "\u2014"}</div>
                         </div>
                       );
                     }

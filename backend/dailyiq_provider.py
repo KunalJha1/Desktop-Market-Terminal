@@ -234,6 +234,9 @@ def fetch_quote_from_dailyiq(symbol: str) -> dict | None:
     # Derive prev_close from price and change
     prev_close = round(price - change, 4) if change else 0.0
 
+    sentiment_raw = data.get("sentimentScore")
+    sentiment_score = int(sentiment_raw) if sentiment_raw is not None else None
+
     return {
         "symbol": symbol,
         "last": price,
@@ -249,6 +252,7 @@ def fetch_quote_from_dailyiq(symbol: str) -> dict | None:
         "volume": None,  # snapshot doesn't include volume
         "spread": None,
         "source": "dailyiq",
+        "sentimentScore": sentiment_score,
     }
 
 
@@ -318,6 +322,28 @@ def fetch_bars_batch_concurrent(
                 logger.debug("DailyIQ concurrent bars failed for %s/%s: %s", sym, tf, exc)
                 results.append((sym, tf, []))
     return results
+
+
+# ── Sentiment scores (from cached snapshots) ─────────────────────────
+
+def fetch_sentiment_scores_from_cache(symbols: list[str]) -> dict[str, int | None]:
+    """Read sentimentScore from cached DailyIQ snapshot responses.
+
+    Uses existing cache entries only — no new API calls.
+    Returns a dict mapping symbol → score (None if not cached or missing).
+    """
+    result: dict[str, int | None] = {}
+    for sym in symbols:
+        cache_key = f"snapshot/{sym}"
+        cached = _read_cache(cache_key, ttl_s=float("inf"))
+        if cached and cached.get("sentimentScore") is not None:
+            try:
+                result[sym] = int(cached["sentimentScore"])
+            except (TypeError, ValueError):
+                result[sym] = None
+        else:
+            result[sym] = None
+    return result
 
 
 # ── Fundamentals ─────────────────────────────────────────────────────

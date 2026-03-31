@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft, Mail, Lock, Eye, EyeOff } from "lucide-react";
-import { supabase } from "../../lib/supabase";
+import { getSupabase } from "../../lib/supabase";
 
 export default function SignIn() {
   const [email, setEmail] = useState("");
@@ -15,7 +15,7 @@ export default function SignIn() {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
-    const { error: signInError } = await supabase.auth.signInWithPassword({
+    const { error: signInError } = await getSupabase().auth.signInWithPassword({
       email,
       password,
     });

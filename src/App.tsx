@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { AuthProvider, useAuth } from "./lib/auth";
@@ -17,6 +17,7 @@ import { appWindow } from "@tauri-apps/api/window";
 import { WatchlistProvider, useWatchlist } from "./lib/watchlist";
 import { isTauriRuntime } from "./lib/platform";
 import { initPerfDiagnostics } from "./lib/perf-diagnostics";
+import { initSupabase } from "./lib/supabase";
 import { isDetachedWindow, isTestWindowLabel, setMainWindowClosing } from "./lib/detached";
 
 type WindowMode = "main" | "detached" | "test";
@@ -126,9 +127,14 @@ function AppRoutes() {
 }
 
 function App() {
+  const [configReady, setConfigReady] = useState(false);
+
   useEffect(() => {
     initPerfDiagnostics();
+    initSupabase().then(() => setConfigReady(true));
   }, []);
+
+  if (!configReady) return <SplashScreen label="Starting app" />;
 
   const windowMode = resolveWindowMode();
 

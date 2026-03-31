@@ -301,12 +301,26 @@ function evaluate(node: ASTNode, env: Environment): Value {
       const { namespace, fn, args } = node;
       const key = `${namespace}.${fn}`;
 
-      // ── input.* ────────────────────────────────────────────────────────
+      // ── input.* (input.bool, input.float, input.int, input.string) ───────
       if (namespace === 'input') {
-        const defVal = args[0] ? toScalar(evaluate(args[0], env)) : 0;
-        const title = args[1]?.kind === 'StringLiteral' ? args[1].value : fn;
-        env.inputs[title] = isNaN(defVal) ? 0 : defVal;
-        return [isNaN(defVal) ? 0 : defVal];
+        // input.bool("Label", default) | input.float("Label", default) | etc.
+        // Args may be (title, defVal) or (defVal, title) depending on usage.
+        // We accept both orderings: if first arg is a string, it's the title.
+        let defVal = 0;
+        let title = fn;
+        if (args.length >= 1) {
+          if (args[0].kind === 'StringLiteral') {
+            title = args[0].value;
+            defVal = args[1] ? toScalar(evaluate(args[1], env)) : 0;
+          } else {
+            defVal = toScalar(evaluate(args[0], env));
+            if (args[1]?.kind === 'StringLiteral') title = args[1].value;
+          }
+        }
+        if (fn === 'bool') defVal = isNaN(defVal) ? 0 : defVal ? 1 : 0;
+        if (isNaN(defVal)) defVal = 0;
+        env.inputs[title] = defVal;
+        return [defVal];
       }
 
       const libFn = namespacedLib[key];
@@ -639,6 +653,15 @@ export function interpretScript(source: string, bars: OHLCVBar[]): ScriptResult 
 
   // 4. Evaluate
   const env = new Environment(bars);
+  // Pre-initialize all top-level assigned variables to NaN so forward references work
+  for (const stmt of statements) {
+    if (
+      (stmt.kind === 'Assignment' || stmt.kind === 'VarDecl') &&
+      env.get((stmt as { name: string }).name) === undefined
+    ) {
+      env.set((stmt as { name: string }).name, new Array(bars.length).fill(NaN));
+    }
+  }
   for (const stmt of statements) {
     try {
       evaluate(stmt, env);

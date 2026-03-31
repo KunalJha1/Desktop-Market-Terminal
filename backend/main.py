@@ -837,6 +837,15 @@ def _enrich_with_tech_scores(conn, payloads: list[dict]) -> None:
         p["techScore1w"] = padded[6]
 
 
+def _enrich_with_sentiment_scores(payloads: list[dict]) -> None:
+    """Merge DailyIQ sentiment scores (from cache) into snapshot payloads in-place."""
+    from dailyiq_provider import fetch_sentiment_scores_from_cache
+    symbols = [p["symbol"] for p in payloads]
+    score_map = fetch_sentiment_scores_from_cache(symbols)
+    for p in payloads:
+        p["sentimentScore"] = score_map.get(p["symbol"])
+
+
 def _format_option_expiration_label(expiration_ms: int) -> str:
     dt = datetime.fromtimestamp(expiration_ms / 1000, tz=timezone.utc)
     return dt.strftime("%b %d")
@@ -1168,13 +1177,36 @@ def create_app() -> FastAPI:
                 # This populates the dailyiq_cache table so that when the
                 # frontend calls /historical, DailyIQ fetch_bars returns
                 # immediately from cache, then writes into the OHLCV tables.
-                pairs = (
+                # Skip pairs that are already fresh in the DB.
+                from historical import _cache_fresh, CACHE_TTL, CACHE_TTL_DAILY
+                from db_utils import sync_db_session
+
+                all_pairs = (
                     [(sym, "1d") for sym in watchlist_syms]
                     + [(sym, "5m") for sym in watchlist_syms]
                 )
+                ttl_map = {"1d": CACHE_TTL_DAILY, "5m": CACHE_TTL}
+                stale_pairs = []
+                for sym, bar_size in all_pairs:
+                    ttl = ttl_map.get(bar_size, CACHE_TTL)
+                    try:
+                        with sync_db_session() as conn:
+                            is_fresh, _, _ = _cache_fresh(conn, sym, bar_size, ttl)
+                        if not is_fresh:
+                            stale_pairs.append((sym, bar_size))
+                    except Exception:
+                        stale_pairs.append((sym, bar_size))
+
+                skipped = len(all_pairs) - len(stale_pairs)
+                if skipped:
+                    logger.info("[Warmup] Skipping %d already-fresh series", skipped)
+                if not stale_pairs:
+                    logger.info("[Warmup] All series already fresh — skipping DailyIQ bar pre-warm")
+                    return
+
                 bar_results = await loop.run_in_executor(
                     None,
-                    lambda: fetch_bars_batch_concurrent(pairs, limit=500),
+                    lambda: fetch_bars_batch_concurrent(stale_pairs, limit=500),
                 )
                 total_bars = sum(len(bars) for _, _, bars in bar_results)
                 logger.info(
@@ -1866,6 +1898,7 @@ def create_app() -> FastAPI:
                 val_map = _fetch_valuation_map(conn, [t["symbol"] for t in tiles])
                 _enrich_with_valuations(tiles, val_map)
                 _enrich_with_tech_scores(conn, tiles)
+                _enrich_with_sentiment_scores(tiles)
                 tiles.sort(key=lambda item: float(item.get("sp500Weight") or 0), reverse=True)
                 return tiles
 
@@ -1916,6 +1949,7 @@ def create_app() -> FastAPI:
                 val_map = _fetch_valuation_map(conn, [t["symbol"] for t in tiles])
                 _enrich_with_valuations(tiles, val_map)
                 _enrich_with_tech_scores(conn, tiles)
+                _enrich_with_sentiment_scores(tiles)
                 return tiles
 
         tiles = await run_db(_read)

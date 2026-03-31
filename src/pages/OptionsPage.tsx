@@ -10,6 +10,7 @@ import {
 
 const BG_BASE = "#0D1117";
 const BG_PANEL = "#161B22";
+const BG_HOVER = "#1C2128";
 
 function formatPrice(value: number | null | undefined): string {
   if (value == null) return "—";
@@ -50,9 +51,9 @@ function sourceLabel(raw: string | null | undefined): string {
 }
 
 function metricTone(side: OptionSide | null): string {
-  if (!side) return "text-white/[0.22]";
+  if (!side) return "text-white/[0.28]";
   if (side.inTheMoney) return "text-[#00C853]";
-  return "text-white/[0.82]";
+  return "text-white/[0.90]";
 }
 
 const METRIC_COLS =
@@ -81,13 +82,16 @@ function expirationMonthMinWidthPx(expirations: { label: string }[]): number {
 function SideMetrics({
   side,
   align,
+  itm,
 }: {
   side: OptionSide | null;
   align: "left" | "right";
+  itm?: boolean;
 }) {
   const base = align === "left" ? "text-right" : "text-left";
+  const itmCls = itm ? "bg-[#1A56DB]/[0.10]" : "";
   return (
-    <div className={`${METRIC_COLS} font-mono text-[11px] tabular-nums ${base}`}>
+    <div className={`${METRIC_COLS} font-mono text-[11px] tabular-nums ${base} ${itmCls} py-2 px-1`}>
       <span className={metricTone(side)} title="Bid">
         {formatPrice(side?.bid)}
       </span>
@@ -120,7 +124,7 @@ function ChainHeaderLabels({ align }: { align: "left" | "right" }) {
   const cls = align === "left" ? "text-right" : "text-left";
   return (
     <div
-      className={`${METRIC_COLS} font-mono text-[10px] font-normal uppercase tracking-[0.12em] text-white/38 ${cls}`}
+      className={`${METRIC_COLS} font-mono text-[10px] font-normal uppercase tracking-[0.12em] text-white/48 ${cls}`}
     >
       <span>Bid</span>
       <span>Ask</span>
@@ -189,6 +193,7 @@ function OptionsPage() {
   }, [flatExpirations, selectedExpiration]);
 
   const stale = summary?.capturedAt ? Date.now() - summary.capturedAt > 60 * 60 * 1000 : false;
+  const [strikesVisible, setStrikesVisible] = useState<number | "all">(20);
 
   const atmStrike = useMemo(() => {
     const spot = summary?.underlyingPrice;
@@ -201,6 +206,19 @@ function OptionsPage() {
 
   const isAtmRow = (strike: number) =>
     atmStrike != null && Math.abs(strike - atmStrike) < 1e-8;
+
+  const visibleRows = useMemo(() => {
+    const rows = chain?.rows ?? [];
+    if (strikesVisible === "all" || rows.length <= strikesVisible) return rows;
+    if (atmStrike == null) return rows.slice(0, strikesVisible);
+    const atmIdx = rows.findIndex((r) => Math.abs(r.strike - atmStrike) < 1e-8);
+    if (atmIdx < 0) return rows.slice(0, strikesVisible);
+    const half = Math.floor(strikesVisible / 2);
+    const start = Math.max(0, atmIdx - half);
+    const end = Math.min(rows.length, start + strikesVisible);
+    const adjStart = Math.max(0, end - strikesVisible);
+    return rows.slice(adjStart, end);
+  }, [chain?.rows, strikesVisible, atmStrike]);
 
   return (
     <div
@@ -215,11 +233,11 @@ function OptionsPage() {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-3">
-              <h1 className="font-mono text-[11px] uppercase tracking-[0.2em] text-white/45">
+              <h1 className="font-mono text-[11px] uppercase tracking-[0.2em] text-white/55">
                 Options
               </h1>
               <span className="hidden h-3 w-px bg-white/10 sm:inline" aria-hidden />
-              <p className="text-[12px] text-white/50">Chain snapshot from collector</p>
+              <p className="text-[12px] text-white/60">Chain snapshot from collector</p>
             </div>
 
             <button
@@ -241,19 +259,19 @@ function OptionsPage() {
 
           <div className="flex flex-wrap gap-2 sm:gap-3">
             <div
-              className="flex min-w-[100px] flex-col gap-0.5 border border-white/[0.06] px-3 py-2"
-              style={{ backgroundColor: BG_BASE, borderRadius: 4 }}
+              className="flex min-w-[100px] flex-col gap-0.5 border border-white/[0.10] px-3 py-2"
+              style={{ backgroundColor: BG_HOVER, borderRadius: 4 }}
             >
-              <span className="text-[10px] uppercase tracking-[0.14em] text-white/35">Spot</span>
+              <span className="text-[10px] uppercase tracking-[0.14em] text-white/45">Spot</span>
               <span className="font-mono text-[14px] tabular-nums text-[#00C853]/95">
                 {formatPrice(summary?.underlyingPrice)}
               </span>
             </div>
             <div
-              className="flex min-w-[120px] flex-col gap-0.5 border border-white/[0.06] px-3 py-2"
-              style={{ backgroundColor: BG_BASE, borderRadius: 4 }}
+              className="flex min-w-[120px] flex-col gap-0.5 border border-white/[0.10] px-3 py-2"
+              style={{ backgroundColor: BG_HOVER, borderRadius: 4 }}
             >
-              <span className="text-[10px] uppercase tracking-[0.14em] text-white/35">Updated</span>
+              <span className="text-[10px] uppercase tracking-[0.14em] text-white/45">Updated</span>
               <span
                 className={`font-mono text-[12px] tabular-nums ${stale ? "text-[#F59E0B]" : "text-white/80"}`}
               >
@@ -261,10 +279,10 @@ function OptionsPage() {
               </span>
             </div>
             <div
-              className="flex min-w-[88px] flex-col gap-0.5 border border-white/[0.06] px-3 py-2"
-              style={{ backgroundColor: BG_BASE, borderRadius: 4 }}
+              className="flex min-w-[88px] flex-col gap-0.5 border border-white/[0.10] px-3 py-2"
+              style={{ backgroundColor: BG_HOVER, borderRadius: 4 }}
             >
-              <span className="text-[10px] uppercase tracking-[0.14em] text-white/35">Source</span>
+              <span className="text-[10px] uppercase tracking-[0.14em] text-white/45">Source</span>
               <span className="flex items-center gap-1.5 font-mono text-[12px] uppercase text-white/85">
                 <Radio className="h-3.5 w-3.5 text-[#1A56DB]" strokeWidth={2} aria-hidden />
                 {sourceLabel(summary?.source)}
@@ -287,7 +305,7 @@ function OptionsPage() {
                   className="min-w-0 shrink-0"
                   style={{ minWidth: expirationMonthMinWidthPx(month.expirations) }}
                 >
-                  <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-white/38">
+                  <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-white/50">
                     {month.monthLabel}
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -301,12 +319,12 @@ function OptionsPage() {
                           className={`min-w-[56px] border px-2.5 py-1.5 text-left font-mono transition-[border-color,background-color,color] duration-100 ease-out ${
                             active
                               ? "border-[#1A56DB] bg-[#1A56DB]/12 text-[#d0e0ff]"
-                              : "border-white/[0.08] bg-[#0D1117] text-white/55 hover:border-white/15 hover:bg-[#1C2128] hover:text-white/80"
+                              : "border-white/[0.08] bg-[#0D1117] text-white/70 hover:border-white/15 hover:bg-[#1C2128] hover:text-white/85"
                           }`}
                           style={{ borderRadius: 4 }}
                         >
                           <div className="text-[11px] leading-tight">{expiration.label}</div>
-                          <div className="mt-0.5 text-[9px] text-white/30">{expiration.contractCount} lines</div>
+                          <div className="mt-0.5 text-[9px] text-white/40">{expiration.contractCount} lines</div>
                         </button>
                       );
                     })}
@@ -355,19 +373,41 @@ function OptionsPage() {
               <ChainHeaderLabels align="right" />
             </div>
 
-            <div className="grid shrink-0 grid-cols-[1fr_128px_1fr] items-center gap-3 border-b border-white/[0.06] px-3 py-2 sm:px-4">
-              <div className="text-right font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-[#00C853]/85">
+            <div className="grid shrink-0 grid-cols-[1fr_128px_1fr] items-center gap-3 border-b border-white/[0.06] px-3 py-2 sm:px-4" style={{ backgroundColor: BG_PANEL }}>
+              <div className="text-right font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-[#00C853]">
                 Calls
               </div>
-              <div className="text-center font-mono text-[11px] tabular-nums text-white/55">
-                {chain?.expirationLabel ?? "—"}
+              <div className="flex flex-col items-center gap-1">
+                <div className="font-mono text-[11px] tabular-nums text-white/55">
+                  {chain?.expirationLabel ?? "—"}
+                </div>
+                <div className="flex items-center gap-1">
+                  {([10, 20, 50, "all"] as const).map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setStrikesVisible(n)}
+                      className={`h-4 min-w-[22px] border px-1 font-mono text-[8px] uppercase tracking-[0.1em] transition-colors duration-100 ${
+                        strikesVisible === n
+                          ? "border-[#1A56DB]/60 bg-[#1A56DB]/20 text-[#a8c8ff]"
+                          : "border-white/[0.06] bg-transparent text-white/30 hover:border-white/15 hover:text-white/55"
+                      }`}
+                      style={{ borderRadius: 2 }}
+                    >
+                      {n === "all" ? "all" : n}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="text-left font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-[#FF3D71]/85">
+              <div className="text-left font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-[#FF3D71]">
                 Puts
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-auto" style={{ backgroundColor: BG_BASE }}>
+            <div
+              className="min-h-0 flex-1 overflow-auto [scrollbar-color:#2a3140_#0D1117] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-sm [&::-webkit-scrollbar-thumb]:bg-white/[0.14] [&::-webkit-scrollbar-track]:bg-[#0D1117]"
+              style={{ backgroundColor: BG_PANEL }}
+            >
               {chainLoading ? (
                 <div className="px-3 py-2 sm:px-4">
                   <ChainSkeletonRows />
@@ -377,27 +417,29 @@ function OptionsPage() {
                   {chainError}
                 </div>
               ) : !(chain?.rows.length) ? (
-                <div className="flex h-48 items-center justify-center font-mono text-[11px] text-white/35">
+                <div className="flex h-48 items-center justify-center font-mono text-[11px] text-white/45">
                   Select an expiration with stored contracts.
                 </div>
               ) : (
                 <div className="min-w-[1080px] px-3 pb-3 pt-1 sm:px-4">
-                  {chain.rows.map((row) => {
+                  {visibleRows.map((row) => {
                     const atm = isAtmRow(row.strike);
+                    const callItm = row.call?.inTheMoney === true;
+                    const putItm = row.put?.inTheMoney === true;
                     return (
                       <div
                         key={row.strike}
-                        className={`grid grid-cols-[1fr_128px_1fr] items-center gap-3 border-b border-white/[0.04] transition-colors duration-100 ease-out ${
+                        className={`grid grid-cols-[1fr_128px_1fr] items-center gap-0 border-b border-white/[0.06] transition-colors duration-100 ease-out ${
                           atm ? "bg-[#1A56DB]/[0.07]" : "hover:bg-[#1C2128]/80"
                         }`}
                       >
-                        <SideMetrics side={row.call} align="left" />
+                        <SideMetrics side={row.call} align="left" itm={callItm} />
                         <div
                           className={`flex flex-col items-center justify-center border-x border-white/[0.06] py-2 ${
                             atm ? "bg-[#1A56DB]/[0.06]" : ""
                           }`}
                         >
-                          <div className="font-mono text-[13px] font-medium tabular-nums text-white/92">
+                          <div className="font-mono text-[13px] font-medium tabular-nums text-white">
                             {formatPrice(row.strike)}
                           </div>
                           {atm ? (
@@ -405,24 +447,24 @@ function OptionsPage() {
                               ATM
                             </span>
                           ) : null}
-                          <div className="mt-1 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 text-[9px] text-white/32">
+                          <div className="mt-1 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 text-[9px] text-white/42">
                             <span>
-                              C vol <span className="font-mono tabular-nums text-white/45">{formatInt(row.call?.volume)}</span>
+                              C vol <span className="font-mono tabular-nums text-white/55">{formatInt(row.call?.volume)}</span>
                             </span>
                             <span>
-                              P vol <span className="font-mono tabular-nums text-white/45">{formatInt(row.put?.volume)}</span>
+                              P vol <span className="font-mono tabular-nums text-white/55">{formatInt(row.put?.volume)}</span>
                             </span>
                           </div>
-                          <div className="mt-0.5 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 text-[9px] text-white/25">
+                          <div className="mt-0.5 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 text-[9px] text-white/35">
                             <span>
-                              C OI <span className="font-mono tabular-nums text-white/38">{formatInt(row.call?.openInterest)}</span>
+                              C OI <span className="font-mono tabular-nums text-white/48">{formatInt(row.call?.openInterest)}</span>
                             </span>
                             <span>
-                              P OI <span className="font-mono tabular-nums text-white/38">{formatInt(row.put?.openInterest)}</span>
+                              P OI <span className="font-mono tabular-nums text-white/48">{formatInt(row.put?.openInterest)}</span>
                             </span>
                           </div>
                         </div>
-                        <SideMetrics side={row.put} align="right" />
+                        <SideMetrics side={row.put} align="right" itm={putItm} />
                       </div>
                     );
                   })}

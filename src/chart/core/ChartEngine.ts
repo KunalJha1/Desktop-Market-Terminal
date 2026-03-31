@@ -220,7 +220,7 @@ export class ChartEngine {
 
   setData(bars: OHLCVBar[]) {
     const prevLength = this.bars.length;
-    const wasNearEnd = this.liveMode && this.viewport.isNearEnd(2);
+    const wasNearEnd = this.liveMode && this.viewport.isLastBarVisible();
     this.bars = bars;
     this.lastNotifiedViewportStart = null;
     this.lastNotifiedViewportEnd = null;
@@ -243,7 +243,7 @@ export class ChartEngine {
       return;
     }
     const prevLength = this.bars.length;
-    const wasNearEnd = this.liveMode && this.viewport.isNearEnd(2);
+    const wasNearEnd = this.liveMode && this.viewport.isLastBarVisible();
     this.bars = bars;
 
     this.viewport.setRightOffsetBars(this.computeRightOffsetBars());
@@ -384,7 +384,7 @@ export class ChartEngine {
   }
 
   setStopperPx(px: number) {
-    const wasNearEnd = this.liveMode && this.viewport.isNearEnd(2);
+    const wasNearEnd = this.liveMode && this.viewport.isLastBarVisible();
     this.stopperPx = Math.max(0, px);
     const rightOffsetBars = this.computeRightOffsetBars();
     this.viewport.setRightOffsetBars(rightOffsetBars);
@@ -2859,10 +2859,16 @@ export class ChartEngine {
     const badgeStroke = (color && color !== '#888888') ? color : defaultStroke;
     const badgeFill = this.withAlpha(badgeStroke, 0.15);
     const textColor = '#F8FAFC';
-    const stemEndY = y + (direction === 'up' ? -14 : 14);
-    const textY = y + (direction === 'up' ? -26 : 26);
-    const textWidth = Math.max(28, Math.ceil(this.renderer.measureText(label, FONT_MONO_SMALL).width) + 12);
+    const stemLen = 14;
     const boxHeight = 14;
+    const barGap = 6;
+    // BUY (up arrow): label+stem go BELOW the bar's low (larger y in canvas space)
+    // SELL (down arrow): label+stem go ABOVE the bar's high (smaller y in canvas space)
+    const sign = direction === 'up' ? 1 : -1;
+    const stemStartY = y + sign * barGap;
+    const stemEndY = stemStartY + sign * stemLen;
+    const textY = stemEndY + sign * (boxHeight / 2 + 2);
+    const textWidth = Math.max(28, Math.ceil(this.renderer.measureText(label, FONT_MONO_SMALL).width) + 12);
     const boxX = x - textWidth / 2;
     const boxY = textY - boxHeight / 2;
     const minY = this.viewport.chartTop + 4;
@@ -2870,7 +2876,7 @@ export class ChartEngine {
     const clampedBoxY = Math.min(Math.max(boxY, minY), Math.max(minY, maxY));
     const clampedTextY = clampedBoxY + boxHeight / 2;
 
-    this.renderer.line(x, y, x, stemEndY, badgeStroke, 1.25);
+    this.renderer.line(x, stemStartY, x, stemEndY, badgeStroke, 1.25);
     this.renderer.rect(boxX, clampedBoxY, textWidth, boxHeight, badgeFill);
     this.renderer.rectStroke(boxX, clampedBoxY, textWidth, boxHeight, badgeStroke, 1);
     this.renderer.textSmall(label, x, clampedTextY, textColor, 'center');

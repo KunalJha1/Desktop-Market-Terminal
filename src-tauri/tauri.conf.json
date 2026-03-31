@@ -63,6 +63,7 @@
     "bundle": {
       "active": true,
       "identifier": "com.dailyiq.app",
+      "resources": ["resources/app-config.json"],
       "publisher": "DailyIQ",
       "icon": [
         "icons/32x32.png",

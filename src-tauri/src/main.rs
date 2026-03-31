@@ -14,6 +14,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::api::process::{Command as SidecarCommand, CommandChild as SidecarChild};
 use tauri::{AppHandle, Manager};
 
+const DAILYIQ_API_KEY: &str = match option_env!("DAILYIQ_API_KEY") {
+    Some(k) => k,
+    None => "",
+};
+
 const OAUTH_CALLBACK_PORT: u16 = 17284;
 const WATCHDOG_POLL_INTERVAL_S: u64 = 5;
 const WATCHDOG_FAILS_BEFORE_RESTART: u32 = 3;
@@ -490,6 +495,9 @@ fn bundled_env(app_handle: &AppHandle) -> Result<HashMap<String, String>, String
         "DAILYIQ_DATA_DIR".to_string(),
         app_data_dir(app_handle)?.to_string_lossy().to_string(),
     );
+    if !DAILYIQ_API_KEY.is_empty() {
+        env.insert("DAILYIQ_API_KEY".to_string(), DAILYIQ_API_KEY.to_string());
+    }
     Ok(env)
 }
 
@@ -965,6 +973,18 @@ fn get_executable_path() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Returns runtime app config (Supabase credentials) from the bundled resource file.
+#[tauri::command]
+fn get_app_config(app_handle: AppHandle) -> Result<serde_json::Value, String> {
+    let resource_path = app_handle
+        .path_resolver()
+        .resolve_resource("resources/app-config.json")
+        .ok_or_else(|| "app-config.json resource not found".to_string())?;
+    let contents = std::fs::read_to_string(&resource_path)
+        .map_err(|e| format!("Failed to read app-config.json: {}", e))?;
+    serde_json::from_str(&contents).map_err(|e| format!("Failed to parse app-config.json: {}", e))
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(SidecarState {
@@ -995,6 +1015,7 @@ fn main() {
             get_sidecar_port,
             get_backend_status,
             get_executable_path,
+            get_app_config,
             spawn_test_window,
         ])
         .setup(|app| {

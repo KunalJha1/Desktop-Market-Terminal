@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft, User, Mail, Lock } from "lucide-react";
-import { supabase } from "../../lib/supabase";
+import { getSupabase } from "../../lib/supabase";
 
 export default function SignUp() {
   const [name, setName] = useState("");
@@ -35,7 +35,7 @@ export default function SignUp() {
       return;
     }
     setSubmitting(true);
-    const { error: signUpError } = await supabase.auth.signUp({
+    const { error: signUpError } = await getSupabase().auth.signUp({
       email,
       password,
       options: { data: { full_name: name } },

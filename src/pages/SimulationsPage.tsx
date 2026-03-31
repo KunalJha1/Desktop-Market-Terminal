@@ -5,9 +5,11 @@ import type { SimState, SessionFilter } from "../lib/simulation-engine";
 import type { OHLCVBar } from "../chart/types";
 import { loadCustomStrategies } from "../chart/customStrategyStorage";
 import type { CustomStrategyDefinition } from "../chart/customStrategies";
+import { PRESET_STRATEGIES } from "../chart/presetStrategies";
 import { useSidecarPort } from "../lib/tws";
+import SymbolSearchModal from "../components/SymbolSearchModal";
+import { SEARCHABLE_SYMBOLS } from "../lib/market-data";
 
-const LIQUID_SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "TSLA", "NVDA", "AMZN", "GOOGL", "META", "AMD"];
 const SIM_COUNTS = [1, 4, 9, 16] as const;
 const SPEEDS = [1, 2, 5, 10] as const;
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"];
@@ -72,24 +74,27 @@ function SimulationsPage() {
   const [symbol, setSymbol] = useState("SPY");
   const [simCount, setSimCount] = useState<(typeof SIM_COUNTS)[number]>(4);
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1);
+  const [positionSize, setPositionSize] = useState(1);
   const [isRunning, setIsRunning] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [showScript, setShowScript] = useState(false);
+  const [scriptSource, setScriptSource] = useState("");
 
   const enginesRef = useRef<SimulationEngine[]>([]);
   const [simStates, setSimStates] = useState<SimState[]>([]);
 
-  // Load saved strategies and keep in sync with ChartPage edits
+  // Load saved strategies (presets always included) and keep in sync with ChartPage edits
   const refreshStrategies = useCallback(() => {
-    const list = loadCustomStrategies();
-    setStrategies(list);
-    // If currently selected strategy still exists, keep it; otherwise pick first
+    const userList = loadCustomStrategies();
+    const merged = [...PRESET_STRATEGIES, ...userList];
+    setStrategies(merged);
     setStrategy((prev) => {
-      if (prev && list.some((s) => s.id === prev.id)) {
-        // Return the updated version in case it was edited
-        return list.find((s) => s.id === prev.id) ?? list[0] ?? null;
+      if (prev && merged.some((s) => s.id === prev.id)) {
+        return merged.find((s) => s.id === prev.id) ?? merged[0] ?? null;
       }
-      return list[0] ?? null;
+      return merged[0] ?? null;
     });
   }, []);
 
@@ -100,16 +105,17 @@ function SimulationsPage() {
       if (e.key === "dailyiq-chart-custom-strategies") refreshStrategies();
     };
     window.addEventListener("storage", onStorage);
-    // Also re-sync when the window regains focus (tab switch within the app)
     window.addEventListener("focus", refreshStrategies);
+    window.addEventListener("dailyiq-strategies-updated", refreshStrategies);
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("focus", refreshStrategies);
+      window.removeEventListener("dailyiq-strategies-updated", refreshStrategies);
     };
   }, [refreshStrategies]);
 
   const handleRun = useCallback(async () => {
-    if (!port || !strategy) return;
+    if (!port || (!strategy && !scriptSource.trim())) return;
     setIsLoading(true);
     setIsRunning(false);
     setError(null);
@@ -121,9 +127,9 @@ function SimulationsPage() {
       const url = `http://127.0.0.1:${port}/historical?symbol=${encodeURIComponent(symbol)}&bar_size=1+min&duration=${encodeURIComponent(duration)}&what_to_show=TRADES`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json() as { bars: Array<{ ts: number; open: number; high: number; low: number; close: number; volume: number }> };
+      const json = await res.json() as { bars: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }> };
       const raw: OHLCVBar[] = (json.bars ?? []).map((b) => ({
-        time: b.ts,
+        time: b.time,
         open: b.open,
         high: b.high,
         low: b.low,
@@ -144,12 +150,14 @@ function SimulationsPage() {
         engines.push(
           new SimulationEngine({
             symbol,
-            strategy,
+            strategy: strategy ?? undefined,
             timeframe,
             rawBars: raw,
             startBarIndex,
             sessionFilter: hours,
             rollDays,
+            positionSize,
+            scriptSource: scriptSource.trim() || undefined,
           })
         );
       }
@@ -161,7 +169,7 @@ function SimulationsPage() {
       setError(String(err));
       setIsLoading(false);
     }
-  }, [port, strategy, sessions, symbol, simCount, timeframe, hours, rollDays]);
+  }, [port, strategy, sessions, symbol, simCount, timeframe, hours, rollDays, positionSize, scriptSource]);
 
   const handleStep = useCallback(() => {
     const engines = enginesRef.current;
@@ -204,21 +212,30 @@ function SimulationsPage() {
       {/* Top control bar */}
       <div className="flex items-center gap-1 h-10 px-3 border-b border-white/[0.06] shrink-0 overflow-x-auto">
         {/* Strategy */}
-        {strategies.length === 0 ? (
-          <span className="text-[11px] font-mono text-white/30 italic">
-            No strategies — create one in the Chart tab
-          </span>
-        ) : (
-          <select
-            value={strategy?.id ?? ""}
-            onChange={(e) => setStrategy(strategies.find((s) => s.id === e.target.value) ?? null)}
-            className="h-6 px-2 text-[11px] font-mono bg-[#161B22] border border-white/[0.08] rounded text-white/70 outline-none focus:border-white/20"
-          >
-            {strategies.map((s) => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
-        )}
+        {(() => {
+          const presets = strategies.filter((s) => s.id.startsWith("preset_"));
+          const userStrats = strategies.filter((s) => !s.id.startsWith("preset_"));
+          return (
+            <select
+              value={strategy?.id ?? ""}
+              onChange={(e) => setStrategy(strategies.find((s) => s.id === e.target.value) ?? null)}
+              className="h-6 px-2 text-[11px] font-mono bg-[#161B22] border border-white/[0.08] rounded text-white/70 outline-none focus:border-white/20"
+            >
+              <optgroup label="── Built-in ──">
+                {presets.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </optgroup>
+              {userStrats.length > 0 && (
+                <optgroup label="── My Strategies ──">
+                  {userStrats.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          );
+        })()}
         <CtrlBtn onClick={refreshStrategies} title="Refresh strategy list from Chart tab">↻</CtrlBtn>
 
         {/* Timeframe */}
@@ -275,20 +292,19 @@ function SimulationsPage() {
         <BarSeparator />
 
         {/* Symbol */}
-        <input
-          type="text"
-          value={symbol}
-          onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-          onKeyDown={(e) => e.key === "Enter" && handleRun()}
-          placeholder="SPY"
-          className="w-16 h-6 px-2 text-[11px] font-mono text-center bg-[#161B22] border border-white/[0.08] rounded text-white/80 outline-none focus:border-white/20 uppercase"
-        />
+        <button
+          onClick={() => setSearchOpen(true)}
+          title="Search symbol"
+          className="w-16 h-6 px-2 text-[11px] font-mono text-center bg-[#161B22] border border-white/[0.08] rounded text-white/80 hover:border-white/20 transition-colors duration-[120ms] uppercase"
+        >
+          {symbol || "SPY"}
+        </button>
         <CtrlBtn
           onClick={() => {
-            const others = LIQUID_SYMBOLS.filter((s) => s !== symbol);
-            setSymbol(others[Math.floor(Math.random() * others.length)]);
+            const idx = Math.floor(Math.random() * SEARCHABLE_SYMBOLS.length);
+            setSymbol(SEARCHABLE_SYMBOLS[idx].symbol);
           }}
-          title="Pick a random liquid symbol"
+          title="Pick a random symbol"
         >
           Random
         </CtrlBtn>
@@ -329,7 +345,48 @@ function SimulationsPage() {
             </button>
           ))}
         </div>
+
+        <BarSeparator />
+
+        {/* Position size */}
+        <div className="flex items-center gap-1">
+          <span className="text-[10px] text-white/30 font-mono">Qty</span>
+          <input
+            type="number"
+            min={1}
+            max={10000}
+            value={positionSize}
+            onChange={(e) => setPositionSize(Math.max(1, Math.min(10000, Number(e.target.value))))}
+            className="w-14 h-6 px-1.5 text-[11px] font-mono text-center bg-[#161B22] border border-white/[0.08] rounded text-white/70 outline-none focus:border-white/20"
+          />
+        </div>
+
+        {/* Script toggle */}
+        <CtrlBtn
+          onClick={() => setShowScript((v) => !v)}
+          active={showScript}
+          title="Toggle script editor"
+        >
+          {"</>"}
+        </CtrlBtn>
       </div>
+
+      {/* Script editor panel */}
+      {showScript && (
+        <div className="shrink-0 border-b border-white/[0.06] bg-[#0D1117] flex flex-col">
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/[0.04]">
+            <span className="text-[10px] font-mono text-white/40 uppercase tracking-wider">Script Editor</span>
+            <span className="text-[10px] font-mono text-white/25">Pine Script-like DSL — overrides selected strategy when non-empty</span>
+          </div>
+          <textarea
+            value={scriptSource}
+            onChange={(e) => setScriptSource(e.target.value)}
+            spellCheck={false}
+            placeholder={`// Example:\nplot(close, title="Close")\nif close > ta.sma(close, 20)\n    plotshape(close, style=shape.triangleup, location=location.belowbar, color=color.green, text="BUY")\nif close < ta.sma(close, 20)\n    plotshape(close, style=shape.triangledown, location=location.abovebar, color=color.red, text="SELL")`}
+            className="h-32 resize-none px-3 py-2 text-[11px] font-mono text-white/70 bg-transparent outline-none placeholder:text-white/15 leading-relaxed"
+          />
+        </div>
+      )}
 
       {/* Error banner */}
       {error && (
@@ -448,6 +505,13 @@ function SimulationsPage() {
           </div>
         </div>
       </div>
+      <SymbolSearchModal
+        isOpen={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onSelectSymbol={(sym) => setSymbol(sym)}
+        title="Symbol Search"
+        subtitle="Select a symbol to simulate"
+      />
     </div>
   );
 }

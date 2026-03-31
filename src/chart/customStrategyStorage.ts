@@ -37,6 +37,7 @@ export function loadCustomStrategies(): CustomStrategyDefinition[] {
 export function saveCustomStrategies(strategies: CustomStrategyDefinition[]): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(strategies));
+    window.dispatchEvent(new CustomEvent("dailyiq-strategies-updated"));
   } catch {
     // Ignore storage failures.
   }
