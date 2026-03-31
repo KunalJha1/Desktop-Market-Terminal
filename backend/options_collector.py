@@ -19,7 +19,7 @@ from runtime_paths import resource_path
 logger = logging.getLogger("options-collector")
 
 DEFAULT_INTERVAL_MINUTES = 60
-DEFAULT_SOURCE = "yahoo"
+DEFAULT_SOURCE = "auto"
 DEFAULT_RISK_FREE_RATE = float(os.environ.get("DAILYIQ_OPTIONS_RISK_FREE_RATE", "0.045"))
 TICKERS_PATH = resource_path("data", "tickers.json")
 MARKET_TZ = ZoneInfo("America/New_York")
@@ -637,14 +637,134 @@ class YahooOptionsProvider:
         return chain_df, underlying_price
 
 
-def _get_provider(source: str):
-    normalized = (source or DEFAULT_SOURCE).strip().lower()
-    if normalized == "auto":
-        logger.info("Source 'auto' currently falls back to Yahoo until TWS options ingestion is added")
-        normalized = "yahoo"
-    if normalized != "yahoo":
-        raise ValueError(f"Unsupported options source: {source}")
-    return YahooOptionsProvider()
+def _probe_tws_for_options_cycle() -> tuple[bool, str | None, int | None]:
+    from options_ib import tws_tcp_reachable
+
+    return tws_tcp_reachable()
+
+
+def collect_symbol(
+    provider: YahooOptionsProvider | None,
+    symbol: str,
+    *,
+    captured_at_ms: int,
+    risk_free_rate: float,
+    source_mode: str,
+    tws_reachable: bool,
+    tws_host: str | None,
+    tws_port: int | None,
+) -> tuple[int, int]:
+    """Collect one symbol. source_mode: auto | yahoo | tws."""
+    from options_ib import collect_tws_option_chain_sync
+
+    mode = (source_mode or DEFAULT_SOURCE).strip().lower()
+    sym = _normalize_symbol(symbol)
+    started_at = _now_ms()
+
+    def _yahoo() -> tuple[int, int]:
+        yahoo = provider or YahooOptionsProvider()
+        return _collect_yahoo_symbol(yahoo, sym, captured_at_ms=captured_at_ms, risk_free_rate=risk_free_rate)
+
+    if mode == "yahoo":
+        return _yahoo()
+
+    if mode == "tws":
+        if not tws_reachable or tws_host is None or tws_port is None:
+            duration_ms = _now_ms() - started_at
+            _write_fetch_meta(sym, "tws", captured_at_ms, 0, 0, False, "TWS not reachable", duration_ms)
+            logger.warning("Options source=tws but TWS not reachable for %s", sym)
+            return 0, 0
+        c_rows, s_rows, exp_count = collect_tws_option_chain_sync(
+            sym, captured_at_ms, tws_host, tws_port, risk_free_rate
+        )
+        if c_rows and s_rows:
+            _write_option_rows(c_rows, s_rows)
+            duration_ms = _now_ms() - started_at
+            _write_fetch_meta(
+                sym, "tws", captured_at_ms, exp_count, len(s_rows), True, None, duration_ms
+            )
+            logger.info(
+                "Stored %s options chain (tws): %s contracts across %s expirations in %sms",
+                sym,
+                len(s_rows),
+                exp_count,
+                duration_ms,
+            )
+            return exp_count, len(s_rows)
+        duration_ms = _now_ms() - started_at
+        _write_fetch_meta(
+            sym, "tws", captured_at_ms, 0, 0, False, "TWS fetch returned no contracts", duration_ms
+        )
+        logger.warning("TWS options fetch produced no rows for %s", sym)
+        return 0, 0
+
+    # auto: TWS first when reachable, else Yahoo
+    if tws_reachable and tws_host is not None and tws_port is not None:
+        c_rows, s_rows, exp_count = collect_tws_option_chain_sync(
+            sym, captured_at_ms, tws_host, tws_port, risk_free_rate
+        )
+        if c_rows and s_rows:
+            _write_option_rows(c_rows, s_rows)
+            duration_ms = _now_ms() - started_at
+            _write_fetch_meta(
+                sym, "tws", captured_at_ms, exp_count, len(s_rows), True, None, duration_ms
+            )
+            logger.info(
+                "Stored %s options chain (tws): %s contracts across %s expirations in %sms",
+                sym,
+                len(s_rows),
+                exp_count,
+                duration_ms,
+            )
+            return exp_count, len(s_rows)
+        logger.info("TWS options failed or empty for %s; falling back to Yahoo", sym)
+
+    return _yahoo()
+
+
+def _collect_yahoo_symbol(
+    provider: YahooOptionsProvider,
+    symbol: str,
+    *,
+    captured_at_ms: int,
+    risk_free_rate: float,
+) -> tuple[int, int]:
+    started_at = _now_ms()
+    try:
+        chain_df, underlying_price = provider.fetch_chain(symbol)
+        contract_rows, snapshot_rows, expiration_count = normalize_option_chain_df(
+            symbol,
+            chain_df,
+            underlying_price=underlying_price,
+            captured_at_ms=captured_at_ms,
+            source=provider.source,
+            risk_free_rate=risk_free_rate,
+        )
+        _write_option_rows(contract_rows, snapshot_rows)
+        duration_ms = _now_ms() - started_at
+        _write_fetch_meta(
+            symbol,
+            provider.source,
+            captured_at_ms,
+            expiration_count,
+            len(snapshot_rows),
+            True,
+            None,
+            duration_ms,
+        )
+        logger.info(
+            "Stored %s options chain: %s contracts across %s expirations in %sms",
+            symbol,
+            len(snapshot_rows),
+            expiration_count,
+            duration_ms,
+        )
+        return expiration_count, len(snapshot_rows)
+    except Exception as exc:
+        duration_ms = _now_ms() - started_at
+        _write_fetch_meta(symbol, provider.source, captured_at_ms, 0, 0, False, str(exc), duration_ms)
+        logger.warning("Failed to collect options for %s: %s", symbol, exc)
+        return 0, 0
 
 
 def _write_option_rows(
@@ -827,45 +947,6 @@ class OptionsCollectorWorker:
             await asyncio.sleep(self._interval_seconds)
 
 
-def collect_symbol(provider: Any, symbol: str, *, captured_at_ms: int, risk_free_rate: float) -> tuple[int, int]:
-    started_at = _now_ms()
-    try:
-        chain_df, underlying_price = provider.fetch_chain(symbol)
-        contract_rows, snapshot_rows, expiration_count = normalize_option_chain_df(
-            symbol,
-            chain_df,
-            underlying_price=underlying_price,
-            captured_at_ms=captured_at_ms,
-            source=provider.source,
-            risk_free_rate=risk_free_rate,
-        )
-        _write_option_rows(contract_rows, snapshot_rows)
-        duration_ms = _now_ms() - started_at
-        _write_fetch_meta(
-            symbol,
-            provider.source,
-            captured_at_ms,
-            expiration_count,
-            len(snapshot_rows),
-            True,
-            None,
-            duration_ms,
-        )
-        logger.info(
-            "Stored %s options chain: %s contracts across %s expirations in %sms",
-            symbol,
-            len(snapshot_rows),
-            expiration_count,
-            duration_ms,
-        )
-        return expiration_count, len(snapshot_rows)
-    except Exception as exc:
-        duration_ms = _now_ms() - started_at
-        _write_fetch_meta(symbol, provider.source, captured_at_ms, 0, 0, False, str(exc), duration_ms)
-        logger.warning("Failed to collect options for %s: %s", symbol, exc)
-        return 0, 0
-
-
 def run_collection_cycle(
     *,
     source: str,
@@ -873,7 +954,20 @@ def run_collection_cycle(
     max_symbols: int | None = None,
     risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
 ) -> tuple[int, int]:
-    provider = _get_provider(source)
+    mode = (source or DEFAULT_SOURCE).strip().lower()
+    if mode not in ("yahoo", "tws", "auto"):
+        raise ValueError(f"Unsupported options source: {source}")
+
+    provider: YahooOptionsProvider | None = None
+    if mode in ("yahoo", "auto"):
+        provider = YahooOptionsProvider()
+
+    if mode == "yahoo":
+        tws_reachable, tws_host, tws_port = False, None, None
+    else:
+        tws_reachable, tws_host, tws_port = _probe_tws_for_options_cycle()
+
+    log_label = mode if mode != "auto" else f"auto(tws_up={tws_reachable})"
     queue = build_symbol_queue(
         symbols_override or [],
         [],
@@ -887,7 +981,7 @@ def run_collection_cycle(
     total_contracts = 0
     logger.info(
         "Starting options collection cycle: source=%s symbols=%s queue=%s",
-        provider.source,
+        log_label,
         len(queue),
         _format_symbol_list(queue),
     )
@@ -898,6 +992,10 @@ def run_collection_cycle(
             symbol,
             captured_at_ms=captured_at_ms,
             risk_free_rate=risk_free_rate,
+            source_mode=mode,
+            tws_reachable=tws_reachable,
+            tws_host=tws_host,
+            tws_port=tws_port,
         )
         total_expirations += expiration_count
         total_contracts += contract_count
@@ -922,8 +1020,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source",
         default=DEFAULT_SOURCE,
-        choices=["yahoo", "auto"],
-        help="Options data source policy",
+        choices=["yahoo", "tws", "auto"],
+        help="Options data source: yahoo only, TWS only, or TWS-first with Yahoo fallback",
     )
     parser.add_argument(
         "--symbols",

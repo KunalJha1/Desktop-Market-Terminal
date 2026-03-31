@@ -2,8 +2,9 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { indicatorRegistry } from '../indicators/registry';
 import { STRATEGY_KEYS } from '../indicators/strategyKeys';
 import type { ActiveIndicator } from '../types';
-import { Search, X, Check, Plus, Pencil, Copy, Trash2 } from 'lucide-react';
+import { Search, X, Check, Plus, Pencil, Copy, Trash2, Code, ClipboardCopy } from 'lucide-react';
 import type { CustomStrategyDefinition, StrategyState } from '../customStrategies';
+import type { PersistedChartScript } from '../../lib/chart-state';
 
 interface IndicatorPanelProps {
   open: boolean;
@@ -20,6 +21,13 @@ interface IndicatorPanelProps {
   onEditCustomStrategy?: (id: string) => void;
   onDuplicateCustomStrategy?: (id: string) => void;
   onDeleteCustomStrategy?: (id: string) => void;
+  savedScripts?: PersistedChartScript[];
+  activeScriptIds?: string[];
+  onToggleScript?: (id: string) => void;
+  onEditScript?: (id: string) => void;
+  onDeleteScript?: (id: string) => void;
+  onCreateCodeStrategy?: () => void;
+  onCopyMasterPrompt?: () => void;
 }
 
 const categories = [
@@ -90,6 +98,13 @@ export default function IndicatorPanel({
   onEditCustomStrategy,
   onDuplicateCustomStrategy,
   onDeleteCustomStrategy,
+  savedScripts = [],
+  activeScriptIds = [],
+  onToggleScript,
+  onEditScript,
+  onDeleteScript,
+  onCreateCodeStrategy,
+  onCopyMasterPrompt,
 }: IndicatorPanelProps) {
   const [search, setSearch] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -146,6 +161,21 @@ export default function IndicatorPanel({
     const q = search.toLowerCase();
     return customStrategies.filter((strategy) => strategy.name.toLowerCase().includes(q));
   }, [customStrategies, mode, search]);
+
+  const filteredSavedScripts = useMemo(() => {
+    if (mode !== 'strategy') return [];
+    const named = savedScripts.filter((s) => s.name);
+    if (!search.trim()) return named;
+    const q = search.toLowerCase();
+    return named.filter((s) => s.name!.toLowerCase().includes(q));
+  }, [savedScripts, mode, search]);
+
+  const [promptCopied, setPromptCopied] = useState(false);
+  const handleCopyMasterPrompt = () => {
+    onCopyMasterPrompt?.();
+    setPromptCopied(true);
+    setTimeout(() => setPromptCopied(false), 2000);
+  };
 
   const renderBuiltInStrategyRow = (ind: typeof filtered[number]) => {
     const isActive = activeNames.has(ind.key);
@@ -281,6 +311,42 @@ export default function IndicatorPanel({
       >
         {mode === 'strategy' ? (
           <>
+            {/* Copy Master Prompt */}
+            <div
+              style={{
+                padding: '8px 12px',
+                borderBottom: '1px solid #21262D',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <span style={{ fontSize: 9, color: '#6E7681', fontFamily: "'JetBrains Mono', monospace" }}>
+                Use an LLM to generate indicators
+              </span>
+              <button
+                onClick={handleCopyMasterPrompt}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  background: promptCopied ? 'rgba(0,200,83,0.12)' : 'transparent',
+                  border: `1px solid ${promptCopied ? '#00C853' : '#30363D'}`,
+                  color: promptCopied ? '#00C853' : '#C9D1D9',
+                  borderRadius: 4,
+                  fontSize: 9,
+                  padding: '2px 7px',
+                  cursor: 'pointer',
+                  fontFamily: "'JetBrains Mono', monospace",
+                  transition: 'all 120ms ease-out',
+                }}
+              >
+                <ClipboardCopy size={10} />
+                {promptCopied ? 'Copied!' : 'Copy Master Prompt'}
+              </button>
+            </div>
+
+            {/* Built-in strategies */}
             <div
               style={{
                 padding: '8px 12px 6px',
@@ -293,6 +359,8 @@ export default function IndicatorPanel({
               <span style={{ fontSize: 9, color: '#8B949E', fontFamily: "'JetBrains Mono', monospace" }}>Built-In</span>
             </div>
             {filtered.map(renderBuiltInStrategyRow)}
+
+            {/* Custom (builder) strategies */}
             <div
               style={{
                 padding: '8px 12px 6px',
@@ -390,6 +458,98 @@ export default function IndicatorPanel({
                       onClick={() => onDeleteCustomStrategy?.(strategy.id)}
                       style={{ background: 'transparent', border: 'none', color: '#8B949E', cursor: 'pointer', display: 'flex' }}
                       title="Delete strategy"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Saved Scripts (code-based) */}
+            <div
+              style={{
+                padding: '8px 12px 6px',
+                borderTop: '1px solid #21262D',
+                borderBottom: '1px solid #21262D',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <span style={{ fontSize: 9, color: '#8B949E', fontFamily: "'JetBrains Mono', monospace" }}>Saved Scripts</span>
+              <button
+                onClick={onCreateCodeStrategy}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  background: 'transparent',
+                  border: '1px solid #30363D',
+                  color: '#C9D1D9',
+                  borderRadius: 4,
+                  fontSize: 9,
+                  padding: '2px 6px',
+                  cursor: 'pointer',
+                  fontFamily: "'JetBrains Mono', monospace",
+                }}
+              >
+                <Code size={10} />
+                New Script
+              </button>
+            </div>
+            {filteredSavedScripts.length === 0 ? (
+              <div style={{ padding: '10px 12px', fontSize: 10, color: '#6E7681', fontFamily: "'JetBrains Mono', monospace" }}>
+                No saved scripts yet. Click "New Script" or use an LLM with the master prompt.
+              </div>
+            ) : filteredSavedScripts.map((script) => {
+              const isActive = activeScriptIds.includes(script.id);
+              return (
+                <div
+                  key={script.id}
+                  style={{
+                    padding: '7px 12px',
+                    borderBottom: '1px solid rgba(255,255,255,0.04)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                  }}
+                >
+                  <button
+                    onClick={() => onToggleScript?.(script.id)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      textAlign: 'left',
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: isActive ? '#E6EDF3' : '#C9D1D9',
+                      padding: 0,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Code size={10} color="#8B5CF6" style={{ flexShrink: 0 }} />
+                      <span style={{ fontSize: 11 }}>{script.name}</span>
+                      {isActive && <Check size={11} color="#00C853" />}
+                    </div>
+                    <div style={{ marginTop: 2, fontSize: 9, color: '#484F58', fontFamily: "'JetBrains Mono', monospace" }}>
+                      Script
+                    </div>
+                  </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                    <button
+                      onClick={() => onEditScript?.(script.id)}
+                      style={{ background: 'transparent', border: 'none', color: '#8B949E', cursor: 'pointer', display: 'flex' }}
+                      title="Edit script"
+                    >
+                      <Pencil size={11} />
+                    </button>
+                    <button
+                      onClick={() => onDeleteScript?.(script.id)}
+                      style={{ background: 'transparent', border: 'none', color: '#8B949E', cursor: 'pointer', display: 'flex' }}
+                      title="Delete script"
                     >
                       <Trash2 size={11} />
                     </button>

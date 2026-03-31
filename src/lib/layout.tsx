@@ -4,6 +4,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useMemo,
   useRef,
   type ReactNode,
 } from "react";
@@ -421,26 +422,45 @@ export function LayoutProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const contextValue = useMemo(
+    () => ({
+      workspace,
+      ready,
+      getTabState,
+      setTabLocked,
+      setTabZoom,
+      setTabLinkChannel,
+      updateTabLayout,
+      addComponent,
+      removeComponent,
+      updateComponent,
+      setComponentLinkChannel,
+      syncTabs,
+      loadFromFile,
+      exportToFile,
+      flushSave,
+    }),
+    [
+      workspace,
+      ready,
+      getTabState,
+      setTabLocked,
+      setTabZoom,
+      setTabLinkChannel,
+      updateTabLayout,
+      addComponent,
+      removeComponent,
+      updateComponent,
+      setComponentLinkChannel,
+      syncTabs,
+      loadFromFile,
+      exportToFile,
+      flushSave,
+    ],
+  );
+
   return (
-    <LayoutContext.Provider
-      value={{
-        workspace,
-        ready,
-        getTabState,
-        setTabLocked,
-        setTabZoom,
-        setTabLinkChannel,
-        updateTabLayout,
-        addComponent,
-        removeComponent,
-        updateComponent,
-        setComponentLinkChannel,
-        syncTabs,
-        loadFromFile,
-        exportToFile,
-        flushSave,
-      }}
-    >
+    <LayoutContext.Provider value={contextValue}>
       {children}
     </LayoutContext.Provider>
   );

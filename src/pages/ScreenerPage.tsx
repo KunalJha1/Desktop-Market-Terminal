@@ -6,7 +6,7 @@ import {
   useMemo,
   memo,
 } from "react";
-import { useTws } from "../lib/tws";
+import { useSidecarPort } from "../lib/tws";
 import { useWatchlist } from "../lib/watchlist";
 import { formatMarketCap } from "../lib/market-data";
 import SymbolSearchModal from "../components/SymbolSearchModal";
@@ -347,8 +347,8 @@ const ScreenerTableRow = memo(function ScreenerTableRow({
 
 // ── Main Component ───────────────────────────────────────────────────
 
-export default function ScreenerPage() {
-  const { sidecarPort } = useTws();
+function ScreenerPage() {
+  const sidecarPort = useSidecarPort();
   const { symbols: watchlistSymbols } = useWatchlist();
 
   // Data
@@ -926,3 +926,5 @@ export default function ScreenerPage() {
     </div>
   );
 }
+
+export default memo(ScreenerPage);

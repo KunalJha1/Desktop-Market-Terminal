@@ -5,6 +5,7 @@ import { useAuth } from "../lib/auth";
 import { checkUpdate, installUpdate, type UpdateManifest } from "@tauri-apps/api/updater";
 import { getVersion } from "@tauri-apps/api/app";
 import { relaunch } from "@tauri-apps/api/process";
+import { invoke } from "@tauri-apps/api/tauri";
 
 const CONNECTION_LABELS: Record<string, string> = {
   "tws-live": "TWS Live",
@@ -47,6 +48,7 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
   const panelRef = useRef<HTMLDivElement>(null);
 
   const [appVersion, setAppVersion] = useState("");
+  const [executablePath, setExecutablePath] = useState<string | null>(null);
   const [updateStatus, setUpdateStatus] = useState<
     "idle" | "checking" | "available" | "downloading" | "up-to-date" | "error"
   >("idle");
@@ -56,6 +58,13 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion("unknown"));
   }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    invoke<string>("get_executable_path")
+      .then(setExecutablePath)
+      .catch(() => setExecutablePath(null));
+  }, [open]);
 
   const handleCheckUpdate = useCallback(async () => {
     setUpdateStatus("checking");
@@ -570,6 +579,24 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
                 <span className="text-white/70">v{appVersion}</span>
               </span>
             </div>
+
+            {executablePath ? (
+              <div className="mb-3 rounded-md border border-white/[0.06] bg-base px-3 py-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-white/30">
+                  Running executable
+                </p>
+                <p className="mt-1 break-all font-mono text-[10px] leading-5 text-white/50">
+                  {executablePath}
+                </p>
+                <p className="mt-2 text-[10px] leading-4 text-white/28">
+                  After an update, compare this path to the one shown when the issue happens: open Task
+                  Manager, right-click DailyIQ, choose Open file location, and check whether the path
+                  matches. If your desktop or taskbar shortcut Target points somewhere else, you may
+                  have two installs; uninstall duplicates and pin only the folder that matches this
+                  path.
+                </p>
+              </div>
+            ) : null}
 
             {updateStatus === "available" && updateManifest && (
               <div className="mb-3 flex items-start gap-2 rounded-md border border-blue/20 bg-blue/[0.06] px-3 py-2">

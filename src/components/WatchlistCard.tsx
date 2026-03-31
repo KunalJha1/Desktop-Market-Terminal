@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo, type MutableRefObject } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo, memo, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
 import { X, GripVertical, Settings } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
@@ -173,7 +173,7 @@ interface WatchlistCardProps {
   onSymbolSelect?: (symbol: string) => void;
 }
 
-export default function WatchlistCard({
+function WatchlistCard({
   linkChannel,
   onSetLinkChannel,
   onClose,
@@ -2520,3 +2520,5 @@ function WatchlistRow({
     </div>
   );
 }
+
+export default memo(WatchlistCard);

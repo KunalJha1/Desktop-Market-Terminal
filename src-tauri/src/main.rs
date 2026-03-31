@@ -282,8 +282,10 @@ async fn spawn_tab_window(
         .inner_size(width, height)
         .min_inner_size(800.0, 600.0)
         .position(x, y)
+        .maximized(true)
         .focused(true)
-        .visible(true);
+        .visible(true)
+        .decorations(false);
 
     #[cfg(target_os = "macos")]
     let builder = builder.title_bar_style(tauri::TitleBarStyle::Visible);
@@ -955,6 +957,14 @@ fn kill_sidecar(state: tauri::State<'_, SidecarState>) {
     });
 }
 
+/// Absolute path to the running executable (for diagnosing duplicate installs / shortcut targets).
+#[tauri::command]
+fn get_executable_path() -> Result<String, String> {
+    std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(SidecarState {
@@ -984,6 +994,7 @@ fn main() {
             kill_sidecar,
             get_sidecar_port,
             get_backend_status,
+            get_executable_path,
             spawn_test_window,
         ])
         .setup(|app| {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useTws } from "./tws";
+import { useSidecarPort } from "./tws";
 
 export type PortfolioSource = "ibkr" | "manual";
 
@@ -78,7 +78,7 @@ const EMPTY_SNAPSHOT: PortfolioSnapshot = {
   updatedAt: 0,
 };
 
-const CACHE_KEY = "portfolio_snapshot_v2";
+const CACHE_KEY = "portfolio_snapshot_v3";
 
 let cachedSnapshot: PortfolioSnapshot | null = null;
 
@@ -171,7 +171,7 @@ export function usePortfolioData(): PortfolioSnapshot & {
   updateGroup: (groupId: string, payload: PortfolioGroupPayload) => Promise<void>;
   deleteGroup: (groupId: string) => Promise<void>;
 } {
-  const { sidecarPort } = useTws();
+  const sidecarPort = useSidecarPort();
   const initial = loadCachedSnapshot();
   const [snapshot, setSnapshot] = useState<PortfolioSnapshot>(initial ?? EMPTY_SNAPSHOT);
   const [loading, setLoading] = useState(!initial);
@@ -203,6 +203,8 @@ export function usePortfolioData(): PortfolioSnapshot & {
             groups: payload.groups ?? [],
             positions: payload.positions ?? [],
             cashBalances: payload.cashBalances ?? [],
+            stale: payload.stale ?? false,
+            staleSince: payload.staleSince,
           };
           saveCachedSnapshot(next);
           return next;
@@ -243,9 +245,10 @@ export function usePortfolioData(): PortfolioSnapshot & {
     }
 
     void poll();
+    // Matches backend PORTFOLIO_CACHE_TTL_S (~1 TWS refresh per minute).
     const id = window.setInterval(() => {
       void poll();
-    }, 60000);
+    }, 60_000);
 
     return () => {
       cancelled = true;

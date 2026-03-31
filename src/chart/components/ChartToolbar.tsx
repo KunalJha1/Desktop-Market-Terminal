@@ -14,13 +14,12 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
-  Save,
-  FolderOpen,
 } from 'lucide-react';
 import ComponentLinkMenu from '../../components/ComponentLinkMenu';
 import SymbolSearchModal from '../../components/SymbolSearchModal';
 import IndicatorPanel from './IndicatorPanel';
 import type { CustomStrategyDefinition, StrategyState } from '../customStrategies';
+import type { PersistedChartScript } from '../../lib/chart-state';
 
 interface ChartToolbarProps {
   symbol: string;
@@ -46,6 +45,13 @@ interface ChartToolbarProps {
   onEditCustomStrategy?: (id: string) => void;
   onDuplicateCustomStrategy?: (id: string) => void;
   onDeleteCustomStrategy?: (id: string) => void;
+  savedScripts?: PersistedChartScript[];
+  activeScriptIds?: string[];
+  onToggleScript?: (id: string) => void;
+  onEditScript?: (id: string) => void;
+  onDeleteScript?: (id: string) => void;
+  onCreateCodeStrategy?: () => void;
+  onCopyMasterPrompt?: () => void;
   activeIndicators?: ActiveIndicator[];
   dataSource?: 'tws' | 'yahoo' | 'cache' | 'offline';
   loading?: boolean;
@@ -84,6 +90,13 @@ export default function ChartToolbar({
   onEditCustomStrategy,
   onDuplicateCustomStrategy,
   onDeleteCustomStrategy,
+  savedScripts = [],
+  activeScriptIds = [],
+  onToggleScript,
+  onEditScript,
+  onDeleteScript,
+  onCreateCodeStrategy,
+  onCopyMasterPrompt,
   activeIndicators = [],
   dataSource = 'offline',
   loading = false,
@@ -94,8 +107,8 @@ export default function ChartToolbar({
   onZoomIn,
   onZoomOut,
   onZoomReset,
-  onExportChart,
-  onImportChart,
+  onExportChart: _onExportChart,
+  onImportChart: _onImportChart,
 }: ChartToolbarProps) {
   const [chartTypeOpen, setChartTypeOpen] = useState(false);
   const [symbolSearchOpen, setSymbolSearchOpen] = useState(false);
@@ -239,6 +252,13 @@ export default function ChartToolbar({
           onEditCustomStrategy={onEditCustomStrategy}
           onDuplicateCustomStrategy={onDuplicateCustomStrategy}
           onDeleteCustomStrategy={onDeleteCustomStrategy}
+          savedScripts={savedScripts}
+          activeScriptIds={activeScriptIds}
+          onToggleScript={onToggleScript}
+          onEditScript={onEditScript}
+          onDeleteScript={onDeleteScript}
+          onCreateCodeStrategy={onCreateCodeStrategy}
+          onCopyMasterPrompt={onCopyMasterPrompt}
           activeIndicators={activeIndicators}
           mode="strategy"
         />

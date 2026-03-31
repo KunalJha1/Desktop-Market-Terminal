@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { SEARCHABLE_SYMBOLS, filterRankSymbolSearch } from "./market-data";
-import { useTws } from "./tws";
+import { useSidecarPort } from "./tws";
 import { useWatchlist } from "./watchlist";
 
 export interface OptionsExpiration {
@@ -97,7 +97,7 @@ export function useOptionsSummary(symbol: string): {
   loading: boolean;
   error: string | null;
 } {
-  const { sidecarPort } = useTws();
+  const sidecarPort = useSidecarPort();
   const [summary, setSummary] = useState<OptionsSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -149,7 +149,7 @@ export function useOptionsChain(symbol: string, expiration: number | null): {
   loading: boolean;
   error: string | null;
 } {
-  const { sidecarPort } = useTws();
+  const sidecarPort = useSidecarPort();
   const [chain, setChain] = useState<OptionsChain | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

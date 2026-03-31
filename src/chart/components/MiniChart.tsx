@@ -9,8 +9,13 @@ import {
   createDefaultProbEngWidgetState,
   type ProbEngWidgetState,
 } from '../../lib/chart-state';
+import {
+  probEngHasNorm,
+  probEngNormFromPixel,
+  probEngPixelFromNorm,
+} from '../../lib/probEngLayout';
 import { PRICE_AXIS_CONTROL_HEIGHT, PRICE_AXIS_WIDTH, VOLUME_PANE_RATIO } from '../constants';
-import { useTws } from '../../lib/tws';
+import { useSidecarPort } from '../../lib/tws';
 import { linkBus } from '../../lib/link-bus';
 import { X, ChevronDown, ChevronUp, Search, TrendingUp, BrainCircuit, RotateCcw, Minus, Maximize2, ChevronsUpDown, GripHorizontal, Lock, Unlock } from 'lucide-react';
 import ComponentLinkMenu from '../../components/ComponentLinkMenu';
@@ -64,45 +69,96 @@ const PROBENG_WIDGET_EDGE_PADDING = 8;
 const PROBENG_WIDGET_RIGHT_INSET = 0;
 const PROBENG_WIDGET_DRAG_THRESHOLD = 4;
 
-/** Match `clientWidth` / `clientHeight` — same box absolute `left`/`top` use; avoids maxX being too small vs pointer math when rect.width differs (fractional px, zoom). */
+/** Match `ChartEngine.resize` / layout (`offsetWidth`/`offsetHeight`) so clamp bounds never fight drag math. */
 function getMiniProbEngHostSize(host: HTMLElement): { width: number; height: number } {
   return {
-    width: Math.max(0, host.clientWidth),
-    height: Math.max(0, host.clientHeight),
+    width: Math.max(0, host.offsetWidth),
+    height: Math.max(0, host.offsetHeight),
   };
 }
 
-function getMiniProbEngWidgetHeight(widget: ProbEngWidgetState): number {
-  if (widget.detailed) return 128;
-  return 82;
+function probEngLayoutNumberEqual(a: number, b: number): boolean {
+  return Math.abs(a - b) < 0.75;
 }
 
 /** Avoid new chartLayout state when geometry is unchanged — prevents prob-widget clamp fighting the drag on every indicator sync. */
+type MiniPaneLayoutRow = {
+  paneId: string;
+  top: number;
+  height: number;
+  yScaleMode: YScaleMode;
+  showScaleControls: boolean;
+  collapsed: boolean;
+  maximized: boolean;
+};
+
+function miniPaneRowsEqual(a: MiniPaneLayoutRow[], b: MiniPaneLayoutRow[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      x.paneId !== y.paneId ||
+      x.top !== y.top ||
+      x.height !== y.height ||
+      x.yScaleMode !== y.yScaleMode ||
+      x.showScaleControls !== y.showScaleControls ||
+      x.collapsed !== y.collapsed ||
+      x.maximized !== y.maximized
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function chartLayoutsEquivalentForProbEng(a: ChartLayout | null, b: ChartLayout | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
-  if (a.width !== b.width || a.height !== b.height || a.priceAxisWidth !== b.priceAxisWidth
-    || a.mainTop !== b.mainTop || a.mainHeight !== b.mainHeight || a.timeAxisHeight !== b.timeAxisHeight) {
+  if (!probEngLayoutNumberEqual(a.width, b.width) || !probEngLayoutNumberEqual(a.height, b.height)
+    || !probEngLayoutNumberEqual(a.priceAxisWidth, b.priceAxisWidth)
+    || !probEngLayoutNumberEqual(a.mainTop, b.mainTop) || !probEngLayoutNumberEqual(a.mainHeight, b.mainHeight)
+    || !probEngLayoutNumberEqual(a.timeAxisHeight, b.timeAxisHeight)) {
     return false;
   }
   if (a.subPanes.length !== b.subPanes.length) return false;
   for (let i = 0; i < a.subPanes.length; i++) {
     const pa = a.subPanes[i];
     const pb = b.subPanes[i];
-    if (pa.paneId !== pb.paneId || pa.top !== pb.top || pa.height !== pb.height) return false;
+    if (pa.paneId !== pb.paneId || !probEngLayoutNumberEqual(pa.top, pb.top) || !probEngLayoutNumberEqual(pa.height, pb.height)) {
+      return false;
+    }
   }
   return true;
 }
 
-function clampMiniProbEngWidget(widget: ProbEngWidgetState, _layout: ChartLayout, hostWidth: number, hostHeight: number): ProbEngWidgetState {
-  const width = widget.detailed ? PROBENG_WIDGET_WIDTH_DETAILED : PROBENG_WIDGET_WIDTH;
-  const height = getMiniProbEngWidgetHeight(widget);
+function getMiniProbEngDragBounds(detailed: boolean, hostWidth: number, hostHeight: number): {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+} {
+  const width = detailed ? PROBENG_WIDGET_WIDTH_DETAILED : PROBENG_WIDGET_WIDTH;
+  const height = detailed ? 128 : 82;
   const minX = PROBENG_WIDGET_EDGE_PADDING;
-  // Full overlay width; right inset separate so we don’t leave a mystery gap when rect.width ≠ clientWidth.
   const maxX = Math.max(minX, hostWidth - width - PROBENG_WIDGET_RIGHT_INSET);
   const minY = PROBENG_WIDGET_EDGE_PADDING;
   const maxY = Math.max(minY, hostHeight - height - PROBENG_WIDGET_EDGE_PADDING);
-  return { ...widget, x: Math.min(Math.max(widget.x, minX), maxX), y: Math.min(Math.max(widget.y, minY), maxY) };
+  return { minX, maxX, minY, maxY };
+}
+
+function clampMiniProbEngWidget(widget: ProbEngWidgetState, hostWidth: number, hostHeight: number): ProbEngWidgetState {
+  const b = getMiniProbEngDragBounds(widget.detailed, hostWidth, hostHeight);
+  const x = Math.round(Math.min(Math.max(widget.x, b.minX), b.maxX));
+  const y = Math.round(Math.min(Math.max(widget.y, b.minY), b.maxY));
+  return { ...widget, x, y };
+}
+
+function miniProbEngClampWithNorm(widget: ProbEngWidgetState, hostWidth: number, hostHeight: number): ProbEngWidgetState {
+  const next = clampMiniProbEngWidget(widget, hostWidth, hostHeight);
+  const b = getMiniProbEngDragBounds(next.detailed, hostWidth, hostHeight);
+  const { normX, normY } = probEngNormFromPixel(next.x, next.y, b.minX, b.maxX, b.minY, b.maxY);
+  return { ...next, normX, normY };
 }
 
 function getDefaultMiniProbEngPosition(detailed: boolean, layout: ChartLayout, hostWidth: number): Pick<ProbEngWidgetState, 'x' | 'y'> {
@@ -148,26 +204,20 @@ function MiniProbEngWidget({
   indicator,
   widget,
   dragging,
-  hovered,
   onHeaderPointerDown,
   onHeaderPointerMove,
   onHeaderPointerUp,
   onHeaderPointerCancel,
   onToggleLock,
-  onMouseEnter,
-  onMouseLeave,
 }: {
   indicator: ActiveIndicator;
   widget: ProbEngWidgetState;
   dragging: boolean;
-  hovered: boolean;
   onHeaderPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onHeaderPointerMove: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onHeaderPointerUp: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onHeaderPointerCancel: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onToggleLock: () => void;
-  onMouseEnter: () => void;
-  onMouseLeave: () => void;
 }) {
   const latestProb1 = [...(indicator.data[0] ?? [])].reverse().find((v) => Number.isFinite(v));
   const latestProb3 = [...(indicator.data[1] ?? [])].reverse().find((v) => Number.isFinite(v));
@@ -186,8 +236,6 @@ function MiniProbEngWidget({
     <div
       data-no-drag
       title={widget.locked ? 'Placement locked' : 'Drag to reposition'}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
       onPointerDown={widget.locked ? undefined : onHeaderPointerDown}
       onPointerMove={widget.locked ? undefined : onHeaderPointerMove}
       onPointerUp={widget.locked ? undefined : onHeaderPointerUp}
@@ -234,22 +282,20 @@ function MiniProbEngWidget({
           <span style={{ color: '#8B949E' }}>Probability Table</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-          {(!widget.locked || hovered) && (
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); onToggleLock(); }}
-              style={{
-                border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4, background: 'transparent',
-                color: '#E6EDF3', width: 20, height: 20,
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                lineHeight: 1, fontSize: 11, fontFamily: '"JetBrains Mono", monospace', padding: 0, cursor: 'pointer',
-              }}
-              title={widget.locked ? 'Unlock position' : 'Lock position'}
-            >
-              {widget.locked ? <Lock size={10} /> : <Unlock size={10} />}
-            </button>
-          )}
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onToggleLock(); }}
+            style={{
+              border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4, background: 'transparent',
+              color: '#E6EDF3', width: 20, height: 20,
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              lineHeight: 1, fontSize: 11, fontFamily: '"JetBrains Mono", monospace', padding: 0, cursor: 'pointer',
+            }}
+            title={widget.locked ? 'Unlock position' : 'Lock position'}
+          >
+            {widget.locked ? <Lock size={10} /> : <Unlock size={10} />}
+          </button>
         </div>
       </div>
       <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -355,18 +401,24 @@ function parsePersistedIndicators(value: unknown): PersistedMiniIndicator[] {
 
 function parseProbEngWidgetState(value: unknown): ProbEngWidgetState {
   if (!isRecord(value)) return createDefaultProbEngWidgetState();
-  return {
+  const base = {
     x: typeof value.x === 'number' ? value.x : 96,
     y: typeof value.y === 'number' ? value.y : 64,
     visible: typeof value.visible === 'boolean' ? value.visible : true,
     detailed: typeof value.detailed === 'boolean' ? value.detailed : false,
     locked: typeof value.locked === 'boolean' ? value.locked : false,
   };
+  const normX = typeof value.normX === 'number' && Number.isFinite(value.normX) ? value.normX : undefined;
+  const normY = typeof value.normY === 'number' && Number.isFinite(value.normY) ? value.normY : undefined;
+  return normX !== undefined && normY !== undefined ? { ...base, normX, normY } : base;
 }
 
 function probEngWidgetStateEqual(a: ProbEngWidgetState, b: ProbEngWidgetState): boolean {
+  const normEqual = (a.normX === b.normX && a.normY === b.normY)
+    || (a.normX === undefined && a.normY === undefined && b.normX === undefined && b.normY === undefined);
   return a.x === b.x
     && a.y === b.y
+    && normEqual
     && a.visible === b.visible
     && a.detailed === b.detailed
     && a.locked === b.locked;
@@ -489,7 +541,7 @@ export default function MiniChart({
   const [engineVersion, setEngineVersion] = useState(0);
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [paneLayout, setPaneLayout] = useState<Array<{ paneId: string; top: number; height: number; yScaleMode: YScaleMode; showScaleControls: boolean; collapsed: boolean; maximized: boolean }>>([]);
+  const [paneLayout, setPaneLayout] = useState<MiniPaneLayoutRow[]>([]);
   const [priceSectionHeight, setPriceSectionHeight] = useState(0);
   const [scriptSource, setScriptSource] = useState('');
   const [scriptErrors, setScriptErrors] = useState<string[]>([]);
@@ -502,7 +554,6 @@ export default function MiniChart({
   const [chartLayout, setChartLayout] = useState<ChartLayout | null>(null);
   const [probEngWidget, setProbEngWidget] = useState<ProbEngWidgetState>(() => parseProbEngWidgetState(config.probEngWidget));
   const [probEngDragging, setProbEngDragging] = useState(false);
-  const [probEngHovered, setProbEngHovered] = useState(false);
   const probEngDragRef = useRef<{
     pointerId: number;
     offsetX: number;
@@ -524,7 +575,7 @@ export default function MiniChart({
   const strategySearchRef = useRef<HTMLInputElement>(null);
 
   // Pull real data from the sidecar (same path as ChartPage)
-  const { sidecarPort } = useTws();
+  const sidecarPort = useSidecarPort();
   const {
     bars,
     source,
@@ -592,6 +643,27 @@ export default function MiniChart({
     };
   }, []);
 
+  // Suspend ChartEngine RAF when scrolled off-screen (many dashboard tiles).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !engineRef.current) return;
+    let lastVis = true;
+    const io = new IntersectionObserver(
+      (entries) => {
+        const vis = entries.some((e) => e.isIntersecting);
+        if (vis === lastVis) return;
+        lastVis = vis;
+        const eng = engineRef.current;
+        if (!eng) return;
+        if (vis) eng.resume();
+        else eng.suspend();
+      },
+      { root: null, rootMargin: "48px", threshold: 0 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [engineVersion]);
+
   // Handle resize
   const handleResize = useCallback(() => {
     const container = containerRef.current;
@@ -602,11 +674,20 @@ export default function MiniChart({
     engine.resize(width, height);
     // Layout may change after resize, sync divider positions
     requestAnimationFrame(() => {
-      const layout = engineRef.current?.getLayout();
-      if (layout) {
-        setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode, showScaleControls: p.showScaleControls, collapsed: p.collapsed, maximized: p.maximized })));
-        setPriceSectionHeight(layout.mainHeight);
-      }
+      const eng = engineRef.current;
+      if (!eng) return;
+      const layout = eng.getLayout();
+      const nextPanes: MiniPaneLayoutRow[] = layout.subPanes.map((p) => ({
+        paneId: p.paneId,
+        top: p.top,
+        height: p.height,
+        yScaleMode: p.yScaleMode,
+        showScaleControls: p.showScaleControls,
+        collapsed: p.collapsed,
+        maximized: p.maximized,
+      }));
+      setPaneLayout((prev) => (miniPaneRowsEqual(prev, nextPanes) ? prev : nextPanes));
+      setPriceSectionHeight((h) => (Math.abs(h - layout.mainHeight) < 0.5 ? h : layout.mainHeight));
     });
   }, []);
 
@@ -630,8 +711,17 @@ export default function MiniChart({
     const engine = engineRef.current;
     if (!engine) return;
     const layout = engine.getLayout();
-    setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode, showScaleControls: p.showScaleControls, collapsed: p.collapsed, maximized: p.maximized })));
-    setPriceSectionHeight(layout.mainHeight);
+    const nextPanes: MiniPaneLayoutRow[] = layout.subPanes.map((p) => ({
+      paneId: p.paneId,
+      top: p.top,
+      height: p.height,
+      yScaleMode: p.yScaleMode,
+      showScaleControls: p.showScaleControls,
+      collapsed: p.collapsed,
+      maximized: p.maximized,
+    }));
+    setPaneLayout((prev) => (miniPaneRowsEqual(prev, nextPanes) ? prev : nextPanes));
+    setPriceSectionHeight((h) => (Math.abs(h - layout.mainHeight) < 0.5 ? h : layout.mainHeight));
     setChartLayout((prev) => (
       chartLayoutsEquivalentForProbEng(prev, layout) ? (prev ?? layout) : layout
     ));
@@ -659,11 +749,20 @@ export default function MiniChart({
       engineRef.current?.setSubPaneHeight(drag.paneId, newHeight);
       // Sync after engine re-layout
       requestAnimationFrame(() => {
-        const layout = engineRef.current?.getLayout();
-        if (layout) {
-          setPaneLayout(layout.subPanes.map(p => ({ paneId: p.paneId, top: p.top, height: p.height, yScaleMode: p.yScaleMode, showScaleControls: p.showScaleControls, collapsed: p.collapsed, maximized: p.maximized })));
-          setPriceSectionHeight(layout.mainHeight);
-        }
+        const eng = engineRef.current;
+        if (!eng) return;
+        const layout = eng.getLayout();
+        const nextPanes: MiniPaneLayoutRow[] = layout.subPanes.map((p) => ({
+          paneId: p.paneId,
+          top: p.top,
+          height: p.height,
+          yScaleMode: p.yScaleMode,
+          showScaleControls: p.showScaleControls,
+          collapsed: p.collapsed,
+          maximized: p.maximized,
+        }));
+        setPaneLayout((prev) => (miniPaneRowsEqual(prev, nextPanes) ? prev : nextPanes));
+        setPriceSectionHeight((h) => (Math.abs(h - layout.mainHeight) < 0.5 ? h : layout.mainHeight));
       });
     };
 
@@ -688,8 +787,7 @@ export default function MiniChart({
     } else {
       engine.setData(bars);
     }
-    syncPaneLayout();
-  }, [bars, datasetKey, updateMode, tailChangeOffset, syncPaneLayout]);
+  }, [bars, datasetKey, updateMode, tailChangeOffset]);
 
   // Wire viewport change notifications so intraday pan backfill stays anchored
   useEffect(() => {
@@ -840,10 +938,14 @@ export default function MiniChart({
   const emptyScripts = useMemo(() => new Map(), []);
   const indicatorColorDefaults =
     (config.indicatorColorDefaults as Record<string, Record<string, string>> | undefined) ?? {};
-  const persistedProbEngWidget = useMemo(
-    () => parseProbEngWidgetState(config.probEngWidget),
-    [config.probEngWidget],
-  );
+  const probEngPersistKey = JSON.stringify(config.probEngWidget ?? null);
+  const persistedProbEngWidget = useMemo(() => {
+    try {
+      return parseProbEngWidgetState(JSON.parse(probEngPersistKey) as unknown);
+    } catch {
+      return createDefaultProbEngWidgetState();
+    }
+  }, [probEngPersistKey]);
   const persistedIndicators = useMemo(() => {
     if (!Object.prototype.hasOwnProperty.call(config, 'indicators')) {
       return getDefaultMiniIndicators();
@@ -870,9 +972,13 @@ export default function MiniChart({
 
   useEffect(() => {
     if (probEngDragRef.current) return;
-    setProbEngWidget((prev) => (
-      probEngWidgetStateEqual(prev, persistedProbEngWidget) ? prev : persistedProbEngWidget
-    ));
+    setProbEngWidget((prev) => {
+      if (probEngWidgetStateEqual(prev, persistedProbEngWidget)) return prev;
+      if (probEngHasNorm(prev) && !probEngHasNorm(persistedProbEngWidget)) {
+        return { ...persistedProbEngWidget, normX: prev.normX, normY: prev.normY };
+      }
+      return persistedProbEngWidget;
+    });
   }, [persistedProbEngWidget]);
 
   useEffect(() => {
@@ -1128,22 +1234,39 @@ export default function MiniChart({
 
   useEffect(() => {
     if (!chartLayout || probEngDragRef.current) return;
-    const hostWidth = containerRef.current?.clientWidth ?? chartLayout.width;
-    const hostHeight = containerRef.current?.clientHeight ?? chartLayout.height;
+    const host = containerRef.current;
+    const { width: hostWidth, height: hostHeight } = host
+      ? getMiniProbEngHostSize(host)
+      : { width: chartLayout.width, height: chartLayout.height };
     setProbEngWidget((prev) => {
-      const next = clampMiniProbEngWidget(prev, chartLayout, hostWidth, hostHeight);
-      return next.x === prev.x && next.y === prev.y ? prev : next;
+      const b = getMiniProbEngDragBounds(prev.detailed, hostWidth, hostHeight);
+      if (probEngHasNorm(prev)) {
+        const { x, y } = probEngPixelFromNorm(prev.normX!, prev.normY!, b.minX, b.maxX, b.minY, b.maxY);
+        if (x === prev.x && y === prev.y) return prev;
+        return { ...prev, x, y };
+      }
+      const next = clampMiniProbEngWidget(prev, hostWidth, hostHeight);
+      const { normX, normY } = probEngNormFromPixel(next.x, next.y, b.minX, b.maxX, b.minY, b.maxY);
+      if (next.x === prev.x && next.y === prev.y && prev.normX === normX && prev.normY === normY) return prev;
+      return { ...next, normX, normY };
     });
-  }, [chartLayout]);
+  }, [chartLayout, activeProbEngIndicator]);
 
   useEffect(() => {
     if (!chartLayout || !activeProbEngIndicator || probEngDragRef.current) return;
-    const hostWidth = containerRef.current?.clientWidth ?? chartLayout.width;
+    const host = containerRef.current;
+    const { width: hostWidth, height: hostHeight } = host
+      ? getMiniProbEngHostSize(host)
+      : { width: chartLayout.width, height: chartLayout.height };
     setProbEngWidget((prev) => {
       const defaultLike = (prev.x === 16 && prev.y === 44) || (prev.x === 96 && prev.y === 64);
       if (!defaultLike) return prev;
       const pos = getDefaultMiniProbEngPosition(prev.detailed, chartLayout, hostWidth);
-      return { ...prev, ...pos, visible: true };
+      const x = Math.round(pos.x);
+      const y = Math.round(pos.y);
+      const b = getMiniProbEngDragBounds(prev.detailed, hostWidth, hostHeight);
+      const { normX, normY } = probEngNormFromPixel(x, y, b.minX, b.maxX, b.minY, b.maxY);
+      return { ...prev, x, y, normX, normY, visible: true };
     });
   }, [chartLayout, activeProbEngIndicator]);
 
@@ -1437,11 +1560,11 @@ export default function MiniChart({
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'grab';
     const { width: hostW, height: hostH } = getMiniProbEngHostSize(host);
-    setProbEngWidget((prev) => clampMiniProbEngWidget({
+    setProbEngWidget((prev) => miniProbEngClampWithNorm({
       ...prev,
       x: widgetRect.left - hostRect.left,
       y: widgetRect.top - hostRect.top,
-    }, chartLayout, hostW, hostH));
+    }, hostW, hostH));
   }, [probEngWidget, chartLayout]);
 
   const handleProbEngPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1463,7 +1586,7 @@ export default function MiniChart({
         x: event.clientX - rect.left - drag.offsetX,
         y: event.clientY - rect.top - drag.offsetY,
       };
-      return clampMiniProbEngWidget(unclamped, chartLayout, hostW, hostH);
+      return miniProbEngClampWithNorm(unclamped, hostW, hostH);
     });
   }, [chartLayout]);
 
@@ -2824,13 +2947,10 @@ export default function MiniChart({
             indicator={activeProbEngIndicator}
             widget={probEngWidget}
             dragging={probEngDragging}
-            hovered={probEngHovered}
             onHeaderPointerDown={handleProbEngPointerDown}
             onHeaderPointerMove={handleProbEngPointerMove}
             onHeaderPointerUp={handleProbEngPointerUp}
             onHeaderPointerCancel={handleProbEngPointerCancel}
-            onMouseEnter={() => setProbEngHovered(true)}
-            onMouseLeave={() => setProbEngHovered(false)}
             onToggleLock={() => {
               setProbEngWidget((prev) => ({ ...prev, locked: !prev.locked }));
             }}

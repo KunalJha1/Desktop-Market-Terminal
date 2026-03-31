@@ -155,9 +155,14 @@ export class ChartEngine {
   private _onDrawingSelectionChange: ((selection: DrawingSelection | null) => void) | null = null;
   private _onDrawingContextMenu: ((info: { drawingId: string; color: string; screenX: number; screenY: number }) => void) | null = null;
   private _onDrawingHoverChange: ((hoveredId: string | null) => void) | null = null;
+  onYScaleModeChange: ((mode: YScaleMode) => void) | null = null;
   private lastNotifiedViewportStart: number | null = null;
   private lastNotifiedViewportEnd: number | null = null;
   private pendingMouseEvent: MouseEvent | null = null;
+  /** When false, no rAF loop runs until resume() or scheduleFrame() via input. */
+  private suspended = false;
+  /** True while a frame callback is queued (idle loop stops when false and no work pending). */
+  private renderLoopScheduled = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -171,15 +176,39 @@ export class ChartEngine {
     this.tooltip = new Tooltip();
     this.panZoom = new PanZoom(this.viewport, () => this.markDirty());
     this.panZoom.setCanvasEl(canvas);
+    this.panZoom.onDetachAutoY = () => {
+      this.viewport.setYScaleMode('manual');
+      this.onYScaleModeChange?.('manual');
+      this.markDirty();
+    };
 
     this.bindEvents();
-    this.startRenderLoop();
+    this.scheduleFrame();
   }
 
   destroy() {
     this.destroyed = true;
     cancelAnimationFrame(this.rafId);
+    this.rafId = 0;
+    this.renderLoopScheduled = false;
     this.unbindEvents();
+  }
+
+  /** Stop the render loop (e.g. widget off-screen). Canvas stays static until resume(). */
+  suspend() {
+    if (this.suspended) return;
+    this.suspended = true;
+    cancelAnimationFrame(this.rafId);
+    this.rafId = 0;
+    this.renderLoopScheduled = false;
+  }
+
+  /** Restart rendering; schedules a frame if the chart is dirty or has pending input. */
+  resume() {
+    if (this.destroyed || !this.suspended) return;
+    this.suspended = false;
+    this.dirty = true;
+    this.scheduleFrame();
   }
 
   // --- Public API ---
@@ -229,6 +258,7 @@ export class ChartEngine {
     }
 
     this.dirty = true;
+    this.scheduleFrame();
   }
 
   private canApplyTailUpdate(nextBars: OHLCVBar[], changeOffset: number): boolean {
@@ -929,11 +959,13 @@ export class ChartEngine {
   private markDirty() {
     this.dirty = true;
     this.notifyViewportChange();
+    this.scheduleFrame();
   }
 
   // Lightweight dirty flag for crosshair-only updates — skips viewport change notification
   private markCrosshairDirty() {
     this.dirty = true;
+    this.scheduleFrame();
   }
 
   private notifyViewportChange() {
@@ -947,21 +979,32 @@ export class ChartEngine {
     }
   }
 
-  private startRenderLoop() {
-    const loop = () => {
-      if (this.destroyed) return;
-      // Coalesce all mousemove events that arrived since the last frame into one
-      if (this.pendingMouseEvent) {
-        this.processMouseMove(this.pendingMouseEvent);
-        this.pendingMouseEvent = null;
-      }
-      if (this.dirty) {
-        this.dirty = false;
-        this.render();
-      }
-      this.rafId = requestAnimationFrame(loop);
-    };
-    this.rafId = requestAnimationFrame(loop);
+  private scheduleFrame() {
+    if (this.destroyed || this.suspended) return;
+    if (this.renderLoopScheduled) return;
+    this.renderLoopScheduled = true;
+    this.rafId = requestAnimationFrame(() => this.runRenderFrame());
+  }
+
+  private runRenderFrame() {
+    this.renderLoopScheduled = false;
+    if (this.destroyed || this.suspended) return;
+    if (this.pendingMouseEvent) {
+      this.processMouseMove(this.pendingMouseEvent);
+      this.pendingMouseEvent = null;
+    }
+    if (this.dirty) {
+      this.dirty = false;
+      this.render();
+    }
+    const needsAnotherFrame =
+      this.dirty ||
+      this.pendingMouseEvent !== null ||
+      this.drawingPointerActive ||
+      this.draggedDrawingId !== null;
+    if (needsAnotherFrame) {
+      this.scheduleFrame();
+    }
   }
 
   private render() {
@@ -2809,11 +2852,12 @@ export class ChartEngine {
     x: number,
     y: number,
     label: string,
-    _color: string,
+    color: string,
     direction: 'up' | 'down',
   ) {
-    const badgeFill = direction === 'up' ? '#0B3B52' : '#4A2310';
-    const badgeStroke = direction === 'up' ? '#38BDF8' : '#FB923C';
+    const defaultStroke = direction === 'up' ? '#38BDF8' : '#FB923C';
+    const badgeStroke = (color && color !== '#888888') ? color : defaultStroke;
+    const badgeFill = this.withAlpha(badgeStroke, 0.15);
     const textColor = '#F8FAFC';
     const stemEndY = y + (direction === 'up' ? -14 : 14);
     const textY = y + (direction === 'up' ? -26 : 26);
@@ -2963,6 +3007,7 @@ export class ChartEngine {
       return;
     }
     this.pendingMouseEvent = e;
+    this.scheduleFrame();
   };
 
   private processMouseMove = (e: MouseEvent) => {

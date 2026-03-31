@@ -139,8 +139,9 @@ def _row_to_score_map(row: tuple | None) -> dict[str, int | None]:
         "5m": row[2],
         "15m": row[3],
         "1h": row[4],
-        "1d": row[5],
-        "1w": row[6],
+        "4h": row[5],
+        "1d": row[6],
+        "1w": row[7],
     }
 
 
@@ -148,7 +149,16 @@ def _merge_score_row(
     symbol: str,
     existing: dict[str, int | None],
     updates: dict[str, int | None],
-) -> tuple[str, int | None, int | None, int | None, int | None, int | None, int | None]:
+) -> tuple[
+    str,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+    int | None,
+]:
     merged = {
         tf: updates[tf] if tf in updates else existing.get(tf)
         for tf in _SCORE_FIELDS
@@ -159,6 +169,7 @@ def _merge_score_row(
         merged["5m"],
         merged["15m"],
         merged["1h"],
+        merged["4h"],
         merged["1d"],
         merged["1w"],
     )
@@ -183,7 +194,7 @@ def read_scores_for_timeframes(
     with sync_db_session() as conn:
         rows = conn.execute(
             f"""
-            SELECT symbol, score_1m, score_5m, score_15m, score_1h,
+            SELECT symbol, score_1m, score_5m, score_15m, score_1h, score_4h,
                    score_1d, score_1w, last_updated_utc
             FROM technical_scores
             WHERE symbol IN ({placeholders})
@@ -199,7 +210,7 @@ def read_scores_for_timeframes(
             cached = _row_to_score_map(row)
             payload = {
                 "symbol": sym,
-                "last_updated_utc": row[7].isoformat() if row and hasattr(row[7], "isoformat") else (row[7] if row else None),
+                "last_updated_utc": row[8].isoformat() if row and hasattr(row[8], "isoformat") else (row[8] if row else None),
             }
             for tf in _SCORE_FIELDS:
                 payload[tf] = cached.get(tf)

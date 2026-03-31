@@ -1,9 +1,9 @@
-import { useState, useRef, useCallback, useEffect, useMemo, type PointerEvent as ReactPointerEvent } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo, memo, type PointerEvent as ReactPointerEvent } from 'react';
 import { GripHorizontal, Lock, Unlock } from 'lucide-react';
 import type { Timeframe, ChartType, ActiveIndicator, ScriptResult, YScaleMode, ChartLayout } from '../chart/types';
 import { ChartEngine } from '../chart/core/ChartEngine';
 import { useChartData } from '../chart/hooks/useChartData';
-import { useTws } from '../lib/tws';
+import { useSidecarPort } from '../lib/tws';
 import { linkBus } from '../lib/link-bus';
 import ChartCanvas from '../chart/components/ChartCanvas';
 import ChartToolbar from '../chart/components/ChartToolbar';
@@ -20,11 +20,7 @@ import {
   type ChartState,
   type ProbEngWidgetState,
 } from '../lib/chart-state';
-import {
-  chartStateToDailyIqChartConfig,
-  dailyIqChartConfigToChartState,
-} from '../lib/chart-config';
-// DISABLED: import/export not yet functional
+// DISABLED: import/export not yet functional (restore chart-config imports when enabling)
 // import {
 //   exportChartConfigToFile,
 //   importChartConfigFromFile,
@@ -41,6 +37,12 @@ import {
   loadCustomStrategies,
   saveCustomStrategies,
 } from '../chart/customStrategyStorage';
+import {
+  probEngHasNorm,
+  probEngNormFromPixel,
+  probEngPixelFromNorm,
+} from '../lib/probEngLayout';
+import { MASTER_PROMPT } from '../lib/master-prompt';
 
 interface ChartPageProps {
   tabId?: string;
@@ -52,6 +54,20 @@ const PROBENG_WIDGET_HEADER_HEIGHT = 24;
 const PROBENG_WIDGET_EDGE_PADDING = 10;
 const PROBENG_WIDGET_DRAG_THRESHOLD = 4;
 
+function getChartProbEngDragBounds(
+  detailed: boolean,
+  chartLayout: ChartLayout,
+  hostWidth: number,
+  chartToolRailWidth: number,
+): { minX: number; maxX: number; minY: number; maxY: number } {
+  const width = detailed ? PROBENG_WIDGET_WIDTH_DETAILED : PROBENG_WIDGET_WIDTH;
+  const minX = chartToolRailWidth + PROBENG_WIDGET_EDGE_PADDING;
+  const maxX = Math.max(minX, hostWidth - chartLayout.priceAxisWidth - width - PROBENG_WIDGET_EDGE_PADDING);
+  const minY = chartLayout.mainTop + PROBENG_WIDGET_EDGE_PADDING;
+  const maxY = Math.max(minY, chartLayout.mainTop + chartLayout.mainHeight - PROBENG_WIDGET_HEADER_HEIGHT - PROBENG_WIDGET_EDGE_PADDING);
+  return { minX, maxX, minY, maxY };
+}
+
 function clampProbEngWidgetPosition(
   widget: ProbEngWidgetState,
   chartLayout: ChartLayout | null,
@@ -59,16 +75,24 @@ function clampProbEngWidgetPosition(
   chartToolRailWidth: number,
 ): ProbEngWidgetState {
   if (!chartLayout) return widget;
-  const width = widget.detailed ? PROBENG_WIDGET_WIDTH_DETAILED : PROBENG_WIDGET_WIDTH;
-  const minX = chartToolRailWidth + PROBENG_WIDGET_EDGE_PADDING;
-  const maxX = Math.max(minX, hostWidth - chartLayout.priceAxisWidth - width - PROBENG_WIDGET_EDGE_PADDING);
-  const minY = chartLayout.mainTop + PROBENG_WIDGET_EDGE_PADDING;
-  const maxY = Math.max(minY, chartLayout.mainTop + chartLayout.mainHeight - PROBENG_WIDGET_HEADER_HEIGHT - PROBENG_WIDGET_EDGE_PADDING);
+  const b = getChartProbEngDragBounds(widget.detailed, chartLayout, hostWidth, chartToolRailWidth);
   return {
     ...widget,
-    x: Math.min(Math.max(widget.x, minX), maxX),
-    y: Math.min(Math.max(widget.y, minY), maxY),
+    x: Math.round(Math.min(Math.max(widget.x, b.minX), b.maxX)),
+    y: Math.round(Math.min(Math.max(widget.y, b.minY), b.maxY)),
   };
+}
+
+function chartProbEngClampWithNorm(
+  widget: ProbEngWidgetState,
+  chartLayout: ChartLayout,
+  hostWidth: number,
+  chartToolRailWidth: number,
+): ProbEngWidgetState {
+  const next = clampProbEngWidgetPosition(widget, chartLayout, hostWidth, chartToolRailWidth);
+  const b = getChartProbEngDragBounds(next.detailed, chartLayout, hostWidth, chartToolRailWidth);
+  const { normX, normY } = probEngNormFromPixel(next.x, next.y, b.minX, b.maxX, b.minY, b.maxY);
+  return { ...next, normX, normY };
 }
 
 function getDefaultProbEngWidgetPosition(
@@ -120,26 +144,20 @@ function ProbEngFloatingWidget({
   indicator,
   widget,
   dragging,
-  hovered,
   onHeaderPointerDown,
   onHeaderPointerMove,
   onHeaderPointerUp,
   onHeaderPointerCancel,
   onToggleLock,
-  onMouseEnter,
-  onMouseLeave,
 }: {
   indicator: ActiveIndicator;
   widget: ProbEngWidgetState;
   dragging: boolean;
-  hovered: boolean;
   onHeaderPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onHeaderPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onHeaderPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onHeaderPointerCancel: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onToggleLock: () => void;
-  onMouseEnter: () => void;
-  onMouseLeave: () => void;
 }) {
   const latestProb1 = [...(indicator.data[0] ?? [])].reverse().find((value) => Number.isFinite(value));
   const latestProb3 = [...(indicator.data[1] ?? [])].reverse().find((value) => Number.isFinite(value));
@@ -157,8 +175,6 @@ function ProbEngFloatingWidget({
   return (
     <div
       title={widget.locked ? 'Placement locked' : 'Drag to reposition'}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
       style={{
         position: 'absolute',
         left: widget.x,
@@ -228,36 +244,34 @@ function ProbEngFloatingWidget({
           {widget.locked && (
             <span style={{ color: prob1Color, fontWeight: 700 }}>{formatProbEngValue(latestProb1)}</span>
           )}
-          {(!widget.locked || hovered) && (
-            <button
-              type="button"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                onToggleLock();
-              }}
-              style={{
-                border: '1px solid rgba(255,255,255,0.12)',
-                borderRadius: 4,
-                background: 'transparent',
-                color: '#E6EDF3',
-                width: 20,
-                height: 20,
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                lineHeight: 1,
-                fontSize: 11,
-                fontFamily: '"JetBrains Mono", monospace',
-                padding: 0,
-                cursor: 'pointer',
-              }}
-              title={widget.locked ? 'Unlock placement' : 'Lock placement'}
-              aria-label={widget.locked ? 'Unlock placement' : 'Lock placement'}
-            >
-              {widget.locked ? <Lock size={12} strokeWidth={1.5} /> : <Unlock size={12} strokeWidth={1.5} />}
-            </button>
-          )}
+          <button
+            type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleLock();
+            }}
+            style={{
+              border: '1px solid rgba(255,255,255,0.12)',
+              borderRadius: 4,
+              background: 'transparent',
+              color: '#E6EDF3',
+              width: 20,
+              height: 20,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              lineHeight: 1,
+              fontSize: 11,
+              fontFamily: '"JetBrains Mono", monospace',
+              padding: 0,
+              cursor: 'pointer',
+            }}
+            title={widget.locked ? 'Unlock placement' : 'Lock placement'}
+            aria-label={widget.locked ? 'Unlock placement' : 'Lock placement'}
+          >
+            {widget.locked ? <Lock size={12} strokeWidth={1.5} /> : <Unlock size={12} strokeWidth={1.5} />}
+          </button>
         </div>
       </div>
 
@@ -304,7 +318,7 @@ function ProbEngFloatingWidget({
   );
 }
 
-export default function ChartPage({ tabId }: ChartPageProps) {
+function ChartPage({ tabId }: ChartPageProps) {
   const chartToolRailWidth = 56;
   const defaultIndicatorsRef = useRef<PersistedChartIndicator[]>(createDefaultPersistedChartIndicators());
   const chartOverlayRef = useRef<HTMLDivElement>(null);
@@ -349,6 +363,9 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   const [activeIndicators, setActiveIndicators] = useState<ActiveIndicator[]>([]);
   const [activeScripts, setActiveScripts] = useState<Map<string, ScriptResult>>(new Map());
   const [activeScriptSources, setActiveScriptSources] = useState<PersistedChartScript[]>(initialState.scripts ?? []);
+  const [activeScriptIds, setActiveScriptIds] = useState<string[]>(initialState.activeScriptIds ?? []);
+  const [scriptEditorDraft, setScriptEditorDraft] = useState<PersistedChartScript | null>(null);
+  const [codeModalOpen, setCodeModalOpen] = useState(false);
   const [customStrategies, setCustomStrategies] = useState<CustomStrategyDefinition[]>(() => {
     const persistedStrategies = initialState.customStrategies ?? [];
     const localStrategies = loadCustomStrategies();
@@ -369,7 +386,6 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   const [draggingMouse, setDraggingMouse] = useState<{ x: number; y: number } | null>(null);
   const [dragHoverPaneId, setDragHoverPaneId] = useState<string | null>(null);
   const [probEngDragging, setProbEngDragging] = useState(false);
-  const [probEngHovered, setProbEngHovered] = useState(false);
   const restoredIndicatorsRef = useRef(false);
   const paneDividerDragRef = useRef<{ paneId: string; startY: number; startHeight: number } | null>(null);
   const scriptDividerDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -412,7 +428,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   }, [customStrategies]);
 
   // TWS data hook
-  const { sidecarPort } = useTws();
+  const sidecarPort = useSidecarPort();
   const { bars, loading, source, datasetKey, onViewportChange, pendingViewportShift, onViewportShiftApplied, updateMode, tailChangeOffset } = useChartData({
     symbol,
     timeframe,
@@ -498,54 +514,6 @@ export default function ChartPage({ tabId }: ChartPageProps) {
       }
     }
   }, [indicatorColorDefaults]);
-
-  const applyChartState = useCallback((nextState: ChartState) => {
-    setPersisted(nextState);
-    setSymbol(nextState.symbol);
-    setTimeframe(nextState.timeframe);
-    setChartType(nextState.chartType);
-    setYScaleMode(nextState.yScaleMode ?? 'auto');
-    setLinkChannel(nextState.linkChannel);
-    setStopperPx(nextState.stopperPx);
-    setTooltipFields(nextState.tooltipFields ?? { O: true, H: true, L: true, C: true, V: true, Δ: true });
-    setIndicatorColorDefaults(nextState.indicatorColorDefaults);
-    setActiveScriptSources(nextState.scripts ?? []);
-    if ((nextState.customStrategies ?? []).length > 0) {
-      setCustomStrategies((prev) => {
-        const merged = [...prev];
-        for (const strategy of nextState.customStrategies ?? []) {
-          const index = merged.findIndex((item) => item.id === strategy.id);
-          if (index >= 0) merged[index] = strategy;
-          else merged.push(strategy);
-        }
-        return merged;
-      });
-    }
-    setActiveCustomStrategyIds(nextState.activeCustomStrategyIds ?? []);
-    setProbEngWidget(nextState.probEngWidget ?? createDefaultProbEngWidgetState());
-    setActiveScripts(new Map());
-    setChartLayout(null);
-    setDragState(null);
-    setDraggingMouse(null);
-    setDragHoverPaneId(null);
-    setProbEngDragging(false);
-    setProbEngHovered(false);
-    const engine = engineRef.current;
-    if (!engine) {
-      restoredIndicatorsRef.current = false;
-      setActiveIndicators([]);
-      return;
-    }
-
-    restoredIndicatorsRef.current = true;
-    for (const indicator of [...engine.getActiveIndicators()]) {
-      engine.removeIndicator(indicator.id);
-    }
-    engine.clearAllScripts();
-    applySerializedIndicators(engine, nextState.indicators, nextState.indicatorColorDefaults);
-    setActiveIndicators([...engine.getActiveIndicators()]);
-    setChartLayout(engine.getLayout());
-  }, [applySerializedIndicators]);
 
   const serializedIndicatorsMatch = useCallback((
     serializedIndicators: PersistedChartIndicator[],
@@ -667,6 +635,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
     setActiveIndicators([]);
     setActiveScripts(new Map());
     setActiveScriptSources(nextState.scripts ?? []);
+    setActiveScriptIds(nextState.activeScriptIds ?? []);
     if ((nextState.customStrategies ?? []).length > 0) {
       setCustomStrategies((prev) => {
         const merged = [...prev];
@@ -688,7 +657,6 @@ export default function ChartPage({ tabId }: ChartPageProps) {
     setDraggingMouse(null);
     setDragHoverPaneId(null);
     setProbEngDragging(false);
-    setProbEngHovered(false);
     restoredIndicatorsRef.current = false;
 
     const engine = engineRef.current;
@@ -723,6 +691,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
       stopperPx,
       indicatorColorDefaults,
       scripts: activeScriptSources,
+      activeScriptIds,
       customStrategies,
       activeCustomStrategyIds,
       probEngWidget,
@@ -731,7 +700,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
       strategyPanelOpen,
       legendCollapsed,
     });
-  }, [tabId, symbol, timeframe, chartType, yScaleMode, linkChannel, activeIndicators, stopperPx, indicatorColorDefaults, activeScriptSources, customStrategies, activeCustomStrategyIds, probEngWidget, tooltipFields, indicatorPanelOpen, strategyPanelOpen, legendCollapsed, serializeIndicators]);
+  }, [tabId, symbol, timeframe, chartType, yScaleMode, linkChannel, activeIndicators, stopperPx, indicatorColorDefaults, activeScriptSources, activeScriptIds, customStrategies, activeCustomStrategyIds, probEngWidget, tooltipFields, indicatorPanelOpen, strategyPanelOpen, legendCollapsed, serializeIndicators]);
 
   // Re-add persisted indicators once engine is ready
   useEffect(() => {
@@ -792,22 +761,36 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   }, [activeProbEngIndicator]);
 
   useEffect(() => {
-    if (!chartLayout) return;
-    const hostWidth = chartOverlayRef.current?.clientWidth ?? chartLayout.width;
+    if (!chartLayout || probEngDragRef.current) return;
+    const overlay = chartOverlayRef.current;
+    const hostWidth = overlay ? overlay.offsetWidth : chartLayout.width;
     setProbEngWidget((prev) => {
+      const b = getChartProbEngDragBounds(prev.detailed, chartLayout, hostWidth, chartToolRailWidth);
+      if (probEngHasNorm(prev)) {
+        const { x, y } = probEngPixelFromNorm(prev.normX!, prev.normY!, b.minX, b.maxX, b.minY, b.maxY);
+        if (x === prev.x && y === prev.y) return prev;
+        return { ...prev, x, y };
+      }
       const next = clampProbEngWidgetPosition(prev, chartLayout, hostWidth, chartToolRailWidth);
-      return next.x === prev.x && next.y === prev.y ? prev : next;
+      const { normX, normY } = probEngNormFromPixel(next.x, next.y, b.minX, b.maxX, b.minY, b.maxY);
+      if (next.x === prev.x && next.y === prev.y && prev.normX === normX && prev.normY === normY) return prev;
+      return { ...next, normX, normY };
     });
-  }, [chartLayout, chartToolRailWidth]);
+  }, [chartLayout, chartToolRailWidth, activeProbEngIndicator]);
 
   useEffect(() => {
-    if (!chartLayout || !activeProbEngIndicator) return;
-    const hostWidth = chartOverlayRef.current?.clientWidth ?? chartLayout.width;
+    if (!chartLayout || !activeProbEngIndicator || probEngDragRef.current) return;
+    const overlay = chartOverlayRef.current;
+    const hostWidth = overlay ? overlay.offsetWidth : chartLayout.width;
     setProbEngWidget((prev) => {
       const defaultLike = (prev.x === 16 && prev.y === 44) || (prev.x === 96 && prev.y === 64);
       if (!defaultLike) return prev;
       const pos = getDefaultProbEngWidgetPosition(prev.detailed, chartLayout, hostWidth, chartToolRailWidth);
-      return { ...prev, ...pos, visible: true };
+      const x = Math.round(pos.x);
+      const y = Math.round(pos.y);
+      const b = getChartProbEngDragBounds(prev.detailed, chartLayout, hostWidth, chartToolRailWidth);
+      const { normX, normY } = probEngNormFromPixel(x, y, b.minX, b.maxX, b.minY, b.maxY);
+      return { ...prev, x, y, normX, normY, visible: true };
     });
   }, [chartLayout, activeProbEngIndicator, chartToolRailWidth]);
 
@@ -921,6 +904,41 @@ export default function ChartPage({ tabId }: ChartPageProps) {
     setCustomStrategyEditor((prev) => (prev?.id === id ? null : prev));
   }, []);
 
+  const savedNamedScripts = useMemo(
+    () => activeScriptSources.filter((s) => s.name),
+    [activeScriptSources],
+  );
+
+  const handleSaveScript = useCallback((script: PersistedChartScript) => {
+    setActiveScriptSources((prev) => {
+      const index = prev.findIndex((s) => s.id === script.id);
+      if (index >= 0) {
+        const next = [...prev];
+        next[index] = script;
+        return next;
+      }
+      return [...prev, script];
+    });
+    setScriptEditorDraft(null);
+    setCustomStrategyEditor(null);
+    setCodeModalOpen(false);
+  }, []);
+
+  const handleToggleScript = useCallback((id: string) => {
+    setActiveScriptIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }, []);
+
+  const handleDeleteScript = useCallback((id: string) => {
+    setActiveScriptSources((prev) => prev.filter((s) => s.id !== id));
+    setActiveScriptIds((prev) => prev.filter((x) => x !== id));
+  }, []);
+
+  const handleCopyMasterPrompt = useCallback(() => {
+    void navigator.clipboard.writeText(MASTER_PROMPT);
+  }, []);
+
   const handleRemoveIndicator = useCallback((id: string) => {
     const engine = engineRef.current;
     if (!engine) return;
@@ -1029,20 +1047,25 @@ export default function ChartPage({ tabId }: ChartPageProps) {
   }, []);
 
   useEffect(() => {
-    if (activeScriptSources.length === 0) {
+    const scriptsToRun = activeScriptSources.filter(
+      (s) => !s.name || activeScriptIds.includes(s.id),
+    );
+    if (scriptsToRun.length === 0) {
       setActiveScripts(new Map());
       return;
     }
 
     const nextScripts = new Map<string, ScriptResult>();
     for (const script of activeScriptSources) {
+      // Named scripts only run when explicitly activated
+      if (script.name && !activeScriptIds.includes(script.id)) continue;
       const result = interpretScript(script.source, bars);
       if (result.errors.length === 0) {
         nextScripts.set(script.id, result);
       }
     }
     setActiveScripts(nextScripts);
-  }, [bars, activeScriptSources]);
+  }, [bars, activeScriptSources, activeScriptIds]);
 
   useEffect(() => {
     if (!chartNotice) return;
@@ -1236,7 +1259,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
       x: widgetRect.left - hostRect.left,
       y: widgetRect.top - hostRect.top,
     };
-    setProbEngWidget(clampProbEngWidgetPosition(unclamped, chartLayout, hostRect.width, chartToolRailWidth));
+    setProbEngWidget(chartProbEngClampWithNorm(unclamped, chartLayout, hostRect.width, chartToolRailWidth));
   }, [probEngWidget, chartLayout, chartToolRailWidth]);
 
   const handleProbEngPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1256,7 +1279,7 @@ export default function ChartPage({ tabId }: ChartPageProps) {
       x: event.clientX - rect.left - drag.offsetX,
       y: event.clientY - rect.top - drag.offsetY,
     };
-    setProbEngWidget(clampProbEngWidgetPosition(unclamped, chartLayout, rect.width, chartToolRailWidth));
+    setProbEngWidget(chartProbEngClampWithNorm(unclamped, chartLayout, rect.width, chartToolRailWidth));
   }, [probEngWidget, chartLayout, chartToolRailWidth]);
 
   const handleProbEngPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1354,6 +1377,13 @@ export default function ChartPage({ tabId }: ChartPageProps) {
         onEditCustomStrategy={(id) => setCustomStrategyEditor(customStrategies.find((strategy) => strategy.id === id) ?? null)}
         onDuplicateCustomStrategy={handleDuplicateCustomStrategy}
         onDeleteCustomStrategy={handleDeleteCustomStrategy}
+        savedScripts={savedNamedScripts}
+        activeScriptIds={activeScriptIds}
+        onToggleScript={handleToggleScript}
+        onEditScript={(id) => { setScriptEditorDraft(activeScriptSources.find((s) => s.id === id) ?? null); setBuiltInScriptViewer(null); setScriptEditorOpen(true); }}
+        onDeleteScript={handleDeleteScript}
+        onCreateCodeStrategy={() => { setScriptEditorDraft(null); setBuiltInScriptViewer(null); setScriptEditorOpen(true); }}
+        onCopyMasterPrompt={handleCopyMasterPrompt}
         activeIndicators={activeIndicators}
         dataSource={source}
         loading={loading}
@@ -1663,13 +1693,10 @@ export default function ChartPage({ tabId }: ChartPageProps) {
             indicator={activeProbEngIndicator}
             widget={probEngWidget}
             dragging={probEngDragging}
-            hovered={probEngHovered}
             onHeaderPointerDown={handleProbEngPointerDown}
             onHeaderPointerMove={handleProbEngPointerMove}
             onHeaderPointerUp={handleProbEngPointerUp}
             onHeaderPointerCancel={handleProbEngPointerCancel}
-            onMouseEnter={() => setProbEngHovered(true)}
-            onMouseLeave={() => setProbEngHovered(false)}
             onToggleLock={() => {
               setProbEngWidget((prev) => ({ ...prev, locked: !prev.locked }));
             }}
@@ -1754,14 +1781,21 @@ export default function ChartPage({ tabId }: ChartPageProps) {
           builtInViewer={builtInScriptViewer}
           onBuiltInViewerChange={setBuiltInScriptViewer}
           width={scriptEditorWidth}
+          scriptToLoad={scriptEditorDraft ?? undefined}
+          onSaveToLibrary={(id, name, source) => handleSaveScript({ id, name, source, savedAt: Date.now() })}
       />
       <CustomStrategyModal
-        open={customStrategyEditor !== null}
+        open={customStrategyEditor !== null || codeModalOpen}
         strategy={customStrategyEditor}
+        editScript={scriptEditorDraft}
+        defaultTab={codeModalOpen ? 'code' : 'builder'}
         onSave={handleSaveCustomStrategy}
-        onClose={() => setCustomStrategyEditor(null)}
+        onSaveScript={handleSaveScript}
+        onClose={() => { setCustomStrategyEditor(null); setCodeModalOpen(false); setScriptEditorDraft(null); }}
       />
       </div>
     </div>
   );
 }
+
+export default memo(ChartPage);

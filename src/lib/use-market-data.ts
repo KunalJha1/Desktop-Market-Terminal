@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore, useMemo } from "react";
 import { type QuoteData, ALL_SYMBOLS } from "./market-data";
-import { useTws } from "./tws";
+import { isPerfDiagnosticsEnabled } from "./perf-diagnostics";
+import { useSidecarPort } from "./tws";
 import tickersJson from "../../data/tickers.json";
 
 export type Quote = QuoteData;
@@ -72,6 +73,18 @@ function notifySymbols(symbols: Iterable<string>) {
     if (!symbolSet) continue;
     for (const listener of symbolSet) {
       listeners.add(listener);
+    }
+  }
+  if (import.meta.env.DEV && isPerfDiagnosticsEnabled() && listeners.size > 0) {
+    const symArr = Array.from(new Set(symbols));
+    if (symArr.length > 0) {
+      const snapshotChars = getSymbolsSnapshot(symArr).length;
+      // eslint-disable-next-line no-console
+      console.info("[perf] notifySymbols", {
+        symbolCount: symArr.length,
+        listenerCount: listeners.size,
+        snapshotChars,
+      });
     }
   }
   for (const listener of listeners) {
@@ -377,7 +390,7 @@ export interface WatchlistDataResult {
 }
 
 export function useWatchlistData(symbols: string[]): WatchlistDataResult {
-  const { sidecarPort } = useTws();
+  const sidecarPort = useSidecarPort();
   useEffect(() => {
     if (!sidecarPort) return;
     return subscribeSymbols(sidecarPort, symbols);
@@ -411,7 +424,7 @@ export function useWatchlistData(symbols: string[]): WatchlistDataResult {
 }
 
 export function useQuoteData(_quoteId: string, symbol: string): Quote | null {
-  const { sidecarPort } = useTws();
+  const sidecarPort = useSidecarPort();
 
   useEffect(() => {
     if (!sidecarPort) return;

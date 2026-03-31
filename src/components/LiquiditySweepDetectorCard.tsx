@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from "react";
 import { Search, X } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
 import CustomSelect from "./CustomSelect";
 import SymbolSearchModal from "./SymbolSearchModal";
 import { LOGO_SYMBOLS } from "../lib/logo-symbols";
 import { useWatchlistData } from "../lib/use-market-data";
-import { useTws } from "../lib/tws";
+import { useSidecarPort } from "../lib/tws";
 import { linkBus } from "../lib/link-bus";
 
 const MAX_SYMBOLS = 10;
@@ -71,6 +71,31 @@ function sourceLabel(source: string | null): string {
   return "Sweep";
 }
 
+function sweepBlurb(direction: "bull" | "bear" | null, source: string | null, ageBars: number | null): string {
+  if (!direction) return "No active sweep in lookback window";
+
+  const levelDesc =
+    source === "today"
+      ? "today's intraday low/high"
+      : source === "prevDay"
+        ? "the prior day's high/low (PDH/PDL)"
+        : source === "prevWeek"
+          ? "the prior week's high/low (PWH/PWL)"
+          : source === "prevMonth"
+            ? "the prior month's high/low (PMH/PML)"
+            : "a key level";
+
+  const ageNote = ageBars != null && ageBars > 0
+    ? ` ${ageBars} bar${ageBars === 1 ? "" : "s"} ago`
+    : " on the most recent bar";
+
+  if (direction === "bull") {
+    return `Price dipped below ${levelDesc}${ageNote}, sweeping sell-side liquidity, then closed back above — signaling a potential bullish reversal as stops were hunted.`;
+  } else {
+    return `Price spiked above ${levelDesc}${ageNote}, sweeping buy-side liquidity, then closed back below — signaling a potential bearish reversal as stops were hunted.`;
+  }
+}
+
 function formatAge(eventTs: number | null): string {
   if (eventTs == null) return "No active sweep";
   const elapsedMs = Math.max(0, Date.now() - eventTs);
@@ -105,14 +130,14 @@ function SymbolLogo({ symbol }: { symbol: string }) {
   );
 }
 
-export default function LiquiditySweepDetectorCard({
+function LiquiditySweepDetectorCard({
   linkChannel,
   onSetLinkChannel,
   onClose,
   config,
   onConfigChange,
 }: LiquiditySweepDetectorCardProps) {
-  const { sidecarPort } = useTws();
+  const sidecarPort = useSidecarPort();
   const symbols = useMemo(() => readSymbols(config), [config]);
   const timeframe = readTimeframe(config);
   const lookbackBars = readLookbackBars(config);
@@ -371,9 +396,9 @@ export default function LiquiditySweepDetectorCard({
                 onClick={() => {
                   if (linkChannel) linkBus.publish(linkChannel, symbol);
                 }}
-                className="grid w-full grid-cols-[102px_minmax(0,1fr)_108px] items-center gap-3 border-b border-white/[0.04] px-3 py-2.5 text-left transition-colors duration-75 hover:bg-white/[0.05]"
+                className="grid w-full grid-cols-[102px_minmax(0,1fr)_108px] items-start gap-3 border-b border-white/[0.04] px-3 py-2.5 text-left transition-colors duration-75 hover:bg-white/[0.05]"
               >
-                <div className="flex min-w-0 items-center gap-2">
+                <div className="flex min-w-0 items-start gap-2 pt-0.5">
                   <SymbolLogo symbol={symbol} />
                   <div className="min-w-0">
                     <p className="font-mono text-[12px] font-semibold text-white/90">{symbol}</p>
@@ -386,11 +411,22 @@ export default function LiquiditySweepDetectorCard({
                   <p className="truncate text-[12px] text-white/74">
                     {quote?.name ?? (symbolState === "error" ? "Unknown symbol" : "Loading...")}
                   </p>
-                  <p className="mt-1 whitespace-normal break-words font-mono text-[10px] leading-[1.35] text-white/32">
-                    {sweep.direction ? `${formatAge(sweep.eventTs)} • ${sourceLabel(sweep.source)}` : "No active sweep in lookback window"}
-                  </p>
+                  {sweep.direction ? (
+                    <>
+                      <p className="mt-0.5 font-mono text-[10px] text-white/40">
+                        {formatAge(sweep.eventTs)} &bull; {sourceLabel(sweep.source)}
+                      </p>
+                      <p className="mt-1 whitespace-normal break-words text-[10px] leading-[1.4] text-white/28">
+                        {sweepBlurb(sweep.direction, sweep.source, sweep.ageBars)}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="mt-1 font-mono text-[10px] leading-[1.35] text-white/28">
+                      No active sweep in lookback window
+                    </p>
+                  )}
                 </div>
-                <div className="flex justify-end">
+                <div className="flex justify-end pt-0.5">
                   <span className={`inline-flex min-w-[88px] items-center justify-center rounded-full px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] ${badgeClass}`}>
                     {sweep.direction === "bull" ? "Bull Sweep" : sweep.direction === "bear" ? "Bear Sweep" : "No Sweep"}
                   </span>
@@ -411,3 +447,5 @@ export default function LiquiditySweepDetectorCard({
     </div>
   );
 }
+
+export default memo(LiquiditySweepDetectorCard);

@@ -10,6 +10,12 @@
  * inside a block are filtered to bars where the current condition is truthy.
  */
 
+import { computeTechnicalScore } from '../indicators/oscillators/technicalScore';
+import { computeMarketSentiment } from '../indicators/oscillators/marketSentiment';
+import { computeTrendAngle } from '../indicators/oscillators/trendAngle';
+import { computeBullBearPower } from '../indicators/oscillators/bullBearPower';
+import { computeLinearRegressionSentiment } from '../indicators/oscillators/linearRegression';
+import { computeMarketStructureSentiment } from '../indicators/oscillators/marketStructure';
 import type {
   OHLCVBar,
   ScriptPlot,
@@ -79,6 +85,33 @@ class Environment {
     this.vars.set('bar_index', bars.map((_, i) => i));
     // Sentinel for na
     this.vars.set('na', [NaN]);
+    // DailyIQ proprietary series (lazy — only computed when bars exist)
+    if (bars.length > 0) {
+      try {
+        const scoreResult = computeTechnicalScore(bars, {});
+        this.vars.set('diq_score', scoreResult[0] ?? new Array(bars.length).fill(NaN));
+      } catch { this.vars.set('diq_score', new Array(bars.length).fill(NaN)); }
+      try {
+        const sentResult = computeMarketSentiment(bars, {});
+        this.vars.set('diq_sentiment', sentResult[0] ?? new Array(bars.length).fill(NaN));
+      } catch { this.vars.set('diq_sentiment', new Array(bars.length).fill(NaN)); }
+      try {
+        const taResult = computeTrendAngle(bars, {});
+        this.vars.set('diq_trend_angle', taResult[0] ?? new Array(bars.length).fill(NaN));
+      } catch { this.vars.set('diq_trend_angle', new Array(bars.length).fill(NaN)); }
+      try {
+        const bbpResult = computeBullBearPower(bars, {});
+        this.vars.set('diq_bull_bear', bbpResult[0] ?? new Array(bars.length).fill(NaN));
+      } catch { this.vars.set('diq_bull_bear', new Array(bars.length).fill(NaN)); }
+      try {
+        const lrResult = computeLinearRegressionSentiment(bars, {});
+        this.vars.set('diq_lin_reg', lrResult[0] ?? new Array(bars.length).fill(NaN));
+      } catch { this.vars.set('diq_lin_reg', new Array(bars.length).fill(NaN)); }
+      try {
+        const msResult = computeMarketStructureSentiment(bars, {});
+        this.vars.set('diq_structure', msResult[0] ?? new Array(bars.length).fill(NaN));
+      } catch { this.vars.set('diq_structure', new Array(bars.length).fill(NaN)); }
+    }
   }
 
   get(name: string): Value | undefined {

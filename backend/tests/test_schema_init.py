@@ -42,6 +42,7 @@ class SchemaInitTests(unittest.TestCase):
             "portfolio_manual_cash_balances",
             "portfolio_groups",
             "portfolio_group_memberships",
+            "portfolio_ibkr_snapshot",
             "ohlcv_1m",
             "ohlcv_1m_bid",
             "ohlcv_1m_ask",

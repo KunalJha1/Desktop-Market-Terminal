@@ -11,6 +11,10 @@ interface ScriptEditorProps {
   builtInViewer?: { name: string; source: string } | null;
   onBuiltInViewerChange?: (viewer: { name: string; source: string } | null) => void;
   width?: number;
+  /** When set, loads this script into the editor (creates a tab if not already open) */
+  scriptToLoad?: { id: string; name: string; source: string } | null;
+  /** Called when user clicks "Save to Library" on the current script */
+  onSaveToLibrary?: (id: string, name: string, source: string) => void;
 }
 
 interface ScriptEntry {
@@ -137,6 +141,8 @@ export default function ScriptEditor({
   builtInViewer = null,
   onBuiltInViewerChange,
   width = 320,
+  scriptToLoad = null,
+  onSaveToLibrary,
 }: ScriptEditorProps) {
   const [scripts, setScripts] = useState<ScriptEntry[]>(() => [
     createScript('RSI Example', DEFAULT_SCRIPT),
@@ -145,6 +151,7 @@ export default function ScriptEditor({
   const [errorsExpanded, setErrorsExpanded] = useState(true);
   const [contextMenuId, setContextMenuId] = useState<string | null>(null);
   const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 });
+  const [savedFlash, setSavedFlash] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
@@ -176,6 +183,21 @@ export default function ScriptEditor({
     document.addEventListener('click', handler);
     return () => document.removeEventListener('click', handler);
   }, [contextMenuId]);
+
+  // Load an external script into a tab when scriptToLoad changes
+  useEffect(() => {
+    if (!scriptToLoad) return;
+    setScripts((prev) => {
+      const existing = prev.find((s) => s.id === scriptToLoad.id);
+      if (existing) {
+        return prev.map((s) => s.id === scriptToLoad.id ? { ...s, name: scriptToLoad.name, source: scriptToLoad.source } : s);
+      }
+      return [...prev, createScript(scriptToLoad.name, scriptToLoad.source)].map(
+        (s, _, arr) => s === arr[arr.length - 1] ? { ...s, id: scriptToLoad.id } : s,
+      );
+    });
+    setActiveTabId(scriptToLoad.id);
+  }, [scriptToLoad]);
 
   const updateScript = useCallback(
     (id: string, patch: Partial<ScriptEntry>) => {
@@ -528,6 +550,33 @@ export default function ScriptEditor({
             <Circle size={6} fill="#00C853" stroke="none" />
             Active
           </span>
+        )}
+        {!isBuiltInView && onSaveToLibrary && (
+          <button
+            onClick={() => {
+              onSaveToLibrary(currentScript.id, currentScript.name, currentScript.source);
+              setSavedFlash(true);
+              setTimeout(() => setSavedFlash(false), 1800);
+            }}
+            style={{
+              marginLeft: 'auto',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              padding: '2px 8px',
+              fontSize: 9,
+              fontFamily: "'JetBrains Mono', monospace",
+              color: savedFlash ? '#00C853' : '#8B949E',
+              backgroundColor: savedFlash ? 'rgba(0,200,83,0.1)' : 'transparent',
+              border: `1px solid ${savedFlash ? '#00C853' : '#30363D'}`,
+              borderRadius: 4,
+              cursor: 'pointer',
+              transition: 'all 120ms ease-out',
+            }}
+            title="Save this script to the Saved Scripts library"
+          >
+            {savedFlash ? '✓ Saved' : 'Save to Library'}
+          </button>
         )}
       </div>
 

@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState, memo } from "react";
 import { createPortal } from "react-dom";
 import { Columns3, Pencil, Trash2, X } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
@@ -196,7 +196,7 @@ function derivePortfolioRow(
   };
 }
 
-export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClose, config, onConfigChange }: PortfolioCardProps) {
+function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClose, config, onConfigChange }: PortfolioCardProps) {
   // ── Manager / composer state ──
   const [managerOpen, setManagerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -361,7 +361,7 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
   const channelInfo = getChannelById(linkChannel);
   const portfolio = usePortfolioData();
   const {
-    accounts, groups, positions, cashBalances, updatedAt, connected, loading, error,
+    accounts, groups, positions, cashBalances, updatedAt, connected, loading, error, stale,
     createManualAccount, updateManualAccount, deleteManualAccount,
     createManualPosition, updateManualPosition,
     deleteManualPosition: deleteManualPositionInner,
@@ -897,8 +897,12 @@ export default function IBKRPortfolioCard({ linkChannel, onSetLinkChannel, onClo
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-medium text-white/85">Portfolio</span>
           {channelInfo ? <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: channelInfo.color }} /> : null}
-          <span className={`rounded-sm px-1.5 py-[1px] text-[9px] font-mono ${connected ? "bg-green/10 text-green" : "bg-white/[0.05] text-white/50"}`}>
-            {connected ? "LIVE" : loading ? "LOADING" : "OFFLINE"}
+          <span
+            className={`rounded-sm px-1.5 py-[1px] text-[9px] font-mono ${
+              connected && !stale ? "bg-green/10 text-green" : stale ? "bg-amber/10 text-amber" : "bg-white/[0.05] text-white/50"
+            }`}
+          >
+            {connected && !stale ? "LIVE" : loading ? "LOADING" : stale ? "CACHED" : "OFFLINE"}
           </span>
           {manualAccounts.length ? (
             <span className="rounded-sm border border-amber/20 bg-amber/[0.08] px-1.5 py-[1px] text-[9px] font-mono text-amber">
@@ -1542,3 +1546,5 @@ function EmptyState({ title, body }: { title: string; body: string }) {
     </div>
   );
 }
+
+export default memo(IBKRPortfolioCard);

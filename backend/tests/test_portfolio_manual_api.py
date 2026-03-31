@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -22,30 +22,36 @@ class ManualPortfolioApiTests(unittest.TestCase):
         self.db_patch = patch.object(db_utils, "DB_PATH", self.db_path)
         self.main_db_patch = patch.object(main, "sync_db_session", db_utils.sync_db_session)
         self.run_db_patch = patch.object(main, "run_db", db_utils.run_db)
-        self.live_patch = patch.object(main, "read_live_portfolio_snapshot", return_value={
-            "connected": False,
-            "host": "127.0.0.1",
-            "port": None,
-            "accounts": [
-                {
-                    "id": "ibkr:DU123",
-                    "name": "DU123",
-                    "source": "ibkr",
-                    "editable": False,
-                    "accountCode": "DU123",
-                }
-            ],
-            "positions": [],
-            "cashBalances": [],
-            "updatedAt": 100,
-        })
+        self.live_patch = patch.object(
+            main,
+            "read_live_portfolio_snapshot_cached_async",
+            AsyncMock(return_value={
+                "connected": False,
+                "host": "127.0.0.1",
+                "port": None,
+                "accounts": [
+                    {
+                        "id": "ibkr:DU123",
+                        "name": "DU123",
+                        "source": "ibkr",
+                        "editable": False,
+                        "accountCode": "DU123",
+                    }
+                ],
+                "positions": [],
+                "cashBalances": [],
+                "updatedAt": 100,
+            }),
+        )
         self.db_patch.start()
         self.main_db_patch.start()
         self.run_db_patch.start()
         self.live_patch.start()
-        self.client = TestClient(main.create_app())
+        self._test_client_cm = TestClient(main.create_app())
+        self.client = self._test_client_cm.__enter__()
 
     def tearDown(self) -> None:
+        self._test_client_cm.__exit__(None, None, None)
         self.live_patch.stop()
         self.run_db_patch.stop()
         self.main_db_patch.stop()

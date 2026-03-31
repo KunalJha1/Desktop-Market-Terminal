@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, memo } from "react";
 import CircularGauge from "../components/CircularGauge";
 import CustomSelect from "../components/CustomSelect";
 import {
@@ -76,7 +76,7 @@ function formatAsOf(asOf: number | null): string {
   });
 }
 
-export default function HeatmapPage() {
+function HeatmapPage() {
   const { tiles, asOf } = useSp500HeatmapStore();
   const [hovered, setHovered] = useState<HeatmapTile | null>(null);
   const [metricMode, setMetricMode] = useState<HeatmapMetricMode>(() => loadStoredMetricMode());
@@ -434,3 +434,5 @@ export default function HeatmapPage() {
     </div>
   );
 }
+
+export default memo(HeatmapPage);

@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -60,12 +60,18 @@ class ManualPortfolioApiTests(unittest.TestCase):
         self.db_path = Path(self.tmpdir.name) / "market.db"
         db_utils._schema_ready = False
         self.db_patch = patch.object(db_utils, "DB_PATH", self.db_path)
-        self.live_patch = patch.object(main, "read_live_portfolio_snapshot", return_value=LIVE_SNAPSHOT)
+        self.live_patch = patch.object(
+            main,
+            "read_live_portfolio_snapshot_cached_async",
+            AsyncMock(return_value=LIVE_SNAPSHOT),
+        )
         self.db_patch.start()
         self.live_patch.start()
-        self.client = TestClient(main.create_app())
+        self._test_client_cm = TestClient(main.create_app())
+        self.client = self._test_client_cm.__enter__()
 
     def tearDown(self) -> None:
+        self._test_client_cm.__exit__(None, None, None)
         self.live_patch.stop()
         self.db_patch.stop()
         db_utils._schema_ready = False
@@ -87,6 +93,7 @@ class ManualPortfolioApiTests(unittest.TestCase):
                 "portfolio_manual_cash_balances",
                 "portfolio_groups",
                 "portfolio_group_memberships",
+                "portfolio_ibkr_snapshot",
             }.issubset(tables)
         )
 

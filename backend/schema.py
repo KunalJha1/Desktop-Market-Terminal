@@ -182,6 +182,13 @@ def ensure_base_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (group_id) REFERENCES portfolio_groups(id) ON DELETE CASCADE
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio_ibkr_snapshot (
+            id               INTEGER PRIMARY KEY CHECK (id = 1),
+            payload_json     TEXT NOT NULL,
+            captured_at_ms   INTEGER NOT NULL
+        )
+    """)
 
 
 def ensure_historical_schema(conn: sqlite3.Connection) -> None:

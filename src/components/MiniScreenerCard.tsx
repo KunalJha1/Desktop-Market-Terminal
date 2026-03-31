@@ -166,7 +166,7 @@ interface ColumnDragState {
   mouseY: number;
 }
 
-export default function MiniScreenerCard({
+function MiniScreenerCard({
   linkChannel,
   onSetLinkChannel,
   onClose,
@@ -585,7 +585,7 @@ export default function MiniScreenerCard({
       </div>
 
       <div ref={containerRef} className="min-h-0 flex-1 overflow-auto scrollbar-none">
-        <div style={{ minWidth: tableMinWidth }} className="min-h-full">
+        <div style={{ width: tableMinWidth, minWidth: "100%" }} className="min-h-full">
           <div
             className="grid shrink-0 items-center border-b border-white/[0.06] bg-[#0D1117]"
             style={{ gridTemplateColumns }}
@@ -680,7 +680,7 @@ export default function MiniScreenerCard({
               return (
                 <div
                   key={row.symbol}
-                  className="grid cursor-pointer items-center border-b border-white/[0.03] px-3 transition-colors duration-75 hover:bg-white/[0.06]"
+                  className="grid cursor-pointer items-center border-b border-white/[0.03] transition-colors duration-75 hover:bg-white/[0.06]"
                   style={{ height: ROW_HEIGHT, gridTemplateColumns }}
                   onClick={() => {
                     if (linkChannel) linkBus.publish(linkChannel, row.symbol);
@@ -690,13 +690,13 @@ export default function MiniScreenerCard({
                   {visibleColumns.map((col) => {
                     if (col === "symbol") {
                       return (
-                        <div key={col} className="flex min-w-0 items-center gap-2 overflow-hidden">
+                        <div key={col} className="flex min-w-0 items-center gap-2 overflow-hidden px-1.5">
                           <SymbolLogo symbol={row.symbol} />
                           <div className="min-w-0">
-                            <p className="truncate font-mono text-[13px] font-semibold leading-tight text-white/90">
+                            <p className="font-mono text-[13px] font-semibold leading-tight text-white/90">
                               {row.symbol}
                             </p>
-                            <p className="mt-0.5 truncate text-[11px] leading-tight text-white/35">
+                            <p className="mt-0.5 text-[11px] leading-tight text-white/35">
                               {row.name}
                             </p>
                           </div>
@@ -706,7 +706,7 @@ export default function MiniScreenerCard({
 
                     if (col === "priceChange") {
                       return (
-                        <div key={col} className="text-right">
+                        <div key={col} className="px-1.5 text-right">
                           <p className="font-mono text-[12px] font-medium leading-tight text-white/85">
                             {row.last != null ? `$${row.last.toFixed(2)}` : "\u2014"}
                           </p>
@@ -719,7 +719,7 @@ export default function MiniScreenerCard({
 
                     if (col === "mcap") {
                       return (
-                        <div key={col} className="text-right font-mono text-[11px] text-white/60">
+                        <div key={col} className="px-1.5 text-right font-mono text-[11px] text-white/60">
                           {formatMarketCap(row.marketCap)}
                         </div>
                       );
@@ -727,7 +727,7 @@ export default function MiniScreenerCard({
 
                     if (col === "pe") {
                       return (
-                        <div key={col} className="text-right font-mono text-[11px] text-white/60">
+                        <div key={col} className="px-1.5 text-right font-mono text-[11px] text-white/60">
                           {row.trailingPE != null ? row.trailingPE.toFixed(1) : "\u2014"}
                         </div>
                       );
@@ -735,7 +735,7 @@ export default function MiniScreenerCard({
 
                     if (col === "fpe") {
                       return (
-                        <div key={col} className="text-right font-mono text-[11px] text-white/60">
+                        <div key={col} className="px-1.5 text-right font-mono text-[11px] text-white/60">
                           {row.forwardPE != null ? row.forwardPE.toFixed(1) : "\u2014"}
                         </div>
                       );
@@ -743,7 +743,7 @@ export default function MiniScreenerCard({
 
                     if (col === "week52") {
                       return (
-                        <div key={col} className="text-right font-mono text-[11px] leading-tight text-white/55">
+                        <div key={col} className="px-1.5 text-right font-mono text-[11px] leading-tight text-white/55">
                           <div>{row.week52High != null ? row.week52High.toFixed(0) : "\u2014"}</div>
                           <div className="mt-0.5 text-white/30">{row.week52Low != null ? row.week52Low.toFixed(0) : "\u2014"}</div>
                         </div>
@@ -783,3 +783,5 @@ export default function MiniScreenerCard({
     </div>
   );
 }
+
+export default memo(MiniScreenerCard);

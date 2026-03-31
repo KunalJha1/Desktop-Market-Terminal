@@ -152,6 +152,7 @@ def _validate_finnhub_key(api_key: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+# Min seconds between live TWS portfolio reads (frontend also polls /portfolio on this scale).
 PORTFOLIO_CACHE_TTL_S = 60.0
 _portfolio_cache_lock: asyncio.Lock | None = None
 _portfolio_cache: dict | None = None
@@ -295,6 +296,56 @@ async def read_live_portfolio_snapshot_async(pool: ConnectionPool) -> dict:
         }
 
 
+def _persist_ibkr_portfolio_snapshot_row(live: dict) -> None:
+    """Write last successful IBKR portfolio read to SQLite (single-row cache)."""
+    if not live.get("connected"):
+        return
+    payload = {
+        "host": live.get("host"),
+        "port": live.get("port"),
+        "accounts": live.get("accounts", []),
+        "positions": live.get("positions", []),
+        "cashBalances": live.get("cashBalances", []),
+        "updatedAt": live.get("updatedAt", _now_ms()),
+    }
+    raw = json.dumps(payload, separators=(",", ":"))
+    captured = int(payload["updatedAt"])
+    with sync_db_session() as conn:
+        conn.execute(
+            """
+            INSERT INTO portfolio_ibkr_snapshot (id, payload_json, captured_at_ms)
+            VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                captured_at_ms = excluded.captured_at_ms
+            """,
+            (raw, captured),
+        )
+
+
+def load_persisted_ibkr_portfolio_snapshot() -> dict | None:
+    """Restore last successful IBKR snapshot from SQLite (same shape as a live read)."""
+    with sync_db_session() as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM portfolio_ibkr_snapshot WHERE id = 1"
+        ).fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        data = json.loads(row[0])
+    except json.JSONDecodeError:
+        return None
+    return {
+        "connected": True,
+        "host": data.get("host", DEFAULT_TWS_HOST),
+        "port": data.get("port"),
+        "accounts": data.get("accounts", []),
+        "positions": data.get("positions", []),
+        "cashBalances": data.get("cashBalances", []),
+        "updatedAt": data.get("updatedAt", 0),
+    }
+
+
 async def read_live_portfolio_snapshot_cached_async(pool: ConnectionPool, force: bool = False) -> dict:
     global _portfolio_cache, _portfolio_cache_time, _portfolio_last_good
 
@@ -306,24 +357,37 @@ async def read_live_portfolio_snapshot_cached_async(pool: ConnectionPool, force:
 
     result = await read_live_portfolio_snapshot_async(pool)
 
+    if not result.get("connected"):
+        async with _portfolio_cache_lock:
+            needs_disk = _portfolio_last_good is None
+        if needs_disk:
+            loaded = await run_db(load_persisted_ibkr_portfolio_snapshot)
+            if loaded is not None:
+                async with _portfolio_cache_lock:
+                    if _portfolio_last_good is None:
+                        _portfolio_last_good = loaded
+
     async with _portfolio_cache_lock:
         if result.get("connected"):
             _portfolio_last_good = result
             _portfolio_cache = result
+        elif _portfolio_last_good is not None:
+            _portfolio_cache = {
+                **_portfolio_last_good,
+                "connected": False,
+                "stale": True,
+                "staleSince": result.get("updatedAt", _now_ms()),
+                "error": result.get("error"),
+            }
         else:
-            if _portfolio_last_good is not None:
-                _portfolio_cache = {
-                    **_portfolio_last_good,
-                    "connected": False,
-                    "stale": True,
-                    "staleSince": result.get("updatedAt", _now_ms()),
-                    "error": result.get("error"),
-                }
-            else:
-                _portfolio_cache = result
+            _portfolio_cache = result
         _portfolio_cache_time = now
+        out = _portfolio_cache
 
-    return _portfolio_cache
+    if result.get("connected"):
+        await run_db(_persist_ibkr_portfolio_snapshot_row, result)
+
+    return out
 
 
 def build_unified_portfolio_snapshot() -> dict:
@@ -362,6 +426,8 @@ def build_unified_portfolio_snapshot() -> dict:
         "cashBalances": [*live.get("cashBalances", []), *manual["cashBalances"]],
         "updatedAt": max(live.get("updatedAt", 0), _now_ms()),
         "error": live.get("error"),
+        "stale": bool(live.get("stale")),
+        "staleSince": live.get("staleSince"),
     }
 
 
@@ -510,6 +576,8 @@ async def build_unified_portfolio_snapshot_async(pool: ConnectionPool, force: bo
         "cashBalances": [*live.get("cashBalances", []), *manual["cashBalances"]],
         "updatedAt": max(live.get("updatedAt", 0), _now_ms()),
         "error": live.get("error"),
+        "stale": bool(live.get("stale")),
+        "staleSince": live.get("staleSince"),
     }
 
 
@@ -1033,12 +1101,20 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        global _portfolio_cache_lock, _sp500_heatmap_cache_lock
+        global _portfolio_cache_lock, _sp500_heatmap_cache_lock, _portfolio_last_good
         # Create asyncio primitives inside the running event loop to avoid
         # "Future attached to a different loop" errors on Windows (ProactorEventLoop).
         _portfolio_cache_lock = asyncio.Lock()
         _sp500_heatmap_cache_lock = asyncio.Lock()
+        try:
+            persisted = await run_db(load_persisted_ibkr_portfolio_snapshot)
+        except Exception:
+            logger.warning("Could not load persisted IBKR portfolio snapshot", exc_info=True)
+            persisted = None
+        if persisted is not None:
+            _portfolio_last_good = persisted
         pool = ConnectionPool(probe_fn=_probe_tws)
+        _app.state.pool = pool
 
         scorer.set_symbols(await run_db(read_watchlist_symbols))
         sp500_symbols = [
@@ -1060,8 +1136,6 @@ def create_app() -> FastAPI:
                 logger.warning("TWS not available at startup; portfolio connection will be attempted on first request")
         else:
             logger.warning("TWS not reachable at startup; portfolio connection will be attempted on first request")
-
-        _app.state.pool = pool
 
         # Fire-and-forget: pre-warm DailyIQ data for watchlist symbols so the
         # frontend sees data immediately on first load (before IBKR backfill).

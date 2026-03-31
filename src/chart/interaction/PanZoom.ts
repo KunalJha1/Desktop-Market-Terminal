@@ -15,6 +15,7 @@ export class PanZoom {
   private canvasWidth = 0;
   private canvasHeight = 0;
   private canvasEl: HTMLCanvasElement | null = null;
+  onDetachAutoY: (() => void) | null = null;
 
   constructor(viewport: Viewport, onDirty: () => void) {
     this.viewport = viewport;
@@ -56,12 +57,13 @@ export class PanZoom {
     const mx = (e.clientX - rect.left) / sx;
     const my = (e.clientY - rect.top) / sy;
 
-    // If clicking on price axis, start Y-scale drag (blocked in auto mode)
+    // If clicking on price axis, start Y-scale drag; auto mode detaches first
     if (this.viewport.isInPriceAxis(mx, this.canvasWidth, PRICE_AXIS_WIDTH)) {
-      if (this.viewport.yScaleMode !== 'auto') {
-        this.yScaling = true;
-        this.viewport.startYScaleDrag((e.clientY - rect.top) / sy);
+      if (this.viewport.yScaleMode === 'auto') {
+        this.onDetachAutoY?.();
       }
+      this.yScaling = true;
+      this.viewport.startYScaleDrag((e.clientY - rect.top) / sy);
       return;
     }
 
@@ -140,8 +142,11 @@ export class PanZoom {
       deltaX *= 400;
     }
 
-    // Wheel on price axis: scale Y
+    // Wheel on price axis: scale Y; auto mode detaches first
     if (this.viewport.isInPriceAxis(mouseX, this.canvasWidth, PRICE_AXIS_WIDTH)) {
+      if (this.viewport.yScaleMode === 'auto') {
+        this.onDetachAutoY?.();
+      }
       this.viewport.manualYScale = true;
       const range = this.viewport.priceMax - this.viewport.priceMin;
       // Smooth exponential scale proportional to actual scroll amount

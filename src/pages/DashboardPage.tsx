@@ -1,4 +1,12 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  memo,
+} from "react";
 import { DollarSign, List, BarChart2, Briefcase, SlidersHorizontal, LayoutGrid, Activity } from "lucide-react";
 import DashboardToolbar from "../components/DashboardToolbar";
 import GridLayout from "../components/GridLayout";
@@ -17,6 +25,7 @@ import {
   readMiniChartConfig,
   removeMiniChartConfig,
   writeMiniChartConfig,
+  mergePersistedMiniChartConfig,
 } from "../lib/minichart-config-storage";
 
 const COMPONENT_TYPES = [
@@ -29,7 +38,10 @@ const COMPONENT_TYPES = [
   { type: "liquidity-sweep-detector", label: "Liquidity Sweep Detector", defaultW: 5, defaultH: 9, icon: Activity },
 ] as const;
 
-export default function DashboardPage() {
+/** Debounce workspace `updateComponent` for MiniChart; localStorage stays immediate. */
+const MINICHART_WORKSPACE_DEBOUNCE_MS = 400;
+
+function DashboardPageComponent(_props: { tabId?: string }) {
   const { activeTabId, ready: tabsReady } = useTabs();
   const { symbols, setSymbols, ready: watchlistReady } = useWatchlist();
   const {
@@ -52,6 +64,185 @@ export default function DashboardPage() {
   const layout = tabState?.layout ?? { columns: 12, rowHeight: 40, components: [] };
   const zoom = layout.zoom ?? 0.9;
 
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const activeTabIdRef = useRef(activeTabId);
+  activeTabIdRef.current = activeTabId;
+
+  const depsRef = useRef({
+    activeTabId,
+    updateComponent,
+    removeComponent,
+    setComponentLinkChannel,
+  });
+  depsRef.current = {
+    activeTabId,
+    updateComponent,
+    removeComponent,
+    setComponentLinkChannel,
+  };
+
+  const configChangeByIdRef = useRef(new Map<string, (cfg: Record<string, unknown>) => void>());
+  const setLinkByIdRef = useRef(new Map<string, (ch: number | null) => void>());
+  const closeByIdRef = useRef(new Map<string, () => void>());
+  const miniChartCloseByIdRef = useRef(new Map<string, () => void>());
+  const miniChartConfigByIdRef = useRef(new Map<string, (cfg: Record<string, unknown>) => void>());
+  const symbolSelectByIdRef = useRef(new Map<string, (sym: string) => void>());
+
+  useLayoutEffect(() => {
+    configChangeByIdRef.current.clear();
+    setLinkByIdRef.current.clear();
+    closeByIdRef.current.clear();
+    miniChartCloseByIdRef.current.clear();
+    miniChartConfigByIdRef.current.clear();
+    symbolSelectByIdRef.current.clear();
+  }, [activeTabId, updateComponent, removeComponent, setComponentLinkChannel]);
+
+  const getOnConfigChange = useCallback((id: string) => {
+    let fn = configChangeByIdRef.current.get(id);
+    if (!fn) {
+      fn = (cfg: Record<string, unknown>) => {
+        const { activeTabId: tid, updateComponent: uc } = depsRef.current;
+        uc(tid, id, { config: cfg });
+      };
+      configChangeByIdRef.current.set(id, fn);
+    }
+    return fn;
+  }, []);
+
+  const getSetLinkChannel = useCallback((id: string) => {
+    let fn = setLinkByIdRef.current.get(id);
+    if (!fn) {
+      fn = (ch: number | null) => {
+        const { activeTabId: tid, setComponentLinkChannel: sl } = depsRef.current;
+        sl(tid, id, ch);
+      };
+      setLinkByIdRef.current.set(id, fn);
+    }
+    return fn;
+  }, []);
+
+  const getOnClose = useCallback((id: string) => {
+    let fn = closeByIdRef.current.get(id);
+    if (!fn) {
+      fn = () => {
+        const { activeTabId: tid, removeComponent: rm } = depsRef.current;
+        rm(tid, id);
+      };
+      closeByIdRef.current.set(id, fn);
+    }
+    return fn;
+  }, []);
+
+  const handleSymbolSelect = useCallback((sourceCompId: string, symbol: string) => {
+    const components = layoutRef.current.components;
+    const sourceComp = components.find((c) => c.id === sourceCompId);
+    if (!sourceComp?.linkChannel) return;
+    const { activeTabId: tid, updateComponent: uc } = depsRef.current;
+    for (const c of components) {
+      if (c.id !== sourceCompId && c.linkChannel === sourceComp.linkChannel) {
+        uc(tid, c.id, {
+          config: { ...c.config, symbol },
+        });
+      }
+    }
+  }, []);
+
+  const getOnSymbolSelect = useCallback(
+    (sourceCompId: string) => {
+      let fn = symbolSelectByIdRef.current.get(sourceCompId);
+      if (!fn) {
+        fn = (sym: string) => {
+          handleSymbolSelect(sourceCompId, sym);
+        };
+        symbolSelectByIdRef.current.set(sourceCompId, fn);
+      }
+      return fn;
+    },
+    [handleSymbolSelect],
+  );
+
+  const miniChartWorkspaceTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const [miniChartMergeEpoch, setMiniChartMergeEpoch] = useState(0);
+  const bumpMiniChartMergeEpoch = useCallback(() => {
+    setMiniChartMergeEpoch((n) => n + 1);
+  }, []);
+
+  const miniChartConfigById = useMemo(() => {
+    const m = new Map<string, Record<string, unknown>>();
+    for (const c of layout.components) {
+      if (c.type !== "minichart") continue;
+      m.set(c.id, mergePersistedMiniChartConfig(activeTabId, c.id, c.config));
+    }
+    return m;
+  }, [
+    activeTabId,
+    miniChartMergeEpoch,
+    ...layout.components
+      .filter((c): c is LayoutComponent & { type: "minichart" } => c.type === "minichart")
+      .flatMap((c) => [c.id, c.config] as const),
+  ]);
+
+  const updateMiniChartConfig = useCallback((componentId: string, nextConfig: Record<string, unknown>) => {
+    const tid = activeTabIdRef.current;
+    const currentConfig = (layoutRef.current.components.find((c) => c.id === componentId)?.config ??
+      {}) as Record<string, unknown>;
+    const persisted = readMiniChartConfig(tid, componentId) ?? {};
+    const merged = { ...persisted, ...currentConfig, ...nextConfig };
+    writeMiniChartConfig(tid, componentId, merged);
+    bumpMiniChartMergeEpoch();
+
+    const timers = miniChartWorkspaceTimersRef.current;
+    const existing = timers[componentId];
+    if (existing) clearTimeout(existing);
+    timers[componentId] = setTimeout(() => {
+      delete timers[componentId];
+      const tabIdNow = activeTabIdRef.current;
+      const latest = readMiniChartConfig(tabIdNow, componentId);
+      const { updateComponent: uc } = depsRef.current;
+      if (latest) uc(tabIdNow, componentId, { config: latest });
+    }, MINICHART_WORKSPACE_DEBOUNCE_MS);
+  }, [bumpMiniChartMergeEpoch]);
+
+  const getMiniChartOnConfigChange = useCallback((id: string) => {
+    let fn = miniChartConfigByIdRef.current.get(id);
+    if (!fn) {
+      fn = (cfg: Record<string, unknown>) => {
+        updateMiniChartConfig(id, cfg);
+      };
+      miniChartConfigByIdRef.current.set(id, fn);
+    }
+    return fn;
+  }, [updateMiniChartConfig]);
+
+  const getMiniChartOnClose = useCallback((id: string) => {
+    let fn = miniChartCloseByIdRef.current.get(id);
+    if (!fn) {
+      fn = () => {
+        const tid = activeTabIdRef.current;
+        removeMiniChartConfig(tid, id);
+        const t = miniChartWorkspaceTimersRef.current[id];
+        if (t) {
+          clearTimeout(t);
+          delete miniChartWorkspaceTimersRef.current[id];
+        }
+        const { removeComponent: rm } = depsRef.current;
+        rm(tid, id);
+      };
+      miniChartCloseByIdRef.current.set(id, fn);
+    }
+    return fn;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      for (const t of Object.values(miniChartWorkspaceTimersRef.current)) {
+        clearTimeout(t);
+      }
+      miniChartWorkspaceTimersRef.current = {};
+    };
+  }, []);
+
   const ZOOM_MIN = 0.5;
   const ZOOM_MAX = 1.5;
   const ZOOM_STEP = 0.1;
@@ -70,7 +261,6 @@ export default function DashboardPage() {
     setTabZoom(activeTabId, 0.9);
   }, [activeTabId, setTabZoom]);
 
-  // Keyboard shortcuts for zoom
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
@@ -89,7 +279,6 @@ export default function DashboardPage() {
     return () => document.removeEventListener("keydown", handler);
   }, [handleZoomIn, handleZoomOut, handleZoomReset]);
 
-  // Add Component dropdown
   const [showAddMenu, setShowAddMenu] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
 
@@ -110,7 +299,6 @@ export default function DashboardPage() {
     };
   }, [showAddMenu]);
 
-  // Preserve saved user state, but don't seed default symbols on first run.
   const seededRef = useRef(false);
   useEffect(() => {
     if (!tabsReady || !layoutReady || !watchlistReady || seededRef.current) return;
@@ -131,208 +319,172 @@ export default function DashboardPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabsReady, layoutReady, watchlistReady, symbols.length]);
 
-  const handleAddComponent = (type: string) => {
-    const spec = COMPONENT_TYPES.find((c) => c.type === type);
-    if (!spec) return;
+  const handleAddComponent = useCallback(
+    (type: string) => {
+      const spec = COMPONENT_TYPES.find((c) => c.type === type);
+      if (!spec) return;
 
-    const defaultConfigs: Record<string, Record<string, unknown>> = {
-      quote: {},
-      watchlist: {},
-      minichart: { timeframe: "1D", chartType: "candlestick" },
-      "ibkr-portfolio": {},
-      "mini-screener": {},
-      "mini-heatmap": {},
-      "liquidity-sweep-detector": { symbols: [], timeframe: "15m", lookbackBars: 3 },
-    };
+      const defaultConfigs: Record<string, Record<string, unknown>> = {
+        quote: {},
+        watchlist: {},
+        minichart: { timeframe: "1D", chartType: "candlestick" },
+        "ibkr-portfolio": {},
+        "mini-screener": {},
+        "mini-heatmap": {},
+        "liquidity-sweep-detector": { symbols: [], timeframe: "15m", lookbackBars: 3 },
+      };
 
-    // Drop at (0,0) — user can drag it wherever they want
-    addComponent(activeTabId, type, {
-      w: spec.defaultW,
-      h: spec.defaultH,
-      x: 0,
-      y: 0,
-      config: defaultConfigs[type] ?? {},
-    });
-    // Auto-unlock so the new component can be dragged immediately
-    if (locked) setTabLocked(activeTabId, false);
-    setShowAddMenu(false);
-  };
+      addComponent(activeTabId, type, {
+        w: spec.defaultW,
+        h: spec.defaultH,
+        x: 0,
+        y: 0,
+        config: defaultConfigs[type] ?? {},
+      });
+      if (locked) setTabLocked(activeTabId, false);
+      setShowAddMenu(false);
+    },
+    [activeTabId, addComponent, locked, setTabLocked],
+  );
 
-  const handleMoveComponent = (id: string, x: number, y: number) => {
-    updateComponent(activeTabId, id, { x, y });
-  };
+  const handleMoveComponent = useCallback(
+    (id: string, x: number, y: number) => {
+      updateComponent(activeTabId, id, { x, y });
+    },
+    [activeTabId, updateComponent],
+  );
 
-  const handleResizeComponent = (id: string, w: number, h: number, x?: number, y?: number) => {
-    const update: Partial<LayoutComponent> = { w, h };
-    if (x !== undefined) update.x = x;
-    if (y !== undefined) update.y = y;
-    updateComponent(activeTabId, id, update);
-  };
+  const handleResizeComponent = useCallback(
+    (id: string, w: number, h: number, x?: number, y?: number) => {
+      const update: Partial<LayoutComponent> = { w, h };
+      if (x !== undefined) update.x = x;
+      if (y !== undefined) update.y = y;
+      updateComponent(activeTabId, id, update);
+    },
+    [activeTabId, updateComponent],
+  );
 
-  const resolveMiniChartConfig = useCallback((componentId: string, config: Record<string, unknown>) => {
-    const persisted = readMiniChartConfig(activeTabId, componentId);
-    if (!persisted) return config;
-    const merged = { ...persisted, ...config };
-    // `updateMiniChartConfig` writes the full chart config (including oscillators) to localStorage on every
-    // MiniChart change. The tab layout `config` can still carry a stale `indicators` array from the last
-    // saved workspace file, which would otherwise overwrite localStorage here and strip MACD and similar panes.
-    if (Array.isArray(persisted.indicators)) {
-      merged.indicators = persisted.indicators;
-    }
-    if (typeof persisted.legendCollapsed === "boolean") {
-      merged.legendCollapsed = persisted.legendCollapsed;
-    }
-    // Same for Probability Table placement: workspace JSON often carries default x/y and would reset drag position.
-    const pw = persisted.probEngWidget;
-    if (
-      pw &&
-      typeof pw === "object" &&
-      !Array.isArray(pw) &&
-      typeof (pw as { x?: unknown }).x === "number" &&
-      typeof (pw as { y?: unknown }).y === "number"
-    ) {
-      merged.probEngWidget = { ...(pw as Record<string, unknown>) };
-    }
-    return merged;
-  }, [activeTabId]);
-
-  const updateMiniChartConfig = useCallback((componentId: string, currentConfig: Record<string, unknown>, nextConfig: Record<string, unknown>) => {
-    const persisted = readMiniChartConfig(activeTabId, componentId) ?? {};
-    const merged = { ...persisted, ...currentConfig, ...nextConfig };
-    writeMiniChartConfig(activeTabId, componentId, merged);
-    updateComponent(activeTabId, componentId, { config: merged });
-  }, [activeTabId, updateComponent]);
-
-  // When a watchlist row is clicked, update all linked components on the same channel
-  const handleSymbolSelect = (sourceComp: LayoutComponent, symbol: string) => {
-    if (!sourceComp.linkChannel) return;
-    for (const c of layout.components) {
-      if (c.id !== sourceComp.id && c.linkChannel === sourceComp.linkChannel) {
-        updateComponent(activeTabId, c.id, {
-          config: { ...c.config, symbol },
-        });
-      }
-    }
-  };
-
-  const renderComponent = (comp: LayoutComponent) => {
-    switch (comp.type) {
-      case "quote":
-        return (
-          <QuoteCard
-            linkChannel={comp.linkChannel}
-            onSetLinkChannel={(ch) =>
-              setComponentLinkChannel(activeTabId, comp.id, ch)
-            }
-            onClose={() => removeComponent(activeTabId, comp.id)}
-            config={comp.config}
-            onConfigChange={(cfg) =>
-              updateComponent(activeTabId, comp.id, { config: cfg })
-            }
-          />
-        );
-      case "watchlist":
-        return (
-          <WatchlistCard
-            linkChannel={comp.linkChannel}
-            onSetLinkChannel={(ch) =>
-              setComponentLinkChannel(activeTabId, comp.id, ch)
-            }
-            onClose={() => removeComponent(activeTabId, comp.id)}
-            config={comp.config}
-            onConfigChange={(cfg) =>
-              updateComponent(activeTabId, comp.id, { config: cfg })
-            }
-            onSymbolSelect={(sym) => handleSymbolSelect(comp, sym)}
-          />
-        );
-      case "ibkr-portfolio":
-        return (
-          <IBKRPortfolioCard
-            linkChannel={comp.linkChannel}
-            onSetLinkChannel={(ch) =>
-              setComponentLinkChannel(activeTabId, comp.id, ch)
-            }
-            onClose={() => removeComponent(activeTabId, comp.id)}
-            config={comp.config}
-            onConfigChange={(cfg) =>
-              updateComponent(activeTabId, comp.id, { config: cfg })
-            }
-          />
-        );
-      case "minichart":
-        {
-          const resolvedConfig = resolveMiniChartConfig(comp.id, comp.config);
-        return (
-          <MiniChart
-            linkChannel={comp.linkChannel}
-            onSetLinkChannel={(ch) =>
-              setComponentLinkChannel(activeTabId, comp.id, ch)
-            }
-            onClose={() => {
-              removeMiniChartConfig(activeTabId, comp.id);
-              removeComponent(activeTabId, comp.id);
-            }}
-            config={resolvedConfig}
-            onConfigChange={(cfg) =>
-              updateMiniChartConfig(comp.id, comp.config, cfg)
-            }
-          />
-        );
+  const renderComponent = useCallback(
+    (comp: LayoutComponent) => {
+      switch (comp.type) {
+        case "quote":
+          return (
+            <QuoteCard
+              linkChannel={comp.linkChannel}
+              onSetLinkChannel={getSetLinkChannel(comp.id)}
+              onClose={getOnClose(comp.id)}
+              config={comp.config}
+              onConfigChange={getOnConfigChange(comp.id)}
+            />
+          );
+        case "watchlist":
+          return (
+            <WatchlistCard
+              linkChannel={comp.linkChannel}
+              onSetLinkChannel={getSetLinkChannel(comp.id)}
+              onClose={getOnClose(comp.id)}
+              config={comp.config}
+              onConfigChange={getOnConfigChange(comp.id)}
+              onSymbolSelect={getOnSymbolSelect(comp.id)}
+            />
+          );
+        case "ibkr-portfolio":
+          return (
+            <IBKRPortfolioCard
+              linkChannel={comp.linkChannel}
+              onSetLinkChannel={getSetLinkChannel(comp.id)}
+              onClose={getOnClose(comp.id)}
+              config={comp.config}
+              onConfigChange={getOnConfigChange(comp.id)}
+            />
+          );
+        case "minichart": {
+          const resolvedConfig =
+            miniChartConfigById.get(comp.id) ?? mergePersistedMiniChartConfig(activeTabId, comp.id, comp.config);
+          return (
+            <MiniChart
+              linkChannel={comp.linkChannel}
+              onSetLinkChannel={getSetLinkChannel(comp.id)}
+              onClose={getMiniChartOnClose(comp.id)}
+              config={resolvedConfig}
+              onConfigChange={getMiniChartOnConfigChange(comp.id)}
+            />
+          );
         }
-      case "mini-screener":
-        return (
-          <MiniScreenerCard
-            linkChannel={comp.linkChannel}
-            onSetLinkChannel={(ch) =>
-              setComponentLinkChannel(activeTabId, comp.id, ch)
-            }
-            onClose={() => removeComponent(activeTabId, comp.id)}
-            config={comp.config}
-            onConfigChange={(cfg) =>
-              updateComponent(activeTabId, comp.id, { config: cfg })
-            }
-            onSymbolSelect={(sym) => handleSymbolSelect(comp, sym)}
-          />
-        );
-      case "mini-heatmap":
-        return (
-          <MiniHeatmapCard
-            linkChannel={comp.linkChannel}
-            onSetLinkChannel={(ch) =>
-              setComponentLinkChannel(activeTabId, comp.id, ch)
-            }
-            onClose={() => removeComponent(activeTabId, comp.id)}
-            config={comp.config}
-            onConfigChange={(cfg) =>
-              updateComponent(activeTabId, comp.id, { config: cfg })
-            }
-          />
-        );
-      case "liquidity-sweep-detector":
-        return (
-          <LiquiditySweepDetectorCard
-            linkChannel={comp.linkChannel}
-            onSetLinkChannel={(ch) =>
-              setComponentLinkChannel(activeTabId, comp.id, ch)
-            }
-            onClose={() => removeComponent(activeTabId, comp.id)}
-            config={comp.config}
-            onConfigChange={(cfg) =>
-              updateComponent(activeTabId, comp.id, { config: cfg })
-            }
-          />
-        );
-      default:
-        return (
-          <div className="flex h-full items-center justify-center border border-white/[0.06] bg-panel text-[10px] text-white/20">
-            Unknown: {comp.type}
-          </div>
-        );
-    }
-  };
+        case "mini-screener":
+          return (
+            <MiniScreenerCard
+              linkChannel={comp.linkChannel}
+              onSetLinkChannel={getSetLinkChannel(comp.id)}
+              onClose={getOnClose(comp.id)}
+              config={comp.config}
+              onConfigChange={getOnConfigChange(comp.id)}
+              onSymbolSelect={getOnSymbolSelect(comp.id)}
+            />
+          );
+        case "mini-heatmap":
+          return (
+            <MiniHeatmapCard
+              linkChannel={comp.linkChannel}
+              onSetLinkChannel={getSetLinkChannel(comp.id)}
+              onClose={getOnClose(comp.id)}
+              config={comp.config}
+              onConfigChange={getOnConfigChange(comp.id)}
+            />
+          );
+        case "liquidity-sweep-detector":
+          return (
+            <LiquiditySweepDetectorCard
+              linkChannel={comp.linkChannel}
+              onSetLinkChannel={getSetLinkChannel(comp.id)}
+              onClose={getOnClose(comp.id)}
+              config={comp.config}
+              onConfigChange={getOnConfigChange(comp.id)}
+            />
+          );
+        default:
+          return (
+            <div className="flex h-full items-center justify-center border border-white/[0.06] bg-panel text-[10px] text-white/20">
+              Unknown: {comp.type}
+            </div>
+          );
+      }
+    },
+    [
+      getOnConfigChange,
+      getSetLinkChannel,
+      getOnClose,
+      getOnSymbolSelect,
+      activeTabId,
+      miniChartConfigById,
+      getMiniChartOnConfigChange,
+      getMiniChartOnClose,
+    ],
+  );
 
-  // Wait for persisted state to load before rendering
+  const handleToggleLock = useCallback(() => {
+    setTabLocked(activeTabId, !locked);
+  }, [activeTabId, locked, setTabLocked]);
+
+  const handleSetToolbarLinkChannel = useCallback(
+    (ch: number | null) => {
+      setTabLinkChannel(activeTabId, ch);
+    },
+    [activeTabId, setTabLinkChannel],
+  );
+
+  const handleToggleAddMenu = useCallback(() => {
+    setShowAddMenu((v) => !v);
+  }, []);
+
+  const handleLoadWorkspace = useCallback(() => {
+    void loadFromFile();
+  }, [loadFromFile]);
+
+  const handleSaveWorkspace = useCallback(() => {
+    void exportToFile();
+  }, [exportToFile]);
+
   if (!tabsReady || !layoutReady || !watchlistReady) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -346,23 +498,18 @@ export default function DashboardPage() {
       <div className="relative">
         <DashboardToolbar
           locked={locked}
-          onToggleLock={() => setTabLocked(activeTabId, !locked)}
+          onToggleLock={handleToggleLock}
           zoom={zoom}
           onZoomIn={handleZoomIn}
           onZoomOut={handleZoomOut}
           onZoomReset={handleZoomReset}
           linkChannel={linkChannel}
-          onSetLinkChannel={(ch) => setTabLinkChannel(activeTabId, ch)}
-          onAddComponent={() => setShowAddMenu((v) => !v)}
-          onLoadWorkspace={() => {
-            void loadFromFile();
-          }}
-          onSaveWorkspace={() => {
-            void exportToFile();
-          }}
+          onSetLinkChannel={handleSetToolbarLinkChannel}
+          onAddComponent={handleToggleAddMenu}
+          onLoadWorkspace={handleLoadWorkspace}
+          onSaveWorkspace={handleSaveWorkspace}
         />
 
-        {/* Add Component dropdown */}
         {showAddMenu && (
           <div
             ref={addMenuRef}
@@ -408,3 +555,5 @@ export default function DashboardPage() {
     </div>
   );
 }
+
+export default memo(DashboardPageComponent);

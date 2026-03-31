@@ -16,6 +16,7 @@ import { TabProvider, useTabs } from "./lib/tabs";
 import { appWindow } from "@tauri-apps/api/window";
 import { WatchlistProvider, useWatchlist } from "./lib/watchlist";
 import { isTauriRuntime } from "./lib/platform";
+import { initPerfDiagnostics } from "./lib/perf-diagnostics";
 import { isDetachedWindow, isTestWindowLabel, setMainWindowClosing } from "./lib/detached";
 
 type WindowMode = "main" | "detached" | "test";
@@ -125,6 +126,10 @@ function AppRoutes() {
 }
 
 function App() {
+  useEffect(() => {
+    initPerfDiagnostics();
+  }, []);
+
   const windowMode = resolveWindowMode();
 
   if (windowMode === "test") {

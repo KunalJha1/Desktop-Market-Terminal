@@ -15,11 +15,18 @@ import {
   type CustomStrategyScoreOperator,
   type CustomStrategyValueSource,
 } from "../customStrategies";
+import type { PersistedChartScript } from "../../lib/chart-state";
+import { interpretScript } from "../scripting/interpreter";
+
+type ModalTab = "builder" | "code";
 
 interface CustomStrategyModalProps {
   open: boolean;
   strategy: CustomStrategyDefinition | null;
+  editScript?: PersistedChartScript | null;
+  defaultTab?: ModalTab;
   onSave: (strategy: CustomStrategyDefinition) => void;
+  onSaveScript?: (script: PersistedChartScript) => void;
   onClose: () => void;
 }
 
@@ -151,30 +158,90 @@ function SourceEditor({
   );
 }
 
+const DEFAULT_CODE = `indicator("My Indicator", overlay=false)
+input length = 14
+
+my_val = ta.sma(close, length)
+
+plot(my_val, "Value", color=#1A56DB)
+`;
+
 export default function CustomStrategyModal({
   open,
   strategy,
+  editScript,
+  defaultTab,
   onSave,
+  onSaveScript,
   onClose,
 }: CustomStrategyModalProps) {
   const [draft, setDraft] = useState<CustomStrategyDefinition | null>(strategy);
+  const [tab, setTab] = useState<ModalTab>(defaultTab ?? "builder");
+  const [codeName, setCodeName] = useState(editScript?.name ?? "");
+  const [codeSource, setCodeSource] = useState(editScript?.source ?? DEFAULT_CODE);
+  const [codeError, setCodeError] = useState<string | null>(null);
 
   useEffect(() => {
     setDraft(strategy);
   }, [strategy]);
 
-  if (!open || !draft) return null;
+  useEffect(() => {
+    if (open) {
+      setTab(defaultTab ?? "builder");
+      setCodeName(editScript?.name ?? "");
+      setCodeSource(editScript?.source ?? DEFAULT_CODE);
+      setCodeError(null);
+    }
+  }, [open, defaultTab, editScript]);
+
+  const handleSaveCode = () => {
+    const name = codeName.trim();
+    if (!name) { setCodeError("Name is required."); return; }
+    try {
+      const result = interpretScript(codeSource, []);
+      if (result.errors.length > 0) {
+        const err = result.errors[0];
+        setCodeError(`Line ${err.line}: ${err.message}`);
+        return;
+      }
+    } catch (e) {
+      setCodeError(String(e));
+      return;
+    }
+    setCodeError(null);
+    onSaveScript?.({
+      id: editScript?.id ?? `script_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      source: codeSource,
+      name,
+      savedAt: Date.now(),
+    });
+    onClose();
+  };
+
+  if (!open) return null;
+
+  const tabBtn = (t: ModalTab, label: string) => (
+    <button
+      onClick={() => setTab(t)}
+      className={`px-4 py-2 text-[11px] font-medium transition-colors ${
+        tab === t
+          ? "border-b-2 border-[#1A56DB] text-white"
+          : "text-white/40 hover:text-white/70"
+      }`}
+    >
+      {label}
+    </button>
+  );
 
   return createPortal(
     <div className="fixed inset-0 z-[320] flex items-center justify-center bg-black/50">
       <div className="w-[760px] rounded-lg border border-white/[0.08] bg-[#161B22] shadow-2xl shadow-black/60">
+        {/* Header */}
         <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-3">
           <div>
-            <h3 className="text-[13px] font-semibold text-white">
-              {strategy ? "Custom Strategy" : "Custom Strategy"}
-            </h3>
+            <h3 className="text-[13px] font-semibold text-white">New Indicator / Strategy</h3>
             <p className="text-[10px] text-white/30">
-              Build a reusable chart strategy that outputs one score and derived BUY/SELL state.
+              Build with the condition builder or write code using the scripting language.
             </p>
           </div>
           <button
@@ -185,159 +252,231 @@ export default function CustomStrategyModal({
           </button>
         </div>
 
-        <div className="max-h-[540px] space-y-3 overflow-y-auto px-5 py-3">
-          <div className="grid grid-cols-3 gap-2">
-            <div>
-              <label className={labelCls}>Name</label>
-              <input
-                type="text"
-                value={draft.name}
-                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                className={inputCls}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>Buy Threshold</label>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={draft.buyThreshold}
-                onChange={(e) => setDraft({ ...draft, buyThreshold: Number(e.target.value) || 0 })}
-                className={inputCls}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>Sell Threshold</label>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={draft.sellThreshold}
-                onChange={(e) => setDraft({ ...draft, sellThreshold: Number(e.target.value) || 0 })}
-                className={inputCls}
-              />
-            </div>
-          </div>
+        {/* Tabs */}
+        <div className="flex border-b border-white/[0.06] px-2">
+          {tabBtn("builder", "Builder")}
+          {tabBtn("code", "Code")}
+        </div>
 
-          <div>
-            <div className="flex items-center justify-between pb-1.5">
-              <p className="text-[8px] uppercase tracking-wider text-white/25">Conditions</p>
-              <button
-                onClick={() => setDraft({ ...draft, conditions: [...draft.conditions, makeCondition()] })}
-                className="inline-flex items-center gap-1 rounded border border-white/[0.08] px-2 py-1 text-[10px] text-white/50 hover:bg-white/[0.04] hover:text-white/80"
-              >
-                <Plus size={10} />
-                Condition
-              </button>
-            </div>
-
-            <div className="space-y-2">
-              {draft.conditions.map((condition, index) => (
-                <div key={`${draft.id}-${index}`} className="space-y-2 rounded border border-white/[0.06] bg-[#0D1117]/40 p-2.5">
-                  <div className="flex items-center justify-between">
-                    <p className="text-[8px] uppercase tracking-wider text-white/25">Condition {index + 1}</p>
-                    {draft.conditions.length > 1 && (
-                      <button
-                        onClick={() => setDraft({ ...draft, conditions: draft.conditions.filter((_, itemIndex) => itemIndex !== index) })}
-                        className="rounded px-1 py-0.5 text-[9px] text-white/25 hover:bg-white/[0.06] hover:text-white/55"
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-
-                  <SourceEditor
-                    source={condition.left}
-                    onChange={(left) => {
-                      const next = [...draft.conditions];
-                      next[index] = { ...condition, left };
-                      setDraft({ ...draft, conditions: next });
-                    }}
+        {/* Builder tab */}
+        {tab === "builder" && draft && (
+          <>
+            <div className="max-h-[480px] space-y-3 overflow-y-auto px-5 py-3">
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className={labelCls}>Name</label>
+                  <input
+                    type="text"
+                    value={draft.name}
+                    onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                    className={inputCls}
                   />
+                </div>
+                <div>
+                  <label className={labelCls}>Buy Threshold</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={draft.buyThreshold}
+                    onChange={(e) => setDraft({ ...draft, buyThreshold: Number(e.target.value) || 0 })}
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Sell Threshold</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={draft.sellThreshold}
+                    onChange={(e) => setDraft({ ...draft, sellThreshold: Number(e.target.value) || 0 })}
+                    className={inputCls}
+                  />
+                </div>
+              </div>
 
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className={labelCls}>Operator</label>
-                      <CustomSelect
-                        value={condition.operator}
-                        onChange={(next) => {
-                          const conditions = [...draft.conditions];
-                          conditions[index] = { ...condition, operator: next as CustomStrategyScoreOperator };
-                          setDraft({ ...draft, conditions });
+              <div>
+                <div className="flex items-center justify-between pb-1.5">
+                  <p className="text-[8px] uppercase tracking-wider text-white/25">Conditions</p>
+                  <button
+                    onClick={() => setDraft({ ...draft, conditions: [...draft.conditions, makeCondition()] })}
+                    className="inline-flex items-center gap-1 rounded border border-white/[0.08] px-2 py-1 text-[10px] text-white/50 hover:bg-white/[0.04] hover:text-white/80"
+                  >
+                    <Plus size={10} />
+                    Condition
+                  </button>
+                </div>
+
+                <div className="space-y-2">
+                  {draft.conditions.map((condition, index) => (
+                    <div key={`${draft.id}-${index}`} className="space-y-2 rounded border border-white/[0.06] bg-[#0D1117]/40 p-2.5">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[8px] uppercase tracking-wider text-white/25">Condition {index + 1}</p>
+                        {draft.conditions.length > 1 && (
+                          <button
+                            onClick={() => setDraft({ ...draft, conditions: draft.conditions.filter((_, itemIndex) => itemIndex !== index) })}
+                            className="rounded px-1 py-0.5 text-[9px] text-white/25 hover:bg-white/[0.06] hover:text-white/55"
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+
+                      <SourceEditor
+                        source={condition.left}
+                        onChange={(left) => {
+                          const next = [...draft.conditions];
+                          next[index] = { ...condition, left };
+                          setDraft({ ...draft, conditions: next });
                         }}
-                        options={COMPARISON_OPTIONS}
-                        size="sm"
-                        triggerClassName={selectTriggerCls}
                       />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Compare Against</label>
-                      <CustomSelect
-                        value={condition.targetType}
-                        onChange={(next) => {
-                          const conditions = [...draft.conditions];
-                          conditions[index] = {
-                            ...condition,
-                            targetType: next as "value" | "source",
-                            right: next === "source" ? condition.right ?? makeCustomStrategyQuoteSource("last") : undefined,
-                          };
-                          setDraft({ ...draft, conditions });
-                        }}
-                        options={[
-                          { value: "value", label: "Number" },
-                          { value: "source", label: "Another Source" },
-                        ]}
-                        size="sm"
-                        triggerClassName={selectTriggerCls}
-                      />
-                    </div>
-                    {condition.targetType === "value" && (
-                      <div>
-                        <label className={labelCls}>Threshold</label>
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          value={condition.threshold}
-                          onChange={(e) => {
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className={labelCls}>Operator</label>
+                          <CustomSelect
+                            value={condition.operator}
+                            onChange={(next) => {
+                              const conditions = [...draft.conditions];
+                              conditions[index] = { ...condition, operator: next as CustomStrategyScoreOperator };
+                              setDraft({ ...draft, conditions });
+                            }}
+                            options={COMPARISON_OPTIONS}
+                            size="sm"
+                            triggerClassName={selectTriggerCls}
+                          />
+                        </div>
+                        <div>
+                          <label className={labelCls}>Compare Against</label>
+                          <CustomSelect
+                            value={condition.targetType}
+                            onChange={(next) => {
+                              const conditions = [...draft.conditions];
+                              conditions[index] = {
+                                ...condition,
+                                targetType: next as "value" | "source",
+                                right: next === "source" ? condition.right ?? makeCustomStrategyQuoteSource("last") : undefined,
+                              };
+                              setDraft({ ...draft, conditions });
+                            }}
+                            options={[
+                              { value: "value", label: "Number" },
+                              { value: "source", label: "Another Source" },
+                            ]}
+                            size="sm"
+                            triggerClassName={selectTriggerCls}
+                          />
+                        </div>
+                        {condition.targetType === "value" && (
+                          <div>
+                            <label className={labelCls}>Threshold</label>
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={condition.threshold}
+                              onChange={(e) => {
+                                const conditions = [...draft.conditions];
+                                conditions[index] = { ...condition, threshold: Number(e.target.value) || 0 };
+                                setDraft({ ...draft, conditions });
+                              }}
+                              className={inputCls}
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {condition.targetType === "source" && (
+                        <SourceEditor
+                          source={condition.right ?? makeCustomStrategyQuoteSource("last")}
+                          onChange={(right) => {
                             const conditions = [...draft.conditions];
-                            conditions[index] = { ...condition, threshold: Number(e.target.value) || 0 };
+                            conditions[index] = { ...condition, right };
                             setDraft({ ...draft, conditions });
                           }}
-                          className={inputCls}
                         />
-                      </div>
-                    )}
-                  </div>
-
-                  {condition.targetType === "source" && (
-                    <SourceEditor
-                      source={condition.right ?? makeCustomStrategyQuoteSource("last")}
-                      onChange={(right) => {
-                        const conditions = [...draft.conditions];
-                        conditions[index] = { ...condition, right };
-                        setDraft({ ...draft, conditions });
-                      }}
-                    />
-                  )}
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </div>
             </div>
-          </div>
-        </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-white/[0.06] px-5 py-3">
-          <button
-            onClick={onClose}
-            className="rounded px-3 py-1.5 text-[10px] font-medium text-white/50 hover:bg-white/[0.04] hover:text-white/70"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => onSave(draft)}
-            className="rounded bg-[#1A56DB] px-4 py-1.5 text-[10px] font-medium text-white hover:bg-[#1A56DB]/90"
-          >
-            Save Strategy
-          </button>
-        </div>
+            <div className="flex items-center justify-end gap-2 border-t border-white/[0.06] px-5 py-3">
+              <button
+                onClick={onClose}
+                className="rounded px-3 py-1.5 text-[10px] font-medium text-white/50 hover:bg-white/[0.04] hover:text-white/70"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => onSave(draft)}
+                className="rounded bg-[#1A56DB] px-4 py-1.5 text-[10px] font-medium text-white hover:bg-[#1A56DB]/90"
+              >
+                Save Strategy
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Code tab */}
+        {tab === "code" && (
+          <>
+            <div className="px-5 pt-3 pb-2">
+              <label className={labelCls}>Indicator / Strategy Name</label>
+              <input
+                type="text"
+                value={codeName}
+                onChange={(e) => { setCodeName(e.target.value); setCodeError(null); }}
+                placeholder="e.g. My RSI Divergence"
+                className={inputCls}
+              />
+            </div>
+
+            <div className="px-5 pb-1">
+              <label className={labelCls}>Script</label>
+              <textarea
+                value={codeSource}
+                onChange={(e) => { setCodeSource(e.target.value); setCodeError(null); }}
+                spellCheck={false}
+                style={{
+                  width: "100%",
+                  height: 320,
+                  backgroundColor: "#0D1117",
+                  color: "#E6EDF3",
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 11,
+                  lineHeight: "1.6",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: 4,
+                  padding: "10px 12px",
+                  outline: "none",
+                  resize: "vertical",
+                  tabSize: 4,
+                }}
+              />
+            </div>
+
+            {codeError && (
+              <div className="mx-5 mb-2 rounded border border-[#FF3D71]/30 bg-[#FF3D71]/10 px-3 py-2 font-mono text-[10px] text-[#FF3D71]">
+                {codeError}
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 border-t border-white/[0.06] px-5 py-3">
+              <button
+                onClick={onClose}
+                className="rounded px-3 py-1.5 text-[10px] font-medium text-white/50 hover:bg-white/[0.04] hover:text-white/70"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveCode}
+                className="rounded bg-[#1A56DB] px-4 py-1.5 text-[10px] font-medium text-white hover:bg-[#1A56DB]/90"
+              >
+                Save Indicator
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>,
     document.body,

@@ -120,6 +120,15 @@ export default function ChartCanvas({
     };
   }, [engineRef, onEngineReady]);
 
+  // Keep engine's onYScaleModeChange callback in sync
+  const onYScaleModeChangeRef = useRef(onYScaleModeChange);
+  onYScaleModeChangeRef.current = onYScaleModeChange;
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.onYScaleModeChange = (mode) => onYScaleModeChangeRef.current?.(mode);
+  });
+
   // ResizeObserver
   const handleResize = useCallback(() => {
     const container = containerRef.current;

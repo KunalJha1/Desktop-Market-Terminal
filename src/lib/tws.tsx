@@ -14,6 +14,7 @@ import {
   saveTwsSettings,
   type TwsSettings,
 } from "./tws-storage";
+import { isPerfDiagnosticsEnabled } from "./perf-diagnostics";
 
 type TwsStatus = "disconnected" | "probing" | "connected";
 type TwsConnectionType =
@@ -102,10 +103,35 @@ interface TwsContextValue {
 
 export const TwsContext = createContext<TwsContextValue | null>(null);
 
+/** Narrow context: only `sidecarPort` — avoids re-rendering on Finnhub/IB poll updates. */
+const SidecarPortContext = createContext<number | null | undefined>(undefined);
+
 export function useTws(): TwsContextValue {
   const ctx = useContext(TwsContext);
   if (!ctx) throw new Error("useTws must be used within TwsProvider");
   return ctx;
+}
+
+export function useSidecarPort(): number | null {
+  const port = useContext(SidecarPortContext);
+  if (port === undefined) {
+    throw new Error("useSidecarPort must be used within TwsProvider");
+  }
+  return port;
+}
+
+function SidecarPortBridge({
+  sidecarPort,
+  children,
+}: {
+  sidecarPort: number | null;
+  children: ReactNode;
+}) {
+  return (
+    <SidecarPortContext.Provider value={sidecarPort}>
+      {children}
+    </SidecarPortContext.Provider>
+  );
 }
 
 export function TwsProvider({ children }: { children: ReactNode }) {
@@ -427,9 +453,26 @@ export function TwsProvider({ children }: { children: ReactNode }) {
     ],
   );
 
+  const twsDigestRef = useRef("");
+  useEffect(() => {
+    if (!isPerfDiagnosticsEnabled()) return;
+    const digest = `${backendState}|${ibStatus}|${finnhubStatus}|${sidecarStatus}|${status}|${sidecarPort ?? ""}`;
+    if (digest === twsDigestRef.current) return;
+    twsDigestRef.current = digest;
+    // eslint-disable-next-line no-console
+    console.info("[perf] Tws polled fields changed", {
+      backendState,
+      ibStatus,
+      finnhubStatus,
+      sidecarStatus,
+      status,
+      sidecarPort,
+    });
+  }, [backendState, ibStatus, finnhubStatus, sidecarStatus, status, sidecarPort]);
+
   return (
     <TwsContext.Provider value={value}>
-      {children}
+      <SidecarPortBridge sidecarPort={sidecarPort}>{children}</SidecarPortBridge>
     </TwsContext.Provider>
   );
 }

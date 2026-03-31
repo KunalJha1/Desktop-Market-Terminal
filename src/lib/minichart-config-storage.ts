@@ -41,3 +41,31 @@ export function removeMiniChartConfig(tabId: string, componentId: string): void 
     // Ignore storage failures.
   }
 }
+
+/** Merge workspace minichart config with localStorage (dashboard hydration). */
+export function mergePersistedMiniChartConfig(
+  tabId: string,
+  componentId: string,
+  workspaceConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  const persisted = readMiniChartConfig(tabId, componentId);
+  if (!persisted) return workspaceConfig;
+  const merged = { ...persisted, ...workspaceConfig };
+  if (Array.isArray(persisted.indicators)) {
+    merged.indicators = persisted.indicators;
+  }
+  if (typeof persisted.legendCollapsed === "boolean") {
+    merged.legendCollapsed = persisted.legendCollapsed;
+  }
+  const pw = persisted.probEngWidget;
+  if (
+    pw &&
+    typeof pw === "object" &&
+    !Array.isArray(pw) &&
+    typeof (pw as { x?: unknown }).x === "number" &&
+    typeof (pw as { y?: unknown }).y === "number"
+  ) {
+    merged.probEngWidget = { ...(pw as Record<string, unknown>) };
+  }
+  return merged;
+}

@@ -141,13 +141,19 @@ function sanitizeChartConfig(value: unknown): DailyIqChartConfig | null {
       ? value.activeCustomStrategyIds.filter((item): item is string => typeof item === "string")
       : [],
     probEngWidget: isRecord(value.probEngWidget)
-      ? {
-          x: typeof value.probEngWidget.x === "number" ? value.probEngWidget.x : 96,
-          y: typeof value.probEngWidget.y === "number" ? value.probEngWidget.y : 64,
-          visible: typeof value.probEngWidget.visible === "boolean" ? value.probEngWidget.visible : true,
-          detailed: typeof value.probEngWidget.detailed === "boolean" ? value.probEngWidget.detailed : false,
-          locked: typeof value.probEngWidget.locked === "boolean" ? value.probEngWidget.locked : false,
-        }
+      ? (() => {
+          const pw = value.probEngWidget;
+          const base = {
+            x: typeof pw.x === "number" ? pw.x : 96,
+            y: typeof pw.y === "number" ? pw.y : 64,
+            visible: typeof pw.visible === "boolean" ? pw.visible : true,
+            detailed: typeof pw.detailed === "boolean" ? pw.detailed : false,
+            locked: typeof pw.locked === "boolean" ? pw.locked : false,
+          };
+          const normX = typeof pw.normX === "number" && Number.isFinite(pw.normX) ? pw.normX : undefined;
+          const normY = typeof pw.normY === "number" && Number.isFinite(pw.normY) ? pw.normY : undefined;
+          return normX !== undefined && normY !== undefined ? { ...base, normX, normY } : base;
+        })()
       : createDefaultProbEngWidgetState(),
     tooltipFields: sanitizeBooleanRecord(value.tooltipFields),
   };

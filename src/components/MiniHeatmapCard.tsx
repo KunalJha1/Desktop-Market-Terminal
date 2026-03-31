@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, memo } from "react";
 import { X } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
 import CustomSelect from "./CustomSelect";
@@ -24,7 +24,7 @@ interface MiniHeatmapCardProps {
   onConfigChange: (config: Record<string, unknown>) => void;
 }
 
-export default function MiniHeatmapCard({
+function MiniHeatmapCard({
   linkChannel,
   onSetLinkChannel,
   onClose,
@@ -271,3 +271,5 @@ export default function MiniHeatmapCard({
     </div>
   );
 }
+
+export default memo(MiniHeatmapCard);

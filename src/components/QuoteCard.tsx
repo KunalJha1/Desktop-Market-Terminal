@@ -1,10 +1,9 @@
-import { useState, useRef, useEffect, useId } from "react";
+import { useState, useRef, useEffect, useId, memo } from "react";
 import { X, TrendingUp, TrendingDown, Search } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
 import SymbolSearchModal from "./SymbolSearchModal";
 import {
   formatPrice,
-  formatVolume,
   formatMarketCap,
 } from "../lib/market-data";
 import { useQuoteData } from "../lib/use-market-data";
@@ -22,7 +21,7 @@ interface QuoteCardProps {
   onConfigChange: (config: Record<string, unknown>) => void;
 }
 
-export default function QuoteCard({
+function QuoteCard({
   linkChannel,
   onSetLinkChannel,
   onClose,
@@ -255,10 +254,6 @@ export default function QuoteCard({
                 <p className="font-mono text-[11px] font-medium text-white/70">{formatPrice(quote.prevClose)}</p>
               </div>
               <div>
-                <p className="text-[10px] uppercase tracking-wider text-white">Volume</p>
-                <p className="font-mono text-[11px] font-medium text-white/70">{formatVolume(quote.volume)}</p>
-              </div>
-              <div>
                 <p className="text-[10px] uppercase tracking-wider text-white">Spread</p>
                 <p className="font-mono text-[11px] font-medium text-amber">{quote.spread != null ? formatPrice(quote.spread) : "—"}</p>
               </div>
@@ -309,3 +304,5 @@ export default function QuoteCard({
     </div>
   );
 }
+
+export default memo(QuoteCard);

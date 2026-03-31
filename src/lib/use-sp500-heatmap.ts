@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import { useTws } from "./tws";
+import { useSidecarPort } from "./tws";
 import type { HeatmapTile } from "./heatmap-utils";
 
 const HEATMAP_POLL_MS = 5_000;
@@ -100,7 +100,7 @@ export function useSp500HeatmapData(): HeatmapTile[] {
 }
 
 export function useSp500HeatmapStore(): { tiles: HeatmapTile[]; asOf: number | null } {
-  const { sidecarPort } = useTws();
+  const sidecarPort = useSidecarPort();
 
   useEffect(() => {
     if (!sidecarPort) return;

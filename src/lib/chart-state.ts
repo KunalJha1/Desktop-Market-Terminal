@@ -17,11 +17,17 @@ export interface PersistedChartIndicator {
 export interface PersistedChartScript {
   id: string;
   source: string;
+  name?: string;
+  savedAt?: number;
 }
 
 export interface ProbEngWidgetState {
   x: number;
   y: number;
+  /** 0–1 horizontal position in the draggable band (persists across window resize). */
+  normX?: number;
+  /** 0–1 vertical position in the draggable band. */
+  normY?: number;
   visible: boolean;
   detailed: boolean;
   locked: boolean;
@@ -37,6 +43,7 @@ export interface ChartState {
   stopperPx: number;
   indicatorColorDefaults: Record<string, Record<string, string>>;
   scripts?: PersistedChartScript[];
+  activeScriptIds?: string[];
   customStrategies?: CustomStrategyDefinition[];
   activeCustomStrategyIds?: string[];
   probEngWidget?: ProbEngWidgetState;
@@ -148,6 +155,8 @@ function parseScripts(value: unknown): PersistedChartScript[] {
     return [{
       id: typeof item.id === "string" ? item.id : `script_${Date.now()}`,
       source: item.source,
+      name: typeof item.name === "string" ? item.name : undefined,
+      savedAt: typeof item.savedAt === "number" ? item.savedAt : undefined,
     }];
   });
 }
@@ -193,6 +202,9 @@ export function loadChartState(tabId: string): ChartState | null {
           ? (parsed.indicatorColorDefaults as Record<string, Record<string, string>>)
           : {},
       scripts: parseScripts((parsed as { scripts?: unknown }).scripts),
+      activeScriptIds: Array.isArray((parsed as { activeScriptIds?: unknown }).activeScriptIds)
+        ? ((parsed as { activeScriptIds: unknown[] }).activeScriptIds.filter((item): item is string => typeof item === "string"))
+        : [],
       customStrategies: parseCustomStrategies((parsed as { customStrategies?: unknown }).customStrategies),
       activeCustomStrategyIds: Array.isArray((parsed as { activeCustomStrategyIds?: unknown }).activeCustomStrategyIds)
         ? ((parsed as { activeCustomStrategyIds: unknown[] }).activeCustomStrategyIds.filter((item): item is string => typeof item === "string"))
@@ -207,23 +219,21 @@ export function loadChartState(tabId: string): ChartState | null {
         ? (parsed as { legendCollapsed: boolean }).legendCollapsed
         : false,
       probEngWidget: isRecord((parsed as { probEngWidget?: unknown }).probEngWidget)
-        ? {
-            x: typeof (parsed as { probEngWidget?: { x?: unknown } }).probEngWidget?.x === "number"
-              ? (parsed as { probEngWidget: { x: number } }).probEngWidget.x
-              : 16,
-            y: typeof (parsed as { probEngWidget?: { y?: unknown } }).probEngWidget?.y === "number"
-              ? (parsed as { probEngWidget: { y: number } }).probEngWidget.y
-              : 44,
-            visible: typeof (parsed as { probEngWidget?: { visible?: unknown } }).probEngWidget?.visible === "boolean"
-              ? (parsed as { probEngWidget: { visible: boolean } }).probEngWidget.visible
-              : true,
-            detailed: typeof (parsed as { probEngWidget?: { detailed?: unknown } }).probEngWidget?.detailed === "boolean"
-              ? (parsed as { probEngWidget: { detailed: boolean } }).probEngWidget.detailed
-              : false,
-            locked: typeof (parsed as { probEngWidget?: { locked?: unknown } }).probEngWidget?.locked === "boolean"
-              ? (parsed as { probEngWidget: { locked: boolean } }).probEngWidget.locked
-              : false,
-          }
+        ? (() => {
+            const pw = (parsed as { probEngWidget?: unknown }).probEngWidget as Record<string, unknown>;
+            const base = {
+              x: typeof pw.x === "number" ? pw.x : 16,
+              y: typeof pw.y === "number" ? pw.y : 44,
+              visible: typeof pw.visible === "boolean" ? pw.visible : true,
+              detailed: typeof pw.detailed === "boolean" ? pw.detailed : false,
+              locked: typeof pw.locked === "boolean" ? pw.locked : false,
+            };
+            const normX = typeof pw.normX === "number" && Number.isFinite(pw.normX) ? pw.normX : undefined;
+            const normY = typeof pw.normY === "number" && Number.isFinite(pw.normY) ? pw.normY : undefined;
+            return normX !== undefined && normY !== undefined
+              ? { ...base, normX, normY }
+              : base;
+          })()
         : createDefaultProbEngWidgetState(),
     };
   } catch {

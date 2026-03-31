@@ -47,7 +47,6 @@ export default function Dashboard() {
     port,
     clientId,
     connectionType,
-    sidecarStatus,
     finnhubStatus,
     finnhubHasKey,
     dailyiqHasKey,

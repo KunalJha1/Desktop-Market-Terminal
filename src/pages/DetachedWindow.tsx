@@ -280,7 +280,9 @@ export default function DetachedWindow() {
       {/* Page content */}
       <main className="relative flex min-h-0 flex-1 overflow-hidden">
         <Suspense fallback={<PageFallback />}>
-          <PageComponent tabId={info.tabId} />
+          <div className="flex h-full w-full flex-col overflow-hidden">
+            <PageComponent tabId={info.tabId} />
+          </div>
         </Suspense>
       </main>
     </div>
