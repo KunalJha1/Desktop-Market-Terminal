@@ -50,13 +50,20 @@ export default function SymbolSearchModal({
   subtitle = "Enter ticker you want to search for",
 }: SymbolSearchModalProps) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [focusedIndex, setFocusedIndex] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => {
     if (isOpen && searchRef.current) {
       searchRef.current.focus();
     }
+    if (!isOpen) setFocusedIndex(0);
   }, [isOpen]);
+
+  // Reset focus on query change
+  useEffect(() => { setFocusedIndex(0); }, [searchQuery]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -89,6 +96,7 @@ export default function SymbolSearchModal({
     onSelectSymbol(symbol);
     onClose();
     setSearchQuery("");
+    setFocusedIndex(0);
   };
 
   if (!isOpen) return null;
@@ -133,9 +141,26 @@ export default function SymbolSearchModal({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && searchQuery.trim()) {
-                  const sym = filtered.length > 0 ? filtered[0].symbol : searchQuery.trim().toUpperCase();
-                  handleSelectSymbol(sym);
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setFocusedIndex((i) => {
+                    const next = Math.min(i + 1, filtered.length - 1);
+                    rowRefs.current[next]?.scrollIntoView({ block: "nearest" });
+                    return next;
+                  });
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setFocusedIndex((i) => {
+                    const next = Math.max(i - 1, 0);
+                    rowRefs.current[next]?.scrollIntoView({ block: "nearest" });
+                    return next;
+                  });
+                } else if (e.key === "Enter") {
+                  if (filtered.length > 0) {
+                    handleSelectSymbol(filtered[focusedIndex]?.symbol ?? filtered[0].symbol);
+                  } else if (searchQuery.trim()) {
+                    handleSelectSymbol(searchQuery.trim().toUpperCase());
+                  }
                 }
               }}
               placeholder="AAPL, NVDA, TSLA..."
@@ -152,18 +177,23 @@ export default function SymbolSearchModal({
           <span className="text-center">Technical Score 1D</span>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-3 py-2 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-          {filtered.map((s) => {
+        <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-2 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+          {filtered.map((s, idx) => {
             const techCell = techScores.get(s.symbol)?.get("1d") ?? null;
             const score = techCell?.score ?? null;
             const liveQuote = searchQuotes.get(s.symbol) ?? null;
             const changePct = liveQuote?.changePct ?? null;
             const isPositiveChange = (changePct ?? 0) >= 0;
+            const isFocused = idx === focusedIndex;
             return (
               <button
                 key={s.symbol}
+                ref={(el) => { rowRefs.current[idx] = el; }}
                 onClick={() => handleSelectSymbol(s.symbol)}
-                className="grid w-full grid-cols-[78px_104px_minmax(0,1fr)_116px_132px] items-center gap-3 rounded-lg px-2.5 py-2.5 text-left transition-colors duration-75 hover:bg-white/[0.05]"
+                onMouseEnter={() => setFocusedIndex(idx)}
+                className={`grid w-full grid-cols-[78px_104px_minmax(0,1fr)_116px_132px] items-center gap-3 rounded-lg px-2.5 py-2.5 text-left transition-colors duration-75 ${
+                  isFocused ? "bg-white/[0.07] outline outline-1 outline-white/[0.08]" : "hover:bg-white/[0.05]"
+                }`}
               >
                 <div className="flex items-center justify-center">
                   <SymbolBall symbol={s.symbol} />

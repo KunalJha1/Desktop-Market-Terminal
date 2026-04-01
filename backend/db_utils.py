@@ -275,7 +275,8 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS active_symbols (
             symbol        TEXT PRIMARY KEY,
-            last_requested INTEGER
+            last_requested INTEGER,
+            bar_size      TEXT
         )
     """)
     conn.execute("""

@@ -98,7 +98,8 @@ def ensure_base_schema(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS active_symbols (
             symbol        TEXT PRIMARY KEY,
-            last_requested INTEGER
+            last_requested INTEGER,
+            bar_size      TEXT
         )
     """)
     conn.execute("""
@@ -522,4 +523,8 @@ def ensure_all_schema(conn: sqlite3.Connection) -> None:
     ensure_base_schema(conn)
     ensure_historical_schema(conn)
     ensure_options_schema(conn)
+    # Migrations: add columns that didn't exist in earlier schema versions
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(active_symbols)")}
+    if "bar_size" not in existing:
+        conn.execute("ALTER TABLE active_symbols ADD COLUMN bar_size TEXT")
     conn.commit()

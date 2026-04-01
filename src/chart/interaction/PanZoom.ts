@@ -10,6 +10,8 @@ export class PanZoom {
   private xScaleStartBarsVisible = 0;
   private lastX = 0;
   private lastY = 0;
+  private dragVx = 0;
+  private lastDragTime = 0;
   private onDirty: () => void;
   private viewport: Viewport;
   private canvasWidth = 0;
@@ -75,7 +77,10 @@ export class PanZoom {
       return;
     }
 
+    this.viewport.cancelAllAnimations();
     this.dragging = true;
+    this.dragVx = 0;
+    this.lastDragTime = performance.now();
     this.lastX = e.clientX;
     this.lastY = e.clientY;
   }
@@ -108,6 +113,15 @@ export class PanZoom {
     this.lastX = e.clientX;
     this.lastY = e.clientY;
     this.viewport.pan(dx);
+    // Track drag velocity for inertia on release
+    const now = performance.now();
+    const elapsed = now - this.lastDragTime;
+    if (elapsed > 0 && elapsed < 100 && this.viewport.barWidth > 0) {
+      const barDelta = -(dx / this.viewport.barWidth);
+      const alpha = 0.7;
+      this.dragVx = alpha * (barDelta / elapsed) + (1 - alpha) * this.dragVx;
+    }
+    this.lastDragTime = now;
     if (this.viewport.yScaleMode === 'manual') {
       this.viewport.panY(dy);
     }
@@ -120,7 +134,14 @@ export class PanZoom {
       this.yScaling = false;
     }
     this.xScaling = false;
-    this.dragging = false;
+    if (this.dragging) {
+      this.dragging = false;
+      if (Math.abs(this.dragVx) > 0.0001) {
+        this.viewport.beginInertia(this.dragVx);
+        this.onDirty();
+      }
+      this.dragVx = 0;
+    }
   }
 
   onWheel(e: WheelEvent) {
@@ -166,10 +187,9 @@ export class PanZoom {
       return;
     }
 
-    // Vertical scroll → smooth proportional zoom
-    // ~100px of scroll = ~1 zoom step; exponential so it feels linear
+    // Vertical scroll → smooth animated zoom
     const zoomFactor = Math.exp(deltaY * 0.0012);
-    this.viewport.zoomBy(zoomFactor, mouseX);
+    this.viewport.beginZoomTo(zoomFactor, mouseX);
     this.onDirty();
   }
 

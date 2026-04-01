@@ -27,6 +27,7 @@ from historical import (
     DEFAULT_DAILY_DURATION,
     DEFAULT_INTRADAY_DURATION,
     _normalize_bar_size,
+    _write_bars,
     target_duration_for_bar_size,
     URGENT_HISTORICAL_WAIT_S,
     enqueue_historical_priority,
@@ -36,6 +37,7 @@ from historical import (
     seed_duration_for_bar_size,
 )
 from connection_pool import ConnectionPool, probe_tws_port
+from options_collector import get_market_session, estimate_option_price, DEFAULT_RISK_FREE_RATE as OPTIONS_DEFAULT_RISK_FREE_RATE
 from runtime_paths import data_dir, resource_path
 
 logging.basicConfig(
@@ -889,6 +891,66 @@ def _option_snapshot_payload(row) -> dict:
     }
 
 
+def read_options_estimate(symbol: str, expiration: int | None = None) -> dict:
+    from yahoo_provider import fetch_extended_hours_quote
+    session = get_market_session()
+    if session == "REGULAR":
+        return {"symbol": symbol, "session": session, "available": False, "rows": []}
+
+    extended = fetch_extended_hours_quote(symbol.strip().upper()) if symbol.strip() else None
+    if not extended or not extended.get("spot"):
+        return {
+            "symbol": symbol.strip().upper(),
+            "session": session,
+            "available": False,
+            "extendedSpot": None,
+            "rows": [],
+        }
+
+    spot = extended["spot"]
+    now_ms = int(time.time() * 1000)
+    chain = read_options_chain(symbol, expiration)
+    captured_at = chain.get("capturedAt") or now_ms
+    hours_elapsed = (now_ms - captured_at) / (1000 * 3600)
+
+    rows_out = []
+    for row in chain.get("rows", []):
+        est_row: dict = {"strike": row["strike"], "call": None, "put": None}
+        for side in ("call", "put"):
+            opt = row.get(side)
+            if opt is None:
+                continue
+            iv   = opt.get("impliedVolatility")
+            dte  = opt.get("daysToExpiration")
+            rate = opt.get("riskFreeRate") or OPTIONS_DEFAULT_RISK_FREE_RATE
+            if iv and dte and iv > 0 and dte > 0:
+                adj_dte = max(dte - hours_elapsed / 24.0, 0.0)
+                est = estimate_option_price(
+                    option_type=side,
+                    spot=spot,
+                    strike=row["strike"],
+                    iv=iv,
+                    rate=rate,
+                    dte_days=adj_dte,
+                )
+            else:
+                est = {"estPrice": None, "estDelta": None, "estGamma": None,
+                       "estTheta": None, "estVega": None, "error": "missing_iv_or_dte"}
+            est_row[side] = {**opt, **est}
+        rows_out.append(est_row)
+
+    return {
+        "symbol": chain.get("symbol", symbol.strip().upper()),
+        "session": session,
+        "available": True,
+        "extendedSpot": spot,
+        "extendedSpotSource": extended.get("sessionUsed"),
+        "capturedAt": captured_at,
+        "expiration": chain.get("expiration"),
+        "rows": rows_out,
+    }
+
+
 def read_options_summary(symbol: str) -> dict:
     normalized = symbol.strip().upper()
     if not normalized:
@@ -898,6 +960,7 @@ def read_options_summary(symbol: str) -> dict:
             "underlyingPrice": None,
             "capturedAt": None,
             "source": None,
+            "session": get_market_session(),
             "months": [],
         }
 
@@ -919,6 +982,7 @@ def read_options_summary(symbol: str) -> dict:
                 "underlyingPrice": None,
                 "capturedAt": None,
                 "source": None,
+                "session": get_market_session(),
                 "months": [],
             }
 
@@ -967,6 +1031,7 @@ def read_options_summary(symbol: str) -> dict:
         "underlyingPrice": underlying_price,
         "capturedAt": captured_at,
         "source": source,
+        "session": get_market_session(),
         "months": list(months.values()),
     }
 
@@ -1090,7 +1155,6 @@ def read_options_chain(symbol: str, expiration: int | None = None) -> dict:
 def create_app() -> FastAPI:
     from options_collector import (
         DEFAULT_INTERVAL_MINUTES as OPTIONS_DEFAULT_INTERVAL_MINUTES,
-        DEFAULT_RISK_FREE_RATE as OPTIONS_DEFAULT_RISK_FREE_RATE,
         DEFAULT_SOURCE as OPTIONS_DEFAULT_SOURCE,
         OptionsCollectorWorker,
     )
@@ -1146,6 +1210,108 @@ def create_app() -> FastAPI:
         else:
             logger.warning("TWS not reachable at startup; portfolio connection will be attempted on first request")
 
+        # Background loop: periodically refresh DailyIQ bars for active symbols
+        # so that incremental chart polls see new candles without waiting for the
+        # 5-minute cache TTL to expire.
+        async def _dailyiq_live_refresh_loop() -> None:
+            # How many seconds per bar for each raw bar size (used to set refresh cadence)
+            BAR_SECONDS: dict[str, int] = {
+                "1m": 60, "5m": 300, "15m": 900, "1h": 3600,
+                "4h": 14400, "1d": 86400, "1w": 604800,
+            }
+            # Clamp: refresh no faster than 60s, no slower than 5min for intraday
+            MIN_REFRESH_S = 60
+            MAX_INTRADAY_REFRESH_S = 300
+            DAILY_REFRESH_S = 3600
+            # DailyIQ response-cache TTL slightly under refresh interval
+            LIVE_TTL_S = 55.0
+            # 1m bars to fetch — covers enough history to fill any recent gap
+            LIMIT_1M = 390  # one full trading day
+
+            def _read_active_chart() -> tuple[str, str] | None:
+                """Return (symbol, bar_size) for the most recently active chart, or None."""
+                with sync_db_session() as conn:
+                    row = conn.execute(
+                        """
+                        SELECT symbol, bar_size FROM active_symbols
+                        WHERE bar_size IS NOT NULL
+                        ORDER BY last_requested DESC LIMIT 1
+                        """
+                    ).fetchone()
+                return (row[0], row[1]) if row else None
+
+            def _aggregate_1m(bars_1m: list[dict], bucket_ms: int) -> list[dict]:
+                buckets: dict[int, dict] = {}
+                for b in bars_1m:
+                    key = (b["time"] // bucket_ms) * bucket_ms
+                    if key not in buckets:
+                        buckets[key] = {"time": key, "open": b["open"], "high": b["high"],
+                                        "low": b["low"], "close": b["close"], "volume": b["volume"]}
+                    else:
+                        e = buckets[key]
+                        e["high"] = max(e["high"], b["high"])
+                        e["low"] = min(e["low"], b["low"])
+                        e["close"] = b["close"]
+                        e["volume"] += b["volume"]
+                return sorted(buckets.values(), key=lambda x: x["time"])
+
+            def _secs_until_next_boundary(bar_size: str) -> float:
+                """Seconds until the next bar closes for the given bar size."""
+                period = BAR_SECONDS.get(bar_size, 60)
+                now = time.time()
+                return period - (now % period)
+
+            await asyncio.sleep(10)  # brief startup delay
+            while True:
+                try:
+                    from dailyiq_provider import fetch_bars_from_dailyiq_async
+                    active = await run_db(_read_active_chart)
+                    if active:
+                        sym, bar_size = active
+                        is_daily = BAR_SECONDS.get(bar_size, 60) >= 86400
+
+                        if is_daily:
+                            refresh_s = DAILY_REFRESH_S
+                        else:
+                            period = BAR_SECONDS.get(bar_size, 60)
+                            refresh_s = max(MIN_REFRESH_S, min(period, MAX_INTRADAY_REFRESH_S))
+
+                        try:
+                            if is_daily:
+                                bars = await fetch_bars_from_dailyiq_async(
+                                    sym, timeframe="1d", limit=50, ttl_s=LIVE_TTL_S,
+                                )
+                                if bars:
+                                    def _write_daily(s=sym, b=bars):
+                                        with sync_db_session() as conn:
+                                            _write_bars(conn, s, b, bar_size="1d", source="dailyiq", update_meta=False)
+                                    await run_db(_write_daily)
+                            else:
+                                bars_1m = await fetch_bars_from_dailyiq_async(
+                                    sym, timeframe="1m", limit=LIMIT_1M, ttl_s=LIVE_TTL_S,
+                                )
+                                if bars_1m:
+                                    bars_5m  = _aggregate_1m(bars_1m,  5 * 60 * 1000)
+                                    bars_15m = _aggregate_1m(bars_1m, 15 * 60 * 1000)
+                                    def _write(s=sym, b1=bars_1m, b5=bars_5m, b15=bars_15m):
+                                        with sync_db_session() as conn:
+                                            _write_bars(conn, s, b1,  bar_size="1m",  source="dailyiq", update_meta=False)
+                                            _write_bars(conn, s, b5,  bar_size="5m",  source="dailyiq", update_meta=False)
+                                            _write_bars(conn, s, b15, bar_size="15m", source="dailyiq", update_meta=False)
+                                    await run_db(_write)
+                            logger.debug("DailyIQ live refresh: %s/%s, next in %ds", sym, bar_size, refresh_s)
+                        except Exception as exc:
+                            logger.debug("DailyIQ live refresh failed %s/%s: %s", sym, bar_size, exc)
+
+                        # Sleep until the next bar boundary (aligned to timeframe)
+                        boundary_wait = _secs_until_next_boundary(bar_size)
+                        await asyncio.sleep(max(MIN_REFRESH_S, min(boundary_wait, refresh_s)))
+                    else:
+                        await asyncio.sleep(30)  # nothing active yet
+                except Exception as exc:
+                    logger.debug("DailyIQ live refresh loop error: %s", exc)
+                    await asyncio.sleep(30)
+
         # Fire-and-forget: pre-warm DailyIQ data for watchlist symbols so the
         # frontend sees data immediately on first load (before IBKR backfill).
         async def _startup_warmup() -> None:
@@ -1182,10 +1348,15 @@ def create_app() -> FastAPI:
                 from db_utils import sync_db_session
 
                 all_pairs = (
-                    [(sym, "1d") for sym in watchlist_syms]
+                    [(sym, "1m") for sym in watchlist_syms]
                     + [(sym, "5m") for sym in watchlist_syms]
+                    + [(sym, "15m") for sym in watchlist_syms]
+                    + [(sym, "1h") for sym in watchlist_syms]
+                    + [(sym, "4h") for sym in watchlist_syms]
+                    + [(sym, "1d") for sym in watchlist_syms]
+                    + [(sym, "1w") for sym in watchlist_syms]
                 )
-                ttl_map = {"1d": CACHE_TTL_DAILY, "5m": CACHE_TTL}
+                ttl_map = {"1d": CACHE_TTL_DAILY, "1w": CACHE_TTL_DAILY}
                 stale_pairs = []
                 for sym, bar_size in all_pairs:
                     ttl = ttl_map.get(bar_size, CACHE_TTL)
@@ -1218,6 +1389,7 @@ def create_app() -> FastAPI:
                 logger.warning("[Warmup] DailyIQ pre-warm failed: %s", exc)
 
         asyncio.create_task(_startup_warmup())
+        asyncio.create_task(_dailyiq_live_refresh_loop())
 
         try:
             yield
@@ -1263,7 +1435,17 @@ def create_app() -> FastAPI:
     @app.get("/tws-status")
     async def tws_status(request: Request):
         pool: ConnectionPool = request.app.state.pool
-        return pool.get_role_status(PORTFOLIO_ROLE)
+        role_status = pool.get_role_status(PORTFOLIO_ROLE)
+        # If not connected and not already reconnecting, try to establish the
+        # connection now so polling this endpoint drives the IB handshake.
+        if not role_status["connected"] and not role_status["reconnecting"]:
+            if await _ensure_pool_configured(pool):
+                try:
+                    await pool.get_or_create(PORTFOLIO_ROLE)
+                    role_status = pool.get_role_status(PORTFOLIO_ROLE)
+                except Exception:
+                    pass
+        return role_status
 
     @app.get("/settings/finnhub/status")
     async def finnhub_status():
@@ -1969,6 +2151,10 @@ def create_app() -> FastAPI:
     async def get_options_chain(symbol: str = "", expiration: int | None = None):
         return await run_db(read_options_chain, symbol, expiration)
 
+    @app.get("/options/estimate")
+    async def get_options_estimate(symbol: str = "", expiration: int | None = None):
+        return await run_db(read_options_estimate, symbol, expiration)
+
     class ActiveSymbolsPayload(BaseModel):
         symbols: list[str]
 
@@ -2082,12 +2268,13 @@ def create_app() -> FastAPI:
             with sync_db_session() as conn:
                 conn.execute(
                     """
-                    INSERT INTO active_symbols (symbol, last_requested)
-                    VALUES (?, ?)
+                    INSERT INTO active_symbols (symbol, last_requested, bar_size)
+                    VALUES (?, ?, ?)
                     ON CONFLICT(symbol) DO UPDATE SET
-                        last_requested = excluded.last_requested
+                        last_requested = excluded.last_requested,
+                        bar_size = excluded.bar_size
                     """,
-                    (symbol, int(time.time() * 1000)),
+                    (symbol, int(time.time() * 1000), db_bar_size),
                 )
 
         await run_db(_touch_active)

@@ -220,7 +220,7 @@ export class ChartEngine {
 
   setData(bars: OHLCVBar[]) {
     const prevLength = this.bars.length;
-    const wasNearEnd = this.liveMode && this.viewport.isLastBarVisible();
+    const wasNearEnd = this.viewport.isLastBarVisible();
     this.bars = bars;
     this.lastNotifiedViewportStart = null;
     this.lastNotifiedViewportEnd = null;
@@ -228,7 +228,7 @@ export class ChartEngine {
     this.viewport.setTotalBars(bars.length);
     this.recomputeIndicators(false);
     if (wasNearEnd && bars.length > prevLength) {
-      this.viewport.scrollToEnd();
+      this.viewport.scrollToEndImmediate();
     }
     this.markDirty();
   }
@@ -243,7 +243,7 @@ export class ChartEngine {
       return;
     }
     const prevLength = this.bars.length;
-    const wasNearEnd = this.liveMode && this.viewport.isLastBarVisible();
+    const wasNearEnd = this.viewport.isLastBarVisible();
     this.bars = bars;
 
     this.viewport.setRightOffsetBars(this.computeRightOffsetBars());
@@ -254,7 +254,7 @@ export class ChartEngine {
     this.recomputeIndicators(true, changeOffset);
 
     if (wasNearEnd && bars.length > prevLength) {
-      this.viewport.scrollToEnd();
+      this.viewport.scrollToEndImmediate();
     }
 
     this.dirty = true;
@@ -986,9 +986,19 @@ export class ChartEngine {
     this.rafId = requestAnimationFrame(() => this.runRenderFrame());
   }
 
+  private lastFrameTime = 0;
+
   private runRenderFrame() {
     this.renderLoopScheduled = false;
     if (this.destroyed || this.suspended) return;
+
+    const now = performance.now();
+    const dt = this.lastFrameTime > 0 ? Math.min(now - this.lastFrameTime, 64) : 16.667;
+    this.lastFrameTime = now;
+
+    this.viewport.tickAnimation(dt);
+    if (this.viewport.isAnimating) this.dirty = true;
+
     if (this.pendingMouseEvent) {
       this.processMouseMove(this.pendingMouseEvent);
       this.pendingMouseEvent = null;
@@ -999,6 +1009,7 @@ export class ChartEngine {
     }
     const needsAnotherFrame =
       this.dirty ||
+      this.viewport.isAnimating ||
       this.pendingMouseEvent !== null ||
       this.drawingPointerActive ||
       this.draggedDrawingId !== null;

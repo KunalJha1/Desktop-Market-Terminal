@@ -415,6 +415,7 @@ interface IndicatorLegendProps {
   onUpdateLineWidth?: (id: string, outputKey: string, width: number) => void;
   onUpdateLineStyle?: (id: string, outputKey: string, style: 'solid' | 'dashed' | 'dotted') => void;
   onRemove: (id: string) => void;
+  onRemoveScript?: (id: string) => void;
   onToggleVisibility: (id: string) => void;
   onSetDefaultColor?: (indicatorName: string, outputKey: string, color: string) => void;
   onMoveUp?: (id: string) => void;
@@ -436,6 +437,7 @@ export default function IndicatorLegend({
   onUpdateLineWidth,
   onUpdateLineStyle,
   onRemove,
+  onRemoveScript,
   onToggleVisibility,
   onSetDefaultColor,
   onMoveUp,
@@ -998,11 +1000,13 @@ export default function IndicatorLegend({
         result.plots.length > 0 ? (
           <div
             key={id}
+            onMouseEnter={() => setHoveredId(`script:${id}`)}
+            onMouseLeave={() => setHoveredId(null)}
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: 5,
-              padding: '2px 6px 2px 4px',
+              padding: '2px 4px 2px 4px',
               borderRadius: 3,
               backgroundColor: LEGEND_ROW_BG,
               border: `1px solid ${LEGEND_ROW_BORDER}`,
@@ -1034,6 +1038,27 @@ export default function IndicatorLegend({
             >
               {result.plots.map(p => p.label).join(' · ')}
             </span>
+            {hoveredId === `script:${id}` && onRemoveScript && (
+              <button
+                onClick={() => onRemoveScript(id)}
+                title="Remove script"
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: '#8B949E',
+                  padding: '0 2px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  lineHeight: 1,
+                  marginLeft: 2,
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#FF3D71'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#8B949E'; }}
+              >
+                <X size={10} />
+              </button>
+            )}
           </div>
         ) : null,
       )}

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState, memo } from "react";
-import { Calendar, Search, Radio } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, memo } from "react";
+import { Calendar, Search, Radio, SlidersHorizontal } from "lucide-react";
 import SymbolSearchModal from "../components/SymbolSearchModal";
+import { LOGO_SYMBOLS } from "../lib/logo-symbols";
 import {
   useDefaultOptionsSymbol,
   useOptionsChain,
@@ -27,10 +28,6 @@ function formatGreek(value: number | null | undefined, digits = 3): string {
   return value.toFixed(digits);
 }
 
-function formatInt(value: number | null | undefined): string {
-  if (value == null) return "—";
-  return new Intl.NumberFormat("en-US").format(value);
-}
 
 function formatTimestamp(value: number | null | undefined): string {
   if (!value) return "—";
@@ -42,6 +39,13 @@ function formatTimestamp(value: number | null | undefined): string {
   });
 }
 
+function formatVolume(v: number | null | undefined): string {
+  if (v == null) return "—";
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000)     return `${(v / 1_000).toFixed(1)}K`;
+  return String(v);
+}
+
 function sourceLabel(raw: string | null | undefined): string {
   if (!raw) return "—";
   const u = raw.toLowerCase();
@@ -50,14 +54,130 @@ function sourceLabel(raw: string | null | undefined): string {
   return raw.toUpperCase();
 }
 
-function metricTone(side: OptionSide | null): string {
-  if (!side) return "text-white/[0.28]";
-  if (side.inTheMoney) return "text-[#00C853]";
-  return "text-white/[0.90]";
+// ── Column system ─────────────────────────────────────────────────────────────
+
+type ColId =
+  | "bid" | "ask" | "spread" | "ltp" | "theoretical"
+  | "bidPct" | "askPct" | "annBidPct" | "annAskPct"
+  | "intrinsic" | "timeVal" | "iv" | "be" | "toBePct"
+  | "distance" | "retDist" | "delta" | "gamma" | "theta" | "vega" | "rho"
+  | "volBar";
+
+interface ColDef {
+  id: ColId;
+  label: string;
+  width: number;
+  defaultVisible: boolean;
+  category: "price" | "greek" | "derived" | "visual";
 }
 
-const METRIC_COLS =
-  "grid grid-cols-8 gap-x-1 gap-y-0 min-w-0 sm:gap-x-2 [&>span]:min-w-0 [&>span]:truncate";
+const COL_MAP: Record<ColId, ColDef> = {
+  rho:         { id: "rho",         label: "Rho",       width: 52,  defaultVisible: false, category: "greek"   },
+  vega:        { id: "vega",        label: "Vega",       width: 56,  defaultVisible: false, category: "greek"   },
+  gamma:       { id: "gamma",       label: "Gamma",      width: 58,  defaultVisible: false, category: "greek"   },
+  theta:       { id: "theta",       label: "Theta",      width: 60,  defaultVisible: true,  category: "greek"   },
+  delta:       { id: "delta",       label: "Delta",      width: 58,  defaultVisible: true,  category: "greek"   },
+  toBePct:     { id: "toBePct",     label: "TO BE%",     width: 66,  defaultVisible: false, category: "derived" },
+  be:          { id: "be",          label: "BE",         width: 64,  defaultVisible: false, category: "derived" },
+  iv:          { id: "iv",          label: "IV",         width: 58,  defaultVisible: true,  category: "price"   },
+  timeVal:     { id: "timeVal",     label: "Time Val",   width: 62,  defaultVisible: false, category: "derived" },
+  intrinsic:   { id: "intrinsic",   label: "Intr Val",   width: 62,  defaultVisible: false, category: "derived" },
+  annAskPct:   { id: "annAskPct",   label: "Ann Ask%",   width: 68,  defaultVisible: false, category: "derived" },
+  annBidPct:   { id: "annBidPct",   label: "Ann Bid%",   width: 68,  defaultVisible: false, category: "derived" },
+  askPct:      { id: "askPct",      label: "Ask%",       width: 56,  defaultVisible: false, category: "derived" },
+  bidPct:      { id: "bidPct",      label: "Bid%",       width: 56,  defaultVisible: false, category: "derived" },
+  ltp:         { id: "ltp",         label: "LTP",        width: 64,  defaultVisible: false, category: "price"   },
+  theoretical: { id: "theoretical", label: "Theor",      width: 64,  defaultVisible: false, category: "price"   },
+  spread:      { id: "spread",      label: "Spread",     width: 58,  defaultVisible: false, category: "price"   },
+  ask:         { id: "ask",         label: "Ask",        width: 66,  defaultVisible: true,  category: "price"   },
+  bid:         { id: "bid",         label: "Bid",        width: 66,  defaultVisible: true,  category: "price"   },
+  retDist:     { id: "retDist",     label: "Ret Dist",   width: 64,  defaultVisible: false, category: "derived" },
+  distance:    { id: "distance",    label: "Distance",   width: 64,  defaultVisible: false, category: "derived" },
+  volBar:      { id: "volBar",      label: "Volume",     width: 90,  defaultVisible: true,  category: "visual"  },
+};
+
+// Calls: outermost (greeks) on the left → innermost (vol bar) on the right, reading toward center
+const CALL_COL_IDS: ColId[] = [
+  "rho","vega","gamma","theta","delta",
+  "toBePct","be","iv","timeVal","intrinsic",
+  "annAskPct","annBidPct","askPct","bidPct",
+  "ltp","theoretical","spread","ask","bid",
+  "retDist","distance","volBar",
+];
+// Puts: mirror
+const PUT_COL_IDS: ColId[] = [...CALL_COL_IDS].reverse();
+
+const DEFAULT_VISIBLE_COLS = new Set<ColId>(
+  (Object.values(COL_MAP) as ColDef[]).filter(c => c.defaultVisible).map(c => c.id)
+);
+
+const COL_CATEGORIES: { label: string; ids: ColId[] }[] = [
+  { label: "Price",   ids: ["bid","ask","spread","ltp","theoretical"] },
+  { label: "Derived", ids: ["iv","bidPct","askPct","annBidPct","annAskPct","intrinsic","timeVal","be","toBePct","distance","retDist"] },
+  { label: "Greeks",  ids: ["delta","theta","gamma","vega","rho"] },
+  { label: "Visual",  ids: ["volBar"] },
+];
+
+function getOrderedCols(ids: ColId[], visible: Set<ColId>): ColDef[] {
+  return ids.filter(id => visible.has(id)).map(id => COL_MAP[id]);
+}
+function gridTemplate(cols: ColDef[]): string {
+  return cols.map(c => `${c.width}px`).join(" ");
+}
+function totalWidth(cols: ColDef[]): number {
+  return cols.reduce((s, c) => s + c.width, 0);
+}
+
+// ── Cell computation ──────────────────────────────────────────────────────────
+
+interface CellCtx { underlyingPrice: number | null; isCall: boolean; strike: number; }
+
+function computeCell(id: ColId, side: OptionSide | null, ctx: CellCtx): string {
+  const s = side; const up = ctx.underlyingPrice; const k = ctx.strike;
+  switch (id) {
+    case "bid":    return formatPrice(s?.bid);
+    case "ask":    return formatPrice(s?.ask);
+    case "spread": { const v = s?.ask != null && s?.bid != null ? s.ask - s.bid : null; return formatPrice(v); }
+    case "ltp":    return formatPrice(s?.lastPrice);
+    case "theoretical": {
+      const v = s?.intrinsicValue != null && s?.extrinsicValue != null ? s.intrinsicValue + s.extrinsicValue : null;
+      return formatPrice(v);
+    }
+    case "bidPct":    { const v = s?.bid != null && up ? (s.bid / up) * 100 : null; return v != null ? `${v.toFixed(2)}%` : "—"; }
+    case "askPct":    { const v = s?.ask != null && up ? (s.ask / up) * 100 : null; return v != null ? `${v.toFixed(2)}%` : "—"; }
+    case "annBidPct": { const d = s?.daysToExpiration; const v = s?.bid != null && up && d ? (s.bid/up)*(365/d)*100 : null; return v != null ? `${v.toFixed(1)}%` : "—"; }
+    case "annAskPct": { const d = s?.daysToExpiration; const v = s?.ask != null && up && d ? (s.ask/up)*(365/d)*100 : null; return v != null ? `${v.toFixed(1)}%` : "—"; }
+    case "intrinsic": return formatPrice(s?.intrinsicValue);
+    case "timeVal":   return formatPrice(s?.extrinsicValue);
+    case "iv":        return formatIv(s?.impliedVolatility);
+    case "be":        { const v = s?.ask != null ? (ctx.isCall ? k + s.ask : k - s.ask) : null; return formatPrice(v); }
+    case "toBePct":   { const be = s?.ask != null ? (ctx.isCall ? k + s.ask : k - s.ask) : null; const v = be != null && up ? ((be - up)/up)*100 : null; return v != null ? `${v >= 0 ? "+" : ""}${v.toFixed(2)}%` : "—"; }
+    case "distance":  { const v = up != null ? Math.abs(k - up) : null; return formatPrice(v); }
+    case "retDist":   { const v = up != null ? (Math.abs(k-up)/up)*100 : null; return v != null ? `${v.toFixed(2)}%` : "—"; }
+    case "delta":  return formatGreek(s?.delta, 2);
+    case "gamma":  return formatGreek(s?.gamma, 4);
+    case "theta":  return formatGreek(s?.theta, 3);
+    case "vega":   return formatGreek(s?.vega, 3);
+    case "rho":    return formatGreek(s?.rho, 3);
+    case "volBar": return "";
+    default:       return "—";
+  }
+}
+
+function cellClass(id: ColId, side: OptionSide | null, isEmpty: boolean): string {
+  if (isEmpty) return "text-white/18";
+  const itm = side?.inTheMoney === true;
+  switch (id) {
+    case "bid": case "ask": return itm ? "text-[#00C853]" : "text-white/90";
+    case "delta": return itm ? "text-[#00C853]/80" : "text-white/62";
+    case "theta": return "text-[#F59E0B]/70";
+    case "iv": return "text-white/78";
+    case "gamma": case "vega": case "rho": return "text-white/48";
+    case "toBePct": case "be": return "text-white/65";
+    case "bidPct": case "askPct": case "annBidPct": case "annAskPct": return "text-white/58";
+    default: return "text-white/70";
+  }
+}
 
 /** Matches gap-2 between expiration pills. */
 const EXP_PILL_GAP_PX = 8;
@@ -79,62 +199,116 @@ function expirationMonthMinWidthPx(expirations: { label: string }[]): number {
   return perRow * estPillW + (perRow - 1) * EXP_PILL_GAP_PX;
 }
 
+const CENTER_W = 260;
+
 function SideMetrics({
-  side,
-  align,
-  itm,
+  side, isCall, itm, cols, strike, underlyingPrice, maxVolume,
 }: {
-  side: OptionSide | null;
-  align: "left" | "right";
-  itm?: boolean;
+  side: OptionSide | null; isCall: boolean; itm: boolean;
+  cols: ColDef[]; strike: number; underlyingPrice: number | null; maxVolume: number;
 }) {
-  const base = align === "left" ? "text-right" : "text-left";
-  const itmCls = itm ? "bg-[#1A56DB]/[0.10]" : "";
+  const itmBorder = itm
+    ? isCall ? "border-l-2 border-l-[#00C853]/45" : "border-r-2 border-r-[#FF3D71]/45"
+    : "";
+  const ctx: CellCtx = { underlyingPrice, isCall, strike };
+  const w = totalWidth(cols);
   return (
-    <div className={`${METRIC_COLS} font-mono text-[11px] tabular-nums ${base} ${itmCls} py-2 px-1`}>
-      <span className={metricTone(side)} title="Bid">
-        {formatPrice(side?.bid)}
-      </span>
-      <span className={metricTone(side)} title="Ask">
-        {formatPrice(side?.ask)}
-      </span>
-      <span className={metricTone(side)} title="Mid">
-        {formatPrice(side?.mid)}
-      </span>
-      <span className={metricTone(side)} title="IV">
-        {formatIv(side?.impliedVolatility)}
-      </span>
-      <span className={metricTone(side)} title="Delta">
-        {formatGreek(side?.delta, 2)}
-      </span>
-      <span className={metricTone(side)} title="Gamma">
-        {formatGreek(side?.gamma, 3)}
-      </span>
-      <span className={metricTone(side)} title="Theta">
-        {formatGreek(side?.theta, 3)}
-      </span>
-      <span className={metricTone(side)} title="Vega">
-        {formatGreek(side?.vega, 3)}
-      </span>
+    <div
+      className={`grid h-full items-center font-mono text-[11px] tabular-nums ${itmBorder}`}
+      style={{ gridTemplateColumns: gridTemplate(cols), width: w, minWidth: w }}
+    >
+      {cols.map(col => {
+        if (col.id === "volBar") {
+          const pct = side?.volume && maxVolume > 0 ? Math.min((side.volume / maxVolume) * 100, 100) : 0;
+          const volLabel = formatVolume(side?.volume);
+          return (
+            <div
+              key={col.id}
+              className={`flex h-full flex-col justify-center gap-1 px-2 ${isCall ? "items-end" : "items-start"}`}
+            >
+              <div
+                className={`h-[5px] rounded-full ${isCall ? "bg-[#00C853]/75" : "bg-[#FF3D71]/75"}`}
+                style={{ width: `${pct}%`, minWidth: pct > 0 ? 2 : 0 }}
+              />
+              <span className={`font-mono text-[9px] tabular-nums ${volLabel === "—" ? "text-white/20" : isCall ? "text-[#00C853]/85" : "text-[#FF3D71]/85"}`}>
+                {volLabel}
+              </span>
+            </div>
+          );
+        }
+        const display = computeCell(col.id, side, ctx);
+        const isEmpty = display === "—";
+        return (
+          <span
+            key={col.id}
+            className={`truncate px-1.5 ${cellClass(col.id, side, isEmpty)} ${isCall ? "text-right" : "text-left"}`}
+            title={col.label}
+          >
+            {display}
+          </span>
+        );
+      })}
     </div>
   );
 }
 
-function ChainHeaderLabels({ align }: { align: "left" | "right" }) {
-  const cls = align === "left" ? "text-right" : "text-left";
+function ChainHeaderLabels({ isCall, cols }: { isCall: boolean; cols: ColDef[] }) {
+  const w = totalWidth(cols);
   return (
     <div
-      className={`${METRIC_COLS} font-mono text-[10px] font-normal uppercase tracking-[0.12em] text-white/48 ${cls}`}
+      className={`grid font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-white ${isCall ? "text-right" : "text-left"}`}
+      style={{ gridTemplateColumns: gridTemplate(cols), width: w, minWidth: w }}
     >
-      <span>Bid</span>
-      <span>Ask</span>
-      <span>Mid</span>
-      <span>IV</span>
-      <span>Δ</span>
-      <span>Γ</span>
-      <span>Θ</span>
-      <span>ν</span>
+      {cols.map(col => (
+        <span key={col.id} className="truncate px-1.5 py-2" title={col.label}>
+          {col.label}
+        </span>
+      ))}
     </div>
+  );
+}
+
+function ColumnPicker({
+  visible, onChange, onClose,
+}: {
+  visible: Set<ColId>; onChange: (id: ColId, on: boolean) => void; onClose: () => void;
+}) {
+  return (
+    <>
+      <div className="fixed inset-0 z-30" onClick={onClose} />
+      <div
+        className="absolute right-2 top-full z-40 mt-1 w-72 border border-white/[0.10] bg-[#1a2130] p-3 shadow-2xl shadow-black/50"
+        style={{ borderRadius: 6 }}
+      >
+        <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.16em] text-white/50">Toggle Columns</p>
+        {COL_CATEGORIES.map(cat => (
+          <div key={cat.label} className="mb-3">
+            <p className="mb-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-white/30">{cat.label}</p>
+            <div className="flex flex-wrap gap-1">
+              {cat.ids.map(id => {
+                const col = COL_MAP[id];
+                const checked = visible.has(id);
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => onChange(id, !checked)}
+                    className={`h-6 border px-2 font-mono text-[10px] transition-colors duration-75 ${
+                      checked
+                        ? "border-[#1A56DB]/60 bg-[#1A56DB]/20 text-[#a8c8ff]"
+                        : "border-white/[0.08] text-white/40 hover:border-white/18 hover:text-white/65"
+                    }`}
+                    style={{ borderRadius: 3 }}
+                  >
+                    {col.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -144,21 +318,46 @@ function ChainSkeletonRows() {
       {Array.from({ length: 12 }).map((_, i) => (
         <div
           key={i}
-          className="grid grid-cols-[1fr_128px_1fr] items-center gap-3 border-b border-white/[0.04] py-2"
+          className="grid grid-cols-[1fr_160px_1fr] items-center gap-0 border-b border-white/[0.05] py-3"
         >
-          <div className="flex justify-end gap-1">
-            {Array.from({ length: 8 }).map((__, j) => (
-              <div key={j} className="h-3 w-10 rounded bg-white/[0.06]" />
+          <div className="flex justify-end gap-2 px-3">
+            {Array.from({ length: 6 }).map((__, j) => (
+              <div key={j} className="h-3 w-12 rounded bg-white/[0.07]" />
             ))}
           </div>
-          <div className="mx-auto h-4 w-14 rounded bg-white/[0.08]" />
-          <div className="flex justify-start gap-1">
-            {Array.from({ length: 8 }).map((__, j) => (
-              <div key={j} className="h-3 w-10 rounded bg-white/[0.06]" />
+          <div className="mx-auto h-4 w-16 rounded bg-white/[0.09]" />
+          <div className="flex justify-start gap-2 px-3">
+            {Array.from({ length: 6 }).map((__, j) => (
+              <div key={j} className="h-3 w-12 rounded bg-white/[0.07]" />
             ))}
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function SymbolLogo({ symbol }: { symbol: string }) {
+  const upper = symbol?.toUpperCase() ?? "";
+  const [failed, setFailed] = useState(false);
+
+  if (!failed && upper && LOGO_SYMBOLS.has(upper)) {
+    return (
+      <img
+        src={`/dailyiq-brand-resources/logosvg/${upper}.svg`}
+        alt={upper}
+        className="h-10 w-10 shrink-0 rounded-lg object-contain"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+
+  return (
+    <div
+      className="flex h-10 w-10 shrink-0 items-center justify-center border border-[#1A56DB]/35 bg-[#1A56DB]/15 font-mono text-[14px] font-bold text-[#5b9bff]"
+      style={{ borderRadius: 6 }}
+    >
+      {upper[0] ?? "?"}
     </div>
   );
 }
@@ -194,6 +393,9 @@ function OptionsPage() {
 
   const stale = summary?.capturedAt ? Date.now() - summary.capturedAt > 60 * 60 * 1000 : false;
   const [strikesVisible, setStrikesVisible] = useState<number | "all">(20);
+  const [visibleCols, setVisibleCols] = useState<Set<ColId>>(DEFAULT_VISIBLE_COLS);
+  const [showColPicker, setShowColPicker] = useState(false);
+  const colPickerRef = useRef<HTMLDivElement>(null);
 
   const atmStrike = useMemo(() => {
     const spot = summary?.underlyingPrice;
@@ -220,6 +422,32 @@ function OptionsPage() {
     return rows.slice(adjStart, end);
   }, [chain?.rows, strikesVisible, atmStrike]);
 
+  const callCols = useMemo(() => getOrderedCols(CALL_COL_IDS, visibleCols), [visibleCols]);
+  const putCols  = useMemo(() => getOrderedCols(PUT_COL_IDS, visibleCols), [visibleCols]);
+  const fullTableWidth = useMemo(
+    () => totalWidth(callCols) + CENTER_W + totalWidth(putCols),
+    [callCols, putCols],
+  );
+  const underlyingPrice = summary?.underlyingPrice ?? null;
+
+  const maxVolume = useMemo(() => {
+    const rows = chain?.rows ?? [];
+    let m = 1;
+    for (const r of rows) {
+      if ((r.call?.volume ?? 0) > m) m = r.call!.volume!;
+      if ((r.put?.volume ?? 0) > m) m = r.put!.volume!;
+    }
+    return m;
+  }, [chain?.rows]);
+
+  function toggleCol(id: ColId, on: boolean) {
+    setVisibleCols(prev => {
+      const next = new Set(prev);
+      on ? next.add(id) : next.delete(id);
+      return next;
+    });
+  }
+
   return (
     <div
       className="flex h-full min-h-0 flex-col text-white transition-none"
@@ -232,27 +460,37 @@ function OptionsPage() {
       >
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0 flex-1">
-            <div className="flex items-baseline gap-3">
-              <h1 className="font-mono text-[11px] uppercase tracking-[0.2em] text-white/55">
-                Options
-              </h1>
-              <span className="hidden h-3 w-px bg-white/10 sm:inline" aria-hidden />
-              <p className="text-[12px] text-white/60">Chain snapshot from collector</p>
+            {/* Symbol identity row */}
+            <div className="flex items-center gap-3">
+              <SymbolLogo symbol={selectedSymbol} />
+              <div className="min-w-0">
+                <div className="flex items-center gap-2.5">
+                  <span className="font-mono text-[19px] font-semibold leading-none tracking-wide text-white">
+                    {selectedSymbol || "—"}
+                  </span>
+                  <span className="text-white/20" aria-hidden>|</span>
+                  <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-white/45">Options</span>
+                </div>
+                <p className="mt-1 text-[11px] text-white/38">Chain snapshot · collector</p>
+              </div>
             </div>
 
+            {/* Search */}
             <button
               type="button"
               onClick={() => setSymbolSearchOpen((v) => !v)}
-              className={`mt-3 flex h-8 w-full max-w-md items-center gap-1.5 border border-white/[0.08] px-2 text-left transition-colors duration-100 ease-out ${
-                symbolSearchOpen ? "bg-white/[0.06]" : "bg-[#0D1117] hover:bg-[#1C2128]"
+              className={`mt-3 flex h-8 w-full max-w-xs items-center gap-2 border px-2.5 text-left transition-colors duration-100 ease-out ${
+                symbolSearchOpen
+                  ? "border-[#1A56DB]/50 bg-[#1A56DB]/10"
+                  : "border-white/[0.08] bg-[#0D1117] hover:border-white/15 hover:bg-[#1C2128]"
               }`}
               style={{ borderRadius: 4 }}
               aria-label="Search symbol"
               aria-expanded={symbolSearchOpen}
             >
-              <Search className="h-[13px] w-[13px] shrink-0 text-white" strokeWidth={2} aria-hidden />
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px] font-medium text-white/80">
-                {selectedSymbol || "—"}
+              <Search className="h-[12px] w-[12px] shrink-0 text-white/40" strokeWidth={2} aria-hidden />
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-white/45">
+                Search symbol…
               </span>
             </button>
           </div>
@@ -291,11 +529,53 @@ function OptionsPage() {
           </div>
         </div>
 
-        {/* Expirations */}
+        {/* Expirations + strike count */}
         <div className="mt-5 border-t border-white/[0.06] pt-4">
-          <div className="mb-2 flex items-center gap-2 text-white/40">
-            <Calendar className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
-            <span className="font-mono text-[10px] uppercase tracking-[0.16em]">Expirations</span>
+          <div className="mb-2.5 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-white/55">
+              <Calendar className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
+              <span className="font-mono text-[10px] uppercase tracking-[0.16em]">Expirations</span>
+            </div>
+            {/* Strike count chips + custom input */}
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-white/40">Strikes</span>
+              {([4, 7, 10, 20, 50, "all"] as const).map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setStrikesVisible(n)}
+                  className={`h-6 min-w-[28px] border px-1.5 font-mono text-[10px] uppercase tracking-[0.04em] transition-colors duration-100 ${
+                    strikesVisible === n
+                      ? "border-[#1A56DB]/60 bg-[#1A56DB]/20 text-[#a8c8ff]"
+                      : "border-white/[0.10] bg-[#1C2128] text-white/55 hover:border-white/20 hover:text-white/80"
+                  }`}
+                  style={{ borderRadius: 4 }}
+                >
+                  {n === "all" ? "All" : `±${n}`}
+                </button>
+              ))}
+              <input
+                type="number"
+                min={1}
+                placeholder="±N"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    const v = parseInt((e.target as HTMLInputElement).value, 10);
+                    if (v > 0) { setStrikesVisible(v); (e.target as HTMLInputElement).blur(); }
+                  }
+                }}
+                onBlur={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  if (v > 0) setStrikesVisible(v);
+                }}
+                className={`h-6 w-12 border bg-[#1C2128] px-1.5 text-center font-mono text-[10px] text-white/70 placeholder:text-white/25 focus:outline-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none transition-colors duration-100 ${
+                  typeof strikesVisible === "number" && ![4,7,10,20,50].includes(strikesVisible)
+                    ? "border-[#1A56DB]/60 bg-[#1A56DB]/20 text-[#a8c8ff]"
+                    : "border-white/[0.10] hover:border-white/20"
+                }`}
+                style={{ borderRadius: 4, MozAppearance: "textfield" } as React.CSSProperties}
+              />
+            </div>
           </div>
           <div className="overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-white/15 [&::-webkit-scrollbar-track]:bg-transparent">
             <div className="flex min-w-max gap-6 pb-1">
@@ -305,7 +585,7 @@ function OptionsPage() {
                   className="min-w-0 shrink-0"
                   style={{ minWidth: expirationMonthMinWidthPx(month.expirations) }}
                 >
-                  <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-white/50">
+                  <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-white/65">
                     {month.monthLabel}
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -318,13 +598,13 @@ function OptionsPage() {
                           onClick={() => setSelectedExpiration(expiration.expiration)}
                           className={`min-w-[56px] border px-2.5 py-1.5 text-left font-mono transition-[border-color,background-color,color] duration-100 ease-out ${
                             active
-                              ? "border-[#1A56DB] bg-[#1A56DB]/12 text-[#d0e0ff]"
-                              : "border-white/[0.08] bg-[#0D1117] text-white/70 hover:border-white/15 hover:bg-[#1C2128] hover:text-white/85"
+                              ? "border-[#1A56DB] bg-[#1A56DB]/18 text-white"
+                              : "border-white/[0.10] bg-[#1C2128] text-white/80 hover:border-white/20 hover:bg-[#222d3d] hover:text-white"
                           }`}
                           style={{ borderRadius: 4 }}
                         >
                           <div className="text-[11px] leading-tight">{expiration.label}</div>
-                          <div className="mt-0.5 text-[9px] text-white/40">{expiration.contractCount} lines</div>
+                          <div className={`mt-0.5 text-[9px] ${active ? "text-white/55" : "text-white/45"}`}>{expiration.contractCount} lines</div>
                         </button>
                       );
                     })}
@@ -358,56 +638,76 @@ function OptionsPage() {
           </div>
         ) : (
           <div
-            className="mx-3 mb-3 mt-3 flex min-h-0 flex-1 flex-col border border-white/[0.06] sm:mx-4"
-            style={{ backgroundColor: BG_PANEL }}
+            className="mx-3 mb-3 mt-3 flex min-h-0 flex-1 flex-col border border-white/[0.08] sm:mx-4"
+            style={{ backgroundColor: BG_HOVER }}
           >
-            {/* Sticky column titles */}
+            {/* Single scroll container — header sticky inside it so both scroll together horizontally */}
             <div
-              className="sticky top-0 z-20 grid shrink-0 grid-cols-[1fr_128px_1fr] items-end gap-3 border-b border-white/[0.06] px-3 py-2.5 sm:px-4"
-              style={{ backgroundColor: BG_PANEL }}
+              className="min-h-0 flex-1 overflow-auto [scrollbar-color:#2a3140_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-sm [&::-webkit-scrollbar-thumb]:bg-white/[0.14] [&::-webkit-scrollbar-track]:bg-transparent"
+              style={{ backgroundColor: BG_HOVER }}
             >
-              <ChainHeaderLabels align="left" />
-              <div className="text-center font-mono text-[10px] uppercase tracking-[0.14em] text-white/45">
-                Strike
-              </div>
-              <ChainHeaderLabels align="right" />
-            </div>
-
-            <div className="grid shrink-0 grid-cols-[1fr_128px_1fr] items-center gap-3 border-b border-white/[0.06] px-3 py-2 sm:px-4" style={{ backgroundColor: BG_PANEL }}>
-              <div className="text-right font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-[#00C853]">
-                Calls
-              </div>
-              <div className="flex flex-col items-center gap-1">
-                <div className="font-mono text-[11px] tabular-nums text-white/55">
-                  {chain?.expirationLabel ?? "—"}
+            {/* Sticky header block */}
+            <div className="sticky top-0 z-20 shrink-0" style={{ backgroundColor: BG_HOVER }}>
+              {/* Calls / Puts banner — flex-1 so each side spans full available width */}
+              <div className="flex w-full border-b border-white/[0.06]">
+                <div
+                  className="flex flex-1 items-center justify-end py-2.5 px-4"
+                  style={{ minWidth: totalWidth(callCols), borderLeft: "2px solid rgba(0,200,83,0.25)" }}
+                >
+                  <span className="font-mono text-[13px] font-semibold tracking-[0.06em] text-[#00C853]">Calls</span>
                 </div>
-                <div className="flex items-center gap-1">
-                  {([10, 20, 50, "all"] as const).map((n) => (
+                <div
+                  className="relative flex shrink-0 items-center justify-center gap-3 border-x border-white/[0.06] py-2.5"
+                  style={{ width: CENTER_W, minWidth: CENTER_W }}
+                >
+                  <span className="font-mono text-[11px] tabular-nums text-white/60">{chain?.expirationLabel ?? "—"}</span>
+                  <div ref={colPickerRef} className="relative">
                     <button
-                      key={n}
                       type="button"
-                      onClick={() => setStrikesVisible(n)}
-                      className={`h-4 min-w-[22px] border px-1 font-mono text-[8px] uppercase tracking-[0.1em] transition-colors duration-100 ${
-                        strikesVisible === n
-                          ? "border-[#1A56DB]/60 bg-[#1A56DB]/20 text-[#a8c8ff]"
-                          : "border-white/[0.06] bg-transparent text-white/30 hover:border-white/15 hover:text-white/55"
+                      onClick={() => setShowColPicker(v => !v)}
+                      className={`flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] transition-colors duration-75 ${
+                        showColPicker
+                          ? "border-[#1A56DB]/50 bg-[#1A56DB]/15 text-[#a8c8ff]"
+                          : "border-white/[0.15] text-white hover:border-white/30"
                       }`}
-                      style={{ borderRadius: 2 }}
                     >
-                      {n === "all" ? "all" : n}
+                      <SlidersHorizontal className="h-2.5 w-2.5" strokeWidth={1.8} />
+                      Cols
                     </button>
-                  ))}
+                    {showColPicker && (
+                      <ColumnPicker
+                        visible={visibleCols}
+                        onChange={toggleCol}
+                        onClose={() => setShowColPicker(false)}
+                      />
+                    )}
+                  </div>
+                </div>
+                <div
+                  className="flex flex-1 items-center justify-start py-2.5 px-4"
+                  style={{ minWidth: totalWidth(putCols), borderRight: "2px solid rgba(255,61,113,0.25)" }}
+                >
+                  <span className="font-mono text-[13px] font-semibold tracking-[0.06em] text-[#FF3D71]">Puts</span>
                 </div>
               </div>
-              <div className="text-left font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-[#FF3D71]">
-                Puts
+              {/* Column labels */}
+              <div className="flex border-b border-white/[0.06]">
+                <ChainHeaderLabels isCall={true} cols={callCols} />
+                {/* Center header: Vol C | Strike | IV | Vol P */}
+                <div
+                  className="flex items-center border-x border-white/[0.06] font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-white"
+                  style={{ width: CENTER_W, minWidth: CENTER_W }}
+                >
+                  <div className="flex-1 pr-1 text-right text-white/55">Vol C</div>
+                  <div style={{ width: 80 }} className="text-center">Strike</div>
+                  <div style={{ width: 56 }} className="text-center">IV</div>
+                  <div className="flex-1 pl-1 text-left text-white/55">Vol P</div>
+                </div>
+                <ChainHeaderLabels isCall={false} cols={putCols} />
               </div>
             </div>
 
-            <div
-              className="min-h-0 flex-1 overflow-auto [scrollbar-color:#2a3140_#0D1117] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-sm [&::-webkit-scrollbar-thumb]:bg-white/[0.14] [&::-webkit-scrollbar-track]:bg-[#0D1117]"
-              style={{ backgroundColor: BG_PANEL }}
-            >
+            <div>
               {chainLoading ? (
                 <div className="px-3 py-2 sm:px-4">
                   <ChainSkeletonRows />
@@ -421,56 +721,78 @@ function OptionsPage() {
                   Select an expiration with stored contracts.
                 </div>
               ) : (
-                <div className="min-w-[1080px] px-3 pb-3 pt-1 sm:px-4">
+                <div className="pb-4 pt-0">
                   {visibleRows.map((row) => {
                     const atm = isAtmRow(row.strike);
                     const callItm = row.call?.inTheMoney === true;
-                    const putItm = row.put?.inTheMoney === true;
+                    const putItm  = row.put?.inTheMoney === true;
+                    const callVolPct = row.call?.volume && maxVolume > 0 ? Math.min((row.call.volume / maxVolume) * 100, 100) : 0;
+                    const putVolPct  = row.put?.volume  && maxVolume > 0 ? Math.min((row.put.volume  / maxVolume) * 100, 100) : 0;
+                    const midIv = row.call?.impliedVolatility ?? row.put?.impliedVolatility;
                     return (
-                      <div
-                        key={row.strike}
-                        className={`grid grid-cols-[1fr_128px_1fr] items-center gap-0 border-b border-white/[0.06] transition-colors duration-100 ease-out ${
-                          atm ? "bg-[#1A56DB]/[0.07]" : "hover:bg-[#1C2128]/80"
-                        }`}
-                      >
-                        <SideMetrics side={row.call} align="left" itm={callItm} />
+                      <div key={row.strike}>
+                        {atm && (
+                          <div
+                            className="flex items-center py-1.5"
+                            style={{ width: fullTableWidth, minWidth: fullTableWidth }}
+                          >
+                            <div className="h-px flex-1 bg-white/[0.12]" />
+                            <span className="mx-3 whitespace-nowrap font-mono text-[10px] tabular-nums text-white/55">
+                              {selectedSymbol}
+                              {underlyingPrice != null && (
+                                <> &nbsp;·&nbsp; <span className="text-[#00C853]/90">${formatPrice(underlyingPrice)}</span></>
+                              )}
+                            </span>
+                            <div className="h-px flex-1 bg-white/[0.12]" />
+                          </div>
+                        )}
                         <div
-                          className={`flex flex-col items-center justify-center border-x border-white/[0.06] py-2 ${
-                            atm ? "bg-[#1A56DB]/[0.06]" : ""
+                          className={`flex items-stretch border-b transition-colors duration-75 ease-out ${
+                            atm ? "border-[#1A56DB]/20 bg-[#1A56DB]/[0.05]" : "border-white/[0.05] hover:bg-white/[0.03]"
                           }`}
                         >
-                          <div className="font-mono text-[13px] font-medium tabular-nums text-white">
-                            {formatPrice(row.strike)}
+                          <SideMetrics
+                            side={row.call} isCall={true} itm={callItm}
+                            cols={callCols} strike={row.strike}
+                            underlyingPrice={underlyingPrice} maxVolume={maxVolume}
+                          />
+                          {/* Center: Call Vol Bar | Strike | IV | Put Vol Bar */}
+                          <div
+                            className={`flex items-center border-x py-2 ${atm ? "border-x-[#1A56DB]/25 bg-[#1A56DB]/[0.04]" : "border-x-white/[0.05]"}`}
+                            style={{ width: CENTER_W, minWidth: CENTER_W }}
+                          >
+                            {/* Call vol bar */}
+                            <div className="flex flex-1 items-center justify-end pr-2">
+                              <div className="h-[5px] rounded-full bg-[#00C853]/75" style={{ width: `${callVolPct}%` }} />
+                            </div>
+                            {/* Strike */}
+                            <div className="flex flex-col items-center" style={{ width: 80 }}>
+                              <span className={`font-mono text-[13px] font-semibold tabular-nums ${atm ? "text-white" : "text-white/88"}`}>
+                                {formatPrice(row.strike)}
+                              </span>
+                            </div>
+                            {/* IV */}
+                            <div className="text-center font-mono text-[11px] tabular-nums text-white/62" style={{ width: 56 }}>
+                              {formatIv(midIv)}
+                            </div>
+                            {/* Put vol bar */}
+                            <div className="flex flex-1 items-center justify-start pl-2">
+                              <div className="h-[5px] rounded-full bg-[#FF3D71]/75" style={{ width: `${putVolPct}%` }} />
+                            </div>
                           </div>
-                          {atm ? (
-                            <span className="mt-0.5 font-mono text-[8px] uppercase tracking-[0.12em] text-[#1A56DB]/90">
-                              ATM
-                            </span>
-                          ) : null}
-                          <div className="mt-1 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 text-[9px] text-white/42">
-                            <span>
-                              C vol <span className="font-mono tabular-nums text-white/55">{formatInt(row.call?.volume)}</span>
-                            </span>
-                            <span>
-                              P vol <span className="font-mono tabular-nums text-white/55">{formatInt(row.put?.volume)}</span>
-                            </span>
-                          </div>
-                          <div className="mt-0.5 flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 text-[9px] text-white/35">
-                            <span>
-                              C OI <span className="font-mono tabular-nums text-white/48">{formatInt(row.call?.openInterest)}</span>
-                            </span>
-                            <span>
-                              P OI <span className="font-mono tabular-nums text-white/48">{formatInt(row.put?.openInterest)}</span>
-                            </span>
-                          </div>
+                          <SideMetrics
+                            side={row.put} isCall={false} itm={putItm}
+                            cols={putCols} strike={row.strike}
+                            underlyingPrice={underlyingPrice} maxVolume={maxVolume}
+                          />
                         </div>
-                        <SideMetrics side={row.put} align="right" itm={putItm} />
                       </div>
                     );
                   })}
                 </div>
               )}
             </div>
+            </div> {/* end single scroll container */}
           </div>
         )}
       </div>

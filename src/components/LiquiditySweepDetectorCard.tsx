@@ -10,7 +10,7 @@ import { linkBus } from "../lib/link-bus";
 
 const MAX_SYMBOLS = 10;
 const POLL_INTERVAL_MS = 30_000;
-const TIMEFRAME_OPTIONS = ["5m", "15m", "1h", "1d", "1w"] as const;
+const TIMEFRAME_OPTIONS = ["1m", "2m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"] as const;
 const LOOKBACK_OPTIONS = [1, 2, 3, 5, 8] as const;
 const TIMEFRAME_SELECT_OPTIONS = TIMEFRAME_OPTIONS.map((option) => ({
   value: option,

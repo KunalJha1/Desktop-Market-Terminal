@@ -39,6 +39,13 @@ function MiniHeatmapCard({
     x: number;
     y: number;
   } | null>(null);
+  const advanceDecline = useMemo(() => {
+    const up = tiles.filter((t) => (t.changePct ?? 0) > 0).length;
+    const down = tiles.filter((t) => (t.changePct ?? 0) < 0).length;
+    const total = tiles.length;
+    return { up, down, total };
+  }, [tiles]);
+
   const metricMode: HeatmapMetricMode =
     typeof config.metricMode === "string" &&
     HEATMAP_METRIC_OPTIONS.some((o) => o.value === config.metricMode)
@@ -143,6 +150,31 @@ function MiniHeatmapCard({
         <span className="text-[11px] font-medium text-white/85">
           S&P 500 Heatmap
         </span>
+
+        {/* Advance / Decline bar */}
+        {advanceDecline.total > 0 && (
+          <div className="flex flex-1 items-center gap-1.5 px-2">
+            <div className="relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-white/[0.08]">
+              <div
+                className="absolute inset-y-0 left-0 rounded-l-full bg-green"
+                style={{
+                  width: `${(advanceDecline.up / advanceDecline.total) * 100}%`,
+                }}
+              />
+              <div
+                className="absolute inset-y-0 right-0 rounded-r-full bg-red"
+                style={{
+                  width: `${(advanceDecline.down / advanceDecline.total) * 100}%`,
+                }}
+              />
+            </div>
+            <span className="shrink-0 font-mono text-[9px] text-white/50">
+              <span className="text-green">{advanceDecline.up}</span>
+              <span className="text-white/30">/{advanceDecline.total}</span>
+            </span>
+          </div>
+        )}
+
         <div className="flex items-center gap-0.5">
           <CustomSelect
             value={metricMode}

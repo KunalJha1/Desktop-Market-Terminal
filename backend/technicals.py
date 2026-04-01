@@ -19,19 +19,25 @@ logger = logging.getLogger(__name__)
 
 # Minimum resampled candles required before we attempt indicator math
 MIN_BARS = 60
-SUPPORTED_TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
-INTRADAY_TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h"}
+SUPPORTED_TIMEFRAMES = ("1m", "2m", "5m", "10m", "15m", "30m", "1h", "4h", "1d", "1w", "1M")
+INTRADAY_TIMEFRAMES = {"1m", "2m", "5m", "10m", "15m", "30m", "1h", "4h"}
 
 # How many 1m bars to pull per intraday timeframe (enough for 100+ resampled bars)
 _TF_1M_FETCH: dict[str, int] = {
+    "2m":  2  * 200,   # 200 × 2m bars
     "5m":  5  * 200,   # 200 × 5m bars
+    "10m": 10 * 200,   # 200 × 10m bars
     "15m": 15 * 200,   # 200 × 15m bars
+    "30m": 30 * 200,   # 200 × 30m bars
     "1h":  60 * 200,   # 200 × 1h bars
     "4h":  240 * 200,  # 200 × 4h bars
 }
 _TF_RESAMPLE_MINUTES: dict[str, int] = {
+    "2m":  2,
     "5m":  5,
+    "10m": 10,
     "15m": 15,
+    "30m": 30,
     "1h":  60,
     "4h":  240,
 }
@@ -46,6 +52,18 @@ def _get_1m(conn, symbol: str, limit: int) -> pd.DataFrame:
     rows = conn.execute(
         "SELECT ts, open, high, low, close, volume "
         "FROM ohlcv_1m WHERE symbol = ? ORDER BY ts DESC LIMIT ?",
+        [symbol.upper(), limit],
+    ).fetchall()
+    if not rows:
+        return pd.DataFrame(columns=_OHLCV_COLS)
+    df = pd.DataFrame(rows, columns=_OHLCV_COLS)
+    return df.sort_values("ts").reset_index(drop=True)
+
+
+def _get_5m(conn, symbol: str, limit: int) -> pd.DataFrame:
+    rows = conn.execute(
+        "SELECT ts, open, high, low, close, volume "
+        "FROM ohlcv_5m WHERE symbol = ? ORDER BY ts DESC LIMIT ?",
         [symbol.upper(), limit],
     ).fetchall()
     if not rows:
@@ -75,6 +93,22 @@ def _resample(df: pd.DataFrame, minutes: int) -> pd.DataFrame:
     df = df.set_index("dt")
     agg = (
         df.resample(f"{minutes}min", closed="left", label="left")
+        .agg({"ts": "first", "open": "first", "high": "max",
+              "low": "min", "close": "last", "volume": "sum"})
+        .dropna(subset=["open", "close"])
+    )
+    return agg.reset_index(drop=True)
+
+
+def _resample_monthly(df: pd.DataFrame) -> pd.DataFrame:
+    """Resample daily OHLCV to monthly bars."""
+    if df.empty:
+        return df
+    df = df.copy()
+    df["dt"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
+    df = df.set_index("dt")
+    agg = (
+        df.resample("MS", closed="left", label="left")
         .agg({"ts": "first", "open": "first", "high": "max",
               "low": "min", "close": "last", "volume": "sum"})
         .dropna(subset=["open", "close"])
@@ -324,18 +358,36 @@ def classify_technicals(technicals: dict, last_close: float) -> dict:
 # ─── Public API ───────────────────────────────────────────────────────
 
 def _load_df(conn, symbol: str, timeframe: str) -> pd.DataFrame:
-    """Load and resample OHLCV for the given timeframe. Returns empty df on failure."""
+    """Load and resample OHLCV for the given timeframe. Returns empty df on failure.
+
+    For intraday timeframes, tries 1m bars first. If the resampled result has
+    fewer than MIN_BARS (e.g. 4h needs 37+ trading days of 1m data), falls back
+    to 5m bars which have a longer backfill window.
+    """
     if timeframe == "1m":
         return _get_1m(conn, symbol, 200)
     if timeframe == "1d":
         return _get_1d(conn, symbol, 200)
     if timeframe == "1w":
         return _resample_weekly(_get_1d(conn, symbol, 600))
+    if timeframe == "1M":
+        return _resample_monthly(_get_1d(conn, symbol, 1200))
     minutes = _TF_RESAMPLE_MINUTES.get(timeframe)
     if minutes is None:
         return pd.DataFrame()
-    limit = min(_TF_1M_FETCH.get(timeframe, minutes * 200), 20_000)
-    return _resample(_get_1m(conn, symbol, limit), minutes)
+    # Primary: resample from 1m bars
+    limit_1m = min(_TF_1M_FETCH.get(timeframe, minutes * 200), 20_000)
+    df = _resample(_get_1m(conn, symbol, limit_1m), minutes)
+    if len(df) >= MIN_BARS:
+        return df
+    # Fallback: resample from 5m bars (90-day backfill → enough for 4h)
+    if minutes > 5:
+        limit_5m = min((minutes // 5) * 200, 20_000)
+        df_5m = _resample(_get_5m(conn, symbol, limit_5m), minutes)
+        # Prefer 5m result if it meets MIN_BARS threshold, or if it simply has more bars
+        if len(df_5m) >= MIN_BARS or len(df_5m) > len(df):
+            return df_5m
+    return df
 
 
 def inspect_symbol_timeframe(conn, symbol: str, timeframe: str) -> dict[str, int | str | None]:
@@ -729,8 +781,10 @@ def detect_liquidity_sweeps_for_symbols(
     params: dict | None = None,
 ) -> dict[str, dict[str, int | float | str | None]]:
     result: dict[str, dict[str, int | float | str | None]] = {}
-    normalized_timeframe = timeframe.strip().lower()
-    if normalized_timeframe not in {"5m", "15m", "1h", "4h", "1d", "1w"}:
+    # Preserve "1M" (monthly) vs "1m" (1-minute) — only lowercase non-monthly timeframes
+    tf_stripped = timeframe.strip()
+    normalized_timeframe = tf_stripped if tf_stripped == "1M" else tf_stripped.lower()
+    if normalized_timeframe not in set(SUPPORTED_TIMEFRAMES):
         return {
             sym: {"direction": None, "eventTs": None, "ageBars": None, "source": None}
             for sym in symbols

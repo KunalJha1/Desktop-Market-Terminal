@@ -248,7 +248,7 @@ function MiniScreenerCard({
   };
 
   const visibleTimeframes = useMemo(() => getVisibleTimeframes(visibleColumns), [visibleColumns]);
-  const technicals = useTechScores(watchlistSymbols, visibleTimeframes);
+  const technicals = useTechScores(watchlistSymbols, TA_SCORE_TIMEFRAMES);
 
   useEffect(() => {
     const sortStillVisible =

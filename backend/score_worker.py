@@ -24,6 +24,9 @@ UNIVERSE_TIMEFRAMES = ["1d", "1w"]
 INTERVAL_S = 60
 UNIVERSE_INTERVAL_S = 300
 _SCORE_FIELDS = ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
+# Write to DB after every N symbols so the frontend sees incremental updates
+# rather than waiting for the entire batch to finish.
+SCORE_BATCH_SIZE = 20
 
 
 def _upsert_scores(
@@ -55,55 +58,80 @@ def _upsert_scores(
 
 
 def _compute_and_upsert(symbols: list[str]) -> None:
-    """Blocking: score all symbols then upsert. Runs in executor."""
+    """Blocking: score symbols in batches and upsert after each batch.
+
+    Writing incrementally means the DB is updated continuously — the frontend
+    sees real data on its next poll rather than waiting for all symbols to finish.
+    """
     if not symbols:
         return
-    scored = score_symbols(symbols, TIMEFRAMES)
-    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-    rows = [
-        (
-            sym,
-            scores.get("1m"),
-            scores.get("5m"),
-            scores.get("15m"),
-            scores.get("1h"),
-            scores.get("4h"),
-            scores.get("1d"),
-            scores.get("1w"),
-        )
-        for sym, scores in scored.items()
-    ]
-    _upsert_scores(rows, now_utc)
-    logger.info("Technical scores updated for %s symbol(s)", len(rows))
+    total = 0
+    for i in range(0, len(symbols), SCORE_BATCH_SIZE):
+        batch = symbols[i:i + SCORE_BATCH_SIZE]
+        try:
+            scored = score_symbols(batch, TIMEFRAMES)
+        except Exception as exc:
+            logger.error("TechnicalsScorer batch score error (symbols %d-%d): %s", i, i + len(batch), exc)
+            continue
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        rows = [
+            (
+                sym,
+                scores.get("1m"),
+                scores.get("5m"),
+                scores.get("15m"),
+                scores.get("1h"),
+                scores.get("4h"),
+                scores.get("1d"),
+                scores.get("1w"),
+            )
+            for sym, scores in scored.items()
+        ]
+        try:
+            _upsert_scores(rows, now_utc)
+        except Exception as exc:
+            logger.error("TechnicalsScorer upsert error (symbols %d-%d): %s", i, i + len(batch), exc)
+            continue
+        total += len(rows)
+    logger.info("Technical scores updated for %s symbol(s)", total)
 
 
 def _compute_and_upsert_universe(symbols: list[str]) -> None:
-    """Score universe symbols for 1d/1w only. Upserts only those two columns."""
+    """Score universe symbols for 1d/1w only, writing in batches."""
     if not symbols:
         return
-    scored = score_symbols(symbols, UNIVERSE_TIMEFRAMES)
-    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-    rows = [
-        (sym, None, None, None, None, scores.get("1d"), scores.get("1w"))
-        for sym, scores in scored.items()
-    ]
-    if not rows:
-        return
-    with sync_db_session() as conn:
-        execute_many_with_retry(
-            conn,
-            """
-            INSERT INTO technical_scores
-                (symbol, score_1d, score_1w, last_updated_utc)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT (symbol) DO UPDATE SET
-                score_1d         = excluded.score_1d,
-                score_1w         = excluded.score_1w,
-                last_updated_utc = excluded.last_updated_utc
-            """,
-            [(sym, s1d, s1w, now_utc) for sym, _, _, _, _, s1d, s1w in rows],
-        )
-    logger.info("Universe tech scores (1d/1w) updated for %s symbol(s)", len(rows))
+    total = 0
+    for i in range(0, len(symbols), SCORE_BATCH_SIZE):
+        batch = symbols[i:i + SCORE_BATCH_SIZE]
+        try:
+            scored = score_symbols(batch, UNIVERSE_TIMEFRAMES)
+        except Exception as exc:
+            logger.error("Universe scorer batch error (symbols %d-%d): %s", i, i + len(batch), exc)
+            continue
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+        rows = [(sym, None, None, None, None, scores.get("1d"), scores.get("1w")) for sym, scores in scored.items()]
+        if not rows:
+            continue
+        try:
+            with sync_db_session() as conn:
+                execute_many_with_retry(
+                    conn,
+                    """
+                    INSERT INTO technical_scores
+                        (symbol, score_1d, score_1w, last_updated_utc)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (symbol) DO UPDATE SET
+                        score_1d         = excluded.score_1d,
+                        score_1w         = excluded.score_1w,
+                        last_updated_utc = excluded.last_updated_utc
+                    """,
+                    [(sym, s1d, s1w, now_utc) for sym, _, _, _, _, s1d, s1w in rows],
+                )
+        except Exception as exc:
+            logger.error("Universe scorer upsert error (symbols %d-%d): %s", i, i + len(batch), exc)
+            continue
+        total += len(rows)
+    logger.info("Universe tech scores (1d/1w) updated for %s symbol(s)", total)
 
 
 def _normalize_symbols(symbols: list[str]) -> list[str]:
@@ -204,28 +232,21 @@ def read_scores_for_timeframes(
         row_map = {row[0]: row for row in rows}
 
     payloads: list[dict] = []
-    with sync_db_session() as conn:
-        for sym in normalized_symbols:
-            row = row_map.get(sym)
-            cached = _row_to_score_map(row)
-            payload = {
-                "symbol": sym,
-                "last_updated_utc": row[8].isoformat() if row and hasattr(row[8], "isoformat") else (row[8] if row else None),
-            }
-            for tf in _SCORE_FIELDS:
-                payload[tf] = cached.get(tf)
-            for tf in requested_timeframes:
-                score = cached.get(tf)
-                if score is not None:
-                    payload[f"status_{tf}"] = "ok"
-                    payload[f"bars_{tf}"] = None
-                    payload[f"required_bars_{tf}"] = MIN_BARS
-                    continue
-                info = inspect_symbol_timeframe(conn, sym, tf)
-                payload[f"status_{tf}"] = "error" if info["status"] == "scorable" else info["status"]
-                payload[f"bars_{tf}"] = info["bar_count"]
-                payload[f"required_bars_{tf}"] = info["required_bars"]
-            payloads.append(payload)
+    for sym in normalized_symbols:
+        row = row_map.get(sym)
+        cached = _row_to_score_map(row)
+        payload = {
+            "symbol": sym,
+            "last_updated_utc": row[8].isoformat() if row and hasattr(row[8], "isoformat") else (row[8] if row else None),
+        }
+        for tf in _SCORE_FIELDS:
+            payload[tf] = cached.get(tf)
+        for tf in requested_timeframes:
+            score = cached.get(tf)
+            payload[f"status_{tf}"] = "ok" if score is not None else "insufficient_bars"
+            payload[f"bars_{tf}"] = None
+            payload[f"required_bars_{tf}"] = MIN_BARS
+        payloads.append(payload)
 
     return payloads
 

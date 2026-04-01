@@ -1713,6 +1713,7 @@ function ChartPage({ tabId }: ChartPageProps) {
           onUpdateLineWidth={handleUpdateLineWidth}
           onUpdateLineStyle={handleUpdateLineStyle}
           onRemove={handleRemoveIndicator}
+          onRemoveScript={handleToggleScript}
           onToggleVisibility={handleToggleVisibility}
           onSetDefaultColor={handleSetDefaultColor}
           onMoveUp={(id) => handleMoveIndicator(id, 'up')}

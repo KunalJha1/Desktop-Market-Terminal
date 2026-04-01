@@ -15,12 +15,15 @@ export interface OptionsMonthGroup {
   expirations: OptionsExpiration[];
 }
 
+export type MarketSession = "REGULAR" | "PRE_MARKET" | "AFTER_HOURS" | "CLOSED";
+
 export interface OptionsSummary {
   symbol: string;
   hasData: boolean;
   underlyingPrice: number | null;
   capturedAt: number | null;
   source: string | null;
+  session: MarketSession | null;
   months: OptionsMonthGroup[];
 }
 

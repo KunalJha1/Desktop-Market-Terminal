@@ -11,6 +11,46 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL = 5.0  # seconds between polls
 
 
+def fetch_extended_hours_quote(symbol: str) -> dict | None:
+    """
+    Return the best available spot price for a symbol, preferring extended-hours
+    prices when the market is not in regular session.
+
+    Returns dict with keys: spot, regularPrice, postMarketPrice, preMarketPrice, sessionUsed
+    or None on failure.
+    """
+    from options_collector import get_market_session, SESSION_AFTER_HOURS, SESSION_PRE_MARKET
+    try:
+        t = Ticker(symbol)
+        p = t.price.get(symbol)
+        if not isinstance(p, dict):
+            return None
+        regular = float(p.get("regularMarketPrice") or 0) or None
+        post    = float(p.get("postMarketPrice") or 0) or None
+        pre     = float(p.get("preMarketPrice") or 0) or None
+        session = get_market_session()
+        if session == SESSION_AFTER_HOURS and post:
+            spot, session_used = post, "post_market"
+        elif session == SESSION_PRE_MARKET and pre:
+            spot, session_used = pre, "pre_market"
+        elif post:
+            spot, session_used = post, "post_market_stale"
+        else:
+            spot, session_used = regular, "regular"
+        if not spot:
+            return None
+        return {
+            "spot": spot,
+            "regularPrice": regular,
+            "postMarketPrice": post,
+            "preMarketPrice": pre,
+            "sessionUsed": session_used,
+        }
+    except Exception as e:
+        logger.warning("fetch_extended_hours_quote failed for %s: %s", symbol, e)
+        return None
+
+
 def _fetch_quotes(symbols: list[str]) -> dict[str, dict]:
     """Synchronous yahooquery fetch — runs in executor."""
     results: dict[str, dict] = {}

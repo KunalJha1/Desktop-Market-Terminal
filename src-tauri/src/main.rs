@@ -359,8 +359,11 @@ impl ManagedChild {
     fn kill_tree(pid: u32) {
         #[cfg(target_os = "windows")]
         {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
             let _ = Command::new("taskkill")
                 .args(&["/F", "/T", "/PID", &pid.to_string()])
+                .creation_flags(CREATE_NO_WINDOW)
                 .output(); // .output() blocks until taskkill exits
         }
         #[cfg(not(target_os = "windows"))]
@@ -658,36 +661,55 @@ fn spawn_dev_python(
         cwd.join("backend").join(".venv").join("bin").join("python")
     };
 
+    #[cfg(target_os = "windows")]
+    let no_window_flag: u32 = 0x08000000;
+
     let child = if venv_python.exists() {
-        Command::new(&venv_python)
-            .args(&args)
-            .current_dir(cwd)
-            .env("DAILYIQ_DATA_DIR", app_data.to_string_lossy().to_string())
-            .env("PYTHONUNBUFFERED", "1")
-            .spawn()
-            .map_err(|e| format!("Failed to spawn venv Python: {}", e))?
+        {
+            #[allow(unused_mut)]
+            let mut cmd = Command::new(&venv_python);
+            cmd.args(&args)
+                .current_dir(cwd)
+                .env("DAILYIQ_DATA_DIR", app_data.to_string_lossy().to_string())
+                .env("PYTHONUNBUFFERED", "1");
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(no_window_flag);
+            }
+            cmd.spawn()
+                .map_err(|e| format!("Failed to spawn venv Python: {}", e))?
+        }
     } else {
-        Command::new("python3")
-            .args(&args)
-            .current_dir(cwd)
-            .env("DAILYIQ_DATA_DIR", app_data.to_string_lossy().to_string())
-            .env("PYTHONUNBUFFERED", "1")
-            .spawn()
+        let try_spawn = |exe: &str| {
+            #[allow(unused_mut)]
+            let mut cmd = Command::new(exe);
+            cmd.args(&args)
+                .current_dir(cwd)
+                .env("DAILYIQ_DATA_DIR", app_data.to_string_lossy().to_string())
+                .env("PYTHONUNBUFFERED", "1");
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(no_window_flag);
+            }
+            cmd.spawn()
+        };
+        try_spawn("python3")
+            .or_else(|_| try_spawn("python"))
             .or_else(|_| {
-                Command::new("python")
-                    .args(&args)
+                #[allow(unused_mut)]
+                let mut cmd = Command::new("py");
+                cmd.args(&args)
                     .current_dir(cwd)
                     .env("DAILYIQ_DATA_DIR", app_data.to_string_lossy().to_string())
-                    .env("PYTHONUNBUFFERED", "1")
-                    .spawn()
-            })
-            .or_else(|_| {
-                Command::new("py")
-                    .args(&args)
-                    .current_dir(cwd)
-                    .env("DAILYIQ_DATA_DIR", app_data.to_string_lossy().to_string())
-                    .env("PYTHONUNBUFFERED", "1")
-                    .spawn()
+                    .env("PYTHONUNBUFFERED", "1");
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(no_window_flag);
+                }
+                cmd.spawn()
             })
             .map_err(|e| format!("Failed to spawn Python process: {}", e))?
     };

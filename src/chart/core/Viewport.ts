@@ -18,6 +18,30 @@ export class Viewport {
   private initialized: boolean = false;
   private pendingScrollToEnd: boolean = false;
 
+  // --- Animation state ---
+  // Zoom animation
+  private animTargetBarsVisible: number | null = null;
+  private animAnchorBar: number | null = null;
+  private animAnchorRatio: number | null = null;
+  private animZoomElapsed = 0;
+  private readonly ZOOM_DURATION_MS = 180;
+  // Scroll animation (timeframe change / scrollToEnd)
+  private animTargetStart: number | null = null;
+  private animScrollElapsed = 0;
+  private readonly SCROLL_DURATION_MS = 250;
+  // Pan inertia
+  private inertiaVx = 0;            // bars/ms
+  private readonly INERTIA_DECAY = 0.88;             // per-frame @ 60fps
+  private readonly INERTIA_STOP_THRESHOLD = 0.0001;  // bars/ms
+
+  get isAnimating(): boolean {
+    return (
+      this.animTargetBarsVisible !== null ||
+      this.animTargetStart !== null ||
+      Math.abs(this.inertiaVx) > this.INERTIA_STOP_THRESHOLD
+    );
+  }
+
   // Computed layout region for the main chart area
   chartLeft: number = 0;
   chartTop: number = 0;
@@ -145,7 +169,90 @@ export class Viewport {
   }
 
   scrollToEnd() {
+    this.animTargetStart = this.getDefaultEndStart();
+    this.animScrollElapsed = 0;
+    this.inertiaVx = 0;
+  }
+
+  scrollToEndImmediate() {
     this.startIndex = this.getDefaultEndStart();
+    this.animTargetStart = null;
+    this.inertiaVx = 0;
+  }
+
+  beginZoomTo(factor: number, anchorPixelX: number) {
+    if (this.chartWidth <= 0) return;
+    const anchorRatio = (anchorPixelX - this.chartLeft) / this.chartWidth;
+    const anchorBar = this.pixelXToBar(anchorPixelX);
+    const rawTarget = this.barsVisible * factor;
+    const clamped = Math.max(MIN_BARS_VISIBLE, Math.min(MAX_BARS_VISIBLE, rawTarget));
+    if (Math.abs(clamped - this.barsVisible) < 0.001) return;
+    this.animTargetBarsVisible = clamped;
+    this.animAnchorBar = anchorBar;
+    this.animAnchorRatio = anchorRatio;
+    this.animZoomElapsed = 0;
+    this.animTargetStart = null;
+    this.inertiaVx = 0;
+  }
+
+  beginInertia(vx: number) {
+    this.inertiaVx = vx;
+    this.animTargetStart = null;
+    this.animScrollElapsed = 0;
+  }
+
+  cancelAllAnimations() {
+    this.animTargetBarsVisible = null;
+    this.animAnchorBar = null;
+    this.animAnchorRatio = null;
+    this.animZoomElapsed = 0;
+    this.animTargetStart = null;
+    this.animScrollElapsed = 0;
+    this.inertiaVx = 0;
+  }
+
+  tickAnimation(dt: number) {
+    // 1. Zoom (runs first — barWidth changes affect scroll math)
+    if (this.animTargetBarsVisible !== null) {
+      this.animZoomElapsed += dt;
+      const t = Math.min(1, this.animZoomElapsed / this.ZOOM_DURATION_MS);
+      const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
+      this.barsVisible = Math.max(
+        MIN_BARS_VISIBLE,
+        Math.min(MAX_BARS_VISIBLE, this.barsVisible + (this.animTargetBarsVisible - this.barsVisible) * eased)
+      );
+      // Keep anchor bar locked to its screen ratio throughout zoom
+      this.startIndex = this.clampStart(this.animAnchorBar! - this.barsVisible * this.animAnchorRatio!);
+      if (t >= 1) {
+        this.animTargetBarsVisible = null;
+        this.animAnchorBar = null;
+        this.animAnchorRatio = null;
+        this.animZoomElapsed = 0;
+      }
+    }
+
+    // 2. Scroll animation
+    if (this.animTargetStart !== null) {
+      this.animScrollElapsed += dt;
+      const t = Math.min(1, this.animScrollElapsed / this.SCROLL_DURATION_MS);
+      const eased = 1 - Math.pow(1 - t, 3);
+      this.startIndex = this.clampStart(
+        this.startIndex + (this.animTargetStart - this.startIndex) * eased
+      );
+      if (t >= 1 || Math.abs(this.startIndex - this.animTargetStart) < 0.01) {
+        this.startIndex = this.clampStart(this.animTargetStart);
+        this.animTargetStart = null;
+        this.animScrollElapsed = 0;
+      }
+    }
+
+    // 3. Pan inertia (only when no scroll animation running)
+    if (this.animTargetStart === null && Math.abs(this.inertiaVx) > this.INERTIA_STOP_THRESHOLD) {
+      this.startIndex = this.clampStart(this.startIndex + this.inertiaVx * dt);
+      // Normalize decay to 60fps so it's frame-rate independent
+      this.inertiaVx *= Math.pow(this.INERTIA_DECAY, dt / 16.667);
+      if (Math.abs(this.inertiaVx) <= this.INERTIA_STOP_THRESHOLD) this.inertiaVx = 0;
+    }
   }
 
   private getDefaultRightExtraBars(): number {

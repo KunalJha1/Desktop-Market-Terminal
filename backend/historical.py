@@ -1152,11 +1152,11 @@ async def get_historical_bars(
         # and lets the frontend show data immediately while IBKR backfills in
         # the background.  For incremental updates (last_ts_ms set) TWS is
         # preferred because it delivers precise gap fills.
-        _diq_supported = what_to_show == "TRADES" and db_bar_size in ("5m", "15m", "1d")
+        _diq_supported = what_to_show == "TRADES" and db_bar_size in ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
         if _diq_supported and last_ts_ms is None:
             try:
                 from dailyiq_provider import fetch_bars_from_dailyiq_async
-                diq_limit = max(50, min(5000, lookback_days * ({"5m": 78, "15m": 26, "1d": 1}.get(db_bar_size, 1))))
+                diq_limit = max(50, min(5000, lookback_days * ({"1m": 390, "5m": 78, "15m": 26, "1h": 7, "4h": 2, "1d": 1, "1w": 1}.get(db_bar_size, 1))))
                 diq_bars = await fetch_bars_from_dailyiq_async(symbol, timeframe=db_bar_size, limit=diq_limit)
                 if diq_bars:
                     fetched_bars = diq_bars
@@ -1224,7 +1224,7 @@ async def get_historical_bars(
         if not fetched_bars and _diq_supported:
             try:
                 from dailyiq_provider import fetch_bars_from_dailyiq_async
-                diq_limit = max(50, min(5000, lookback_days * ({"5m": 78, "15m": 26, "1d": 1}.get(db_bar_size, 1))))
+                diq_limit = max(50, min(5000, lookback_days * ({"1m": 390, "5m": 78, "15m": 26, "1h": 7, "4h": 2, "1d": 1, "1w": 1}.get(db_bar_size, 1))))
                 diq_bars = await fetch_bars_from_dailyiq_async(symbol, timeframe=db_bar_size, limit=diq_limit)
                 if diq_bars:
                     fetched_bars = diq_bars

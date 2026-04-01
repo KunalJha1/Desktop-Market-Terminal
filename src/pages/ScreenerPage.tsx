@@ -62,9 +62,12 @@ interface HeatmapTile {
   volume: number | null;
   techScore1d: number | null;
   techScore1w: number | null;
+  techScores: Record<string, number | null> | null;
+  sentimentScore: number | null;
 }
 
 interface TechScores {
+  [key: string]: number | null;
   "1m": number | null;
   "5m": number | null;
   "15m": number | null;
@@ -85,6 +88,7 @@ type SortKey =
   | "fpe"
   | "change"
   | "verdict"
+  | "sentiment"
   | `tech_${TaScoreTimeframe}`;
 
 type SortDir = "asc" | "desc";
@@ -236,6 +240,9 @@ function SkeletonRow({ delay, extraCols }: { delay: number; extraCols: number })
         </td>
       ))}
       <td className="px-2 py-2.5" align="center">
+        <div className="mx-auto h-10 w-10 animate-pulse rounded-full bg-white/[0.06]" />
+      </td>
+      <td className="px-2 py-2.5" align="center">
         <div className="mx-auto h-5 w-20 animate-pulse rounded-full bg-white/[0.06]" />
       </td>
     </tr>
@@ -268,11 +275,11 @@ const ScreenerTableRow = memo(function ScreenerTableRow({
             <p className="font-mono text-[15px] font-semibold leading-none text-white/90">
               {row.symbol}
             </p>
-            <p className="mt-0.5 text-[13px] leading-none text-white/35">
+            <p className="mt-0.5 text-[13px] leading-none text-white">
               {row.name}
             </p>
             {row.sector && (
-              <p className="mt-0.5 text-[12px] leading-none text-white/20">
+              <p className="mt-0.5 text-[12px] leading-none text-white/60">
                 {row.sector}
               </p>
             )}
@@ -281,17 +288,17 @@ const ScreenerTableRow = memo(function ScreenerTableRow({
       </td>
 
       {/* Market Cap */}
-      <td className="px-2 py-2 text-center font-mono text-[13px] text-white/60">
+      <td className="px-2 py-2 text-center font-mono text-[13px] text-white">
         {formatMarketCap(row.marketCap)}
       </td>
 
       {/* Trailing P/E */}
-      <td className="px-2 py-2 text-center font-mono text-[13px] text-white/60">
+      <td className="px-2 py-2 text-center font-mono text-[13px] text-white">
         {row.trailingPE != null ? row.trailingPE.toFixed(1) : "—"}
       </td>
 
       {/* Forward P/E */}
-      <td className="px-2 py-2 text-center font-mono text-[13px] text-white/60">
+      <td className="px-2 py-2 text-center font-mono text-[13px] text-white">
         {row.forwardPE != null ? row.forwardPE.toFixed(1) : "—"}
       </td>
 
@@ -314,11 +321,11 @@ const ScreenerTableRow = memo(function ScreenerTableRow({
       {/* 52W H/L */}
       <td className="px-2 py-2 text-center">
         {row.week52High != null || row.week52Low != null ? (
-          <div className="font-mono text-[12px] leading-relaxed text-white/50">
-            <span className="text-white/25">H</span>{" "}
+          <div className="font-mono text-[12px] leading-relaxed text-white">
+            <span className="text-white/50">H</span>{" "}
             {row.week52High != null ? `$${row.week52High.toFixed(2)}` : "—"}
-            <span className="mx-1 text-white/15">|</span>
-            <span className="text-white/25">L</span>{" "}
+            <span className="mx-1 text-white/25">|</span>
+            <span className="text-white/50">L</span>{" "}
             {row.week52Low != null ? `$${row.week52Low.toFixed(2)}` : "—"}
           </div>
         ) : (
@@ -332,6 +339,11 @@ const ScreenerTableRow = memo(function ScreenerTableRow({
           <CircularGauge score={getTechScoreForTf(row, tf)} size={36} />
         </td>
       ))}
+
+      {/* Sentiment */}
+      <td className="px-1 py-2" align="center">
+        <CircularGauge score={row.sentimentScore} size={36} />
+      </td>
 
       {/* Verdict */}
       <td className="px-2 py-2" align="center">
@@ -412,11 +424,16 @@ function ScreenerPage() {
     }).catch(() => {});
   }, [sidecarPort, filter, customSymbols]);
 
+  // Only fetch scores for the visible batch — expands automatically as the user scrolls.
+  // This avoids one giant request for all 500 S&P symbols on first load.
   const symbolsForScores = useMemo(() => {
     if (filter === "custom") return customSymbols;
     if (filter === "watchlist") return watchlistSymbols;
-    return tiles.map((tile) => tile.symbol);
-  }, [customSymbols, filter, tiles, watchlistSymbols]);
+    // filtered is sorted but tech scores aren't loaded yet; use tile order for
+    // the first batch so the top-weighted symbols load first.
+    const baseSymbols = tiles.map((t) => t.symbol);
+    return baseSymbols.slice(0, visibleCount);
+  }, [customSymbols, filter, tiles, watchlistSymbols, visibleCount]);
   const technicals = useTechScores(symbolsForScores, ALL_TIMEFRAMES);
 
   // ── IntersectionObserver for virtual scroll ──────────────────────
@@ -440,11 +457,16 @@ function ScreenerPage() {
 
   const getTechScoreForTf = useCallback(
     (row: ScreenerRow, tf: TaScoreTimeframe): number | null => {
+      // Live scores from polling hook (most up-to-date)
       const detailed = technicals.get(row.symbol);
       if (detailed) {
         const val = detailed.get(tf)?.score;
         if (val !== null && val !== undefined) return val;
       }
+      // Scores bundled with the heatmap tile (pre-computed, instant on load)
+      const tileScore = row.techScores?.[tf];
+      if (tileScore !== null && tileScore !== undefined) return tileScore;
+      // Legacy fallbacks
       if (tf === "1d") return row.techScore1d;
       if (tf === "1w") return row.techScore1w;
       return null;
@@ -474,13 +496,13 @@ function ScreenerPage() {
       tiles.map((t) => ({
         ...t,
         techScores: {
-          "1m": technicals.get(t.symbol)?.get("1m")?.score ?? null,
-          "5m": technicals.get(t.symbol)?.get("5m")?.score ?? null,
-          "15m": technicals.get(t.symbol)?.get("15m")?.score ?? null,
-          "1h": technicals.get(t.symbol)?.get("1h")?.score ?? null,
-          "4h": technicals.get(t.symbol)?.get("4h")?.score ?? null,
-          "1d": technicals.get(t.symbol)?.get("1d")?.score ?? t.techScore1d ?? null,
-          "1w": technicals.get(t.symbol)?.get("1w")?.score ?? t.techScore1w ?? null,
+          "1m": technicals.get(t.symbol)?.get("1m")?.score ?? t.techScores?.["1m"] ?? null,
+          "5m": technicals.get(t.symbol)?.get("5m")?.score ?? t.techScores?.["5m"] ?? null,
+          "15m": technicals.get(t.symbol)?.get("15m")?.score ?? t.techScores?.["15m"] ?? null,
+          "1h": technicals.get(t.symbol)?.get("1h")?.score ?? t.techScores?.["1h"] ?? null,
+          "4h": technicals.get(t.symbol)?.get("4h")?.score ?? t.techScores?.["4h"] ?? null,
+          "1d": technicals.get(t.symbol)?.get("1d")?.score ?? t.techScores?.["1d"] ?? t.techScore1d ?? null,
+          "1w": technicals.get(t.symbol)?.get("1w")?.score ?? t.techScores?.["1w"] ?? t.techScore1w ?? null,
         },
       })),
     [tiles, technicals],
@@ -544,6 +566,11 @@ function ScreenerPage() {
       if (sortKey === "verdict") {
         va = getVerdictScore(a) ?? -1;
         vb = getVerdictScore(b) ?? -1;
+        return (va - vb) * dir;
+      }
+      if (sortKey === "sentiment") {
+        va = a.sentimentScore ?? -1;
+        vb = b.sentimentScore ?? -1;
         return (va - vb) * dir;
       }
       // tech_<tf> sort keys
@@ -661,6 +688,29 @@ function ScreenerPage() {
             <span className="font-mono text-[13px] text-white/50">
               {loading ? "Loading..." : `${filtered.length} symbols`}
             </span>
+          </div>
+
+          {/* Quick-select */}
+          <div className="flex items-center gap-0.5 rounded-btn border border-white/[0.07] bg-white/[0.03] p-0.5">
+            {(
+              [
+                ["mag7", "MAG 7"],
+                ["watchlist", "Watchlist"],
+                ["custom", "Custom"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setFilter(key)}
+                className={`rounded-[3px] px-3 py-1 font-mono text-[12px] font-medium tracking-wide transition-colors ${
+                  filter === key
+                    ? "bg-blue/25 text-white"
+                    : "text-white/45 hover:bg-white/[0.05] hover:text-white/75"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
           {/* Search */}
@@ -868,6 +918,16 @@ function ScreenerPage() {
                   </span>
                 </th>
               ))}
+
+              <th
+                className="cursor-pointer px-1 py-2 text-center"
+                onClick={() => handleSort("sentiment")}
+              >
+                <span className="inline-flex items-center gap-1 font-mono text-[12px] uppercase tracking-[0.14em] text-white">
+                  Sentiment
+                  <SortArrow active={sortKey === "sentiment"} dir={sortDir} />
+                </span>
+              </th>
 
               <th
                 className="cursor-pointer px-2 py-2 text-center"

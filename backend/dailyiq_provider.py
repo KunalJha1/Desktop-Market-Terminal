@@ -4,7 +4,7 @@ Supports: snapshot (quotes), price-bars (OHLCV), fundamentals, technicals,
 news, and earnings endpoints.  Responses are cached locally in SQLite to
 reduce API calls.
 
-Timeframe support for bars: 5m, 15m, 1d, 1w (no 1m or 5s).
+Timeframe support for bars: 1m, 5m, 15m, 1h, 4h, 1d, 1w.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ CACHE_TTL_SNAPSHOT = 60             # 1 min
 CACHE_TTL_FUNDAMENTALS = 86_400     # 24 hr
 
 # Supported bar timeframes
-SUPPORTED_TIMEFRAMES = {"5m", "15m", "1d", "1w"}
+SUPPORTED_TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h", "1d", "1w"}
 
 HTTP_TIMEOUT_QUOTE = 5   # seconds — fast path for quotes
 HTTP_TIMEOUT = 15        # seconds — bars and other endpoints
@@ -158,11 +158,14 @@ def fetch_bars_from_dailyiq(
     symbol: str,
     timeframe: str = "1d",
     limit: int = 365,
+    ttl_s: float | None = None,
 ) -> list[dict]:
     """Fetch OHLCV bars from DailyIQ.
 
     Returns list of {time, open, high, low, close, volume} dicts
     matching the TWS/Yahoo bar format, or empty list if unsupported/failed.
+    Pass ttl_s to override the default response cache TTL (e.g. pass a short
+    value for live-refresh loops that need fresher data than the 5-min default).
     """
     if timeframe not in SUPPORTED_TIMEFRAMES:
         return []
@@ -170,11 +173,11 @@ def fetch_bars_from_dailyiq(
     # DailyIQ requires limit in [50, 5000]
     limit = max(50, min(5000, limit))
 
-    ttl = CACHE_TTL_BARS_DAILY if timeframe in ("1d", "1w") else CACHE_TTL_BARS_INTRADAY
+    default_ttl = CACHE_TTL_BARS_DAILY if timeframe in ("1d", "1w") else CACHE_TTL_BARS_INTRADAY
     data = _dailyiq_get_json(
         "price-bars",
         params={"symbol": symbol, "timeframe": timeframe, "limit": limit, "order": "asc"},
-        ttl_s=ttl,
+        ttl_s=ttl_s if ttl_s is not None else default_ttl,
     )
     if not data or "items" not in data:
         return []
@@ -204,12 +207,13 @@ async def fetch_bars_from_dailyiq_async(
     symbol: str,
     timeframe: str = "1d",
     limit: int = 365,
+    ttl_s: float | None = None,
 ) -> list[dict]:
     """Async wrapper — runs the sync fetch in an executor."""
     import asyncio
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
-        None, fetch_bars_from_dailyiq, symbol, timeframe, limit,
+        None, fetch_bars_from_dailyiq, symbol, timeframe, limit, ttl_s,
     )
 
 

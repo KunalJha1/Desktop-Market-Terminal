@@ -62,6 +62,29 @@ def _market_now(now: datetime | None = None) -> datetime:
     return current.astimezone(MARKET_TZ)
 
 
+SESSION_REGULAR     = "REGULAR"
+SESSION_PRE_MARKET  = "PRE_MARKET"
+SESSION_AFTER_HOURS = "AFTER_HOURS"
+SESSION_CLOSED      = "CLOSED"
+
+PRE_MARKET_OPEN   = dt_time(hour=4,  minute=0)
+AFTER_HOURS_CLOSE = dt_time(hour=20, minute=0)
+
+
+def get_market_session(now: datetime | None = None) -> str:
+    current = _market_now(now)
+    if current.weekday() >= 5:
+        return SESSION_CLOSED
+    t = current.time()
+    if MARKET_OPEN <= t < MARKET_CLOSE:
+        return SESSION_REGULAR
+    if MARKET_CLOSE <= t < AFTER_HOURS_CLOSE:
+        return SESSION_AFTER_HOURS
+    if PRE_MARKET_OPEN <= t < MARKET_OPEN:
+        return SESSION_PRE_MARKET
+    return SESSION_CLOSED
+
+
 def is_regular_market_hours(now: datetime | None = None) -> bool:
     current = _market_now(now)
     if current.weekday() >= 5:
@@ -330,6 +353,33 @@ def _solve_implied_volatility(
             lo = mid
             f_lo = f_mid
     return (lo + hi) / 2.0
+
+
+def estimate_option_price(
+    *,
+    option_type: str,
+    spot: float,
+    strike: float,
+    iv: float,
+    rate: float,
+    dte_days: float,
+) -> dict:
+    """Estimate option price and greeks using Black-Scholes with updated spot and adjusted DTE."""
+    dte_years = max(dte_days / 365.0, 1e-6)
+    try:
+        price = _black_scholes_price(option_type, spot, strike, rate, dte_years, iv)
+        delta, gamma, theta, vega, rho = _black_scholes_greeks(option_type, spot, strike, rate, dte_years, iv)
+        return {
+            "estPrice": round(price, 4),
+            "estDelta": round(delta, 4),
+            "estGamma": round(gamma, 6),
+            "estTheta": round(theta, 4),
+            "estVega":  round(vega, 4),
+            "error": None,
+        }
+    except Exception as e:
+        return {"estPrice": None, "estDelta": None, "estGamma": None,
+                "estTheta": None, "estVega": None, "error": str(e)}
 
 
 def calculate_option_metrics(
