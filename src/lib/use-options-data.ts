@@ -64,6 +64,19 @@ export interface OptionsChainRow {
   put: OptionSide | null;
 }
 
+export interface OptionsEstimateRow {
+  strike: number;
+  call: { estPrice: number | null; error: string | null } | null;
+  put:  { estPrice: number | null; error: string | null } | null;
+}
+
+export interface OptionsEstimate {
+  session: string | null;
+  available: boolean;
+  extendedSpot: number | null;
+  rows: OptionsEstimateRow[];
+}
+
 export interface OptionsChain {
   symbol: string;
   hasData: boolean;
@@ -202,4 +215,37 @@ export function useOptionsChain(symbol: string, expiration: number | null): {
   }, [sidecarPort, symbol, expiration]);
 
   return { chain, loading, error };
+}
+
+export function useOptionsEstimate(
+  symbol: string,
+  expiration: number | null,
+  session: string | null,
+): OptionsEstimate | null {
+  const sidecarPort = useSidecarPort();
+  const [estimate, setEstimate] = useState<OptionsEstimate | null>(null);
+  const active = session === "PRE_MARKET" || session === "AFTER_HOURS" || session === "CLOSED";
+
+  useEffect(() => {
+    const normalized = normalizeSymbol(symbol);
+    if (!sidecarPort || !normalized || !expiration || !active) {
+      setEstimate(null);
+      return;
+    }
+    let cancelled = false;
+    async function fetchEstimate() {
+      try {
+        const url = `http://127.0.0.1:${sidecarPort}/options/estimate?symbol=${encodeURIComponent(normalized)}&expiration=${expiration}`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const payload = await res.json();
+        if (!cancelled) setEstimate(payload as OptionsEstimate);
+      } catch { /* silent */ }
+    }
+    fetchEstimate();
+    const id = setInterval(fetchEstimate, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [sidecarPort, symbol, expiration, active]);
+
+  return active ? estimate : null;
 }

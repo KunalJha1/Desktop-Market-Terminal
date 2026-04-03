@@ -5,6 +5,7 @@ import { LOGO_SYMBOLS } from "../lib/logo-symbols";
 import {
   useDefaultOptionsSymbol,
   useOptionsChain,
+  useOptionsEstimate,
   useOptionsSummary,
   type OptionSide,
 } from "../lib/use-options-data";
@@ -72,28 +73,28 @@ interface ColDef {
 }
 
 const COL_MAP: Record<ColId, ColDef> = {
-  rho:         { id: "rho",         label: "Rho",       width: 52,  defaultVisible: false, category: "greek"   },
-  vega:        { id: "vega",        label: "Vega",       width: 56,  defaultVisible: false, category: "greek"   },
-  gamma:       { id: "gamma",       label: "Gamma",      width: 58,  defaultVisible: false, category: "greek"   },
-  theta:       { id: "theta",       label: "Theta",      width: 60,  defaultVisible: true,  category: "greek"   },
-  delta:       { id: "delta",       label: "Delta",      width: 58,  defaultVisible: true,  category: "greek"   },
-  toBePct:     { id: "toBePct",     label: "TO BE%",     width: 66,  defaultVisible: false, category: "derived" },
-  be:          { id: "be",          label: "BE",         width: 64,  defaultVisible: false, category: "derived" },
-  iv:          { id: "iv",          label: "IV",         width: 58,  defaultVisible: true,  category: "price"   },
-  timeVal:     { id: "timeVal",     label: "Time Val",   width: 62,  defaultVisible: false, category: "derived" },
-  intrinsic:   { id: "intrinsic",   label: "Intr Val",   width: 62,  defaultVisible: false, category: "derived" },
-  annAskPct:   { id: "annAskPct",   label: "Ann Ask%",   width: 68,  defaultVisible: false, category: "derived" },
-  annBidPct:   { id: "annBidPct",   label: "Ann Bid%",   width: 68,  defaultVisible: false, category: "derived" },
-  askPct:      { id: "askPct",      label: "Ask%",       width: 56,  defaultVisible: false, category: "derived" },
-  bidPct:      { id: "bidPct",      label: "Bid%",       width: 56,  defaultVisible: false, category: "derived" },
-  ltp:         { id: "ltp",         label: "LTP",        width: 64,  defaultVisible: false, category: "price"   },
-  theoretical: { id: "theoretical", label: "Theor",      width: 64,  defaultVisible: false, category: "price"   },
-  spread:      { id: "spread",      label: "Spread",     width: 58,  defaultVisible: false, category: "price"   },
-  ask:         { id: "ask",         label: "Ask",        width: 66,  defaultVisible: true,  category: "price"   },
-  bid:         { id: "bid",         label: "Bid",        width: 66,  defaultVisible: true,  category: "price"   },
-  retDist:     { id: "retDist",     label: "Ret Dist",   width: 64,  defaultVisible: false, category: "derived" },
-  distance:    { id: "distance",    label: "Distance",   width: 64,  defaultVisible: false, category: "derived" },
-  volBar:      { id: "volBar",      label: "Volume",     width: 90,  defaultVisible: true,  category: "visual"  },
+  rho:         { id: "rho",         label: "Rho",       width: 68,  defaultVisible: true,  category: "greek"   },
+  vega:        { id: "vega",        label: "Vega",       width: 72,  defaultVisible: true,  category: "greek"   },
+  gamma:       { id: "gamma",       label: "Gamma",      width: 74,  defaultVisible: true,  category: "greek"   },
+  theta:       { id: "theta",       label: "Theta",      width: 76,  defaultVisible: true,  category: "greek"   },
+  delta:       { id: "delta",       label: "Delta",      width: 74,  defaultVisible: true,  category: "greek"   },
+  toBePct:     { id: "toBePct",     label: "TO BE%",     width: 80,  defaultVisible: false, category: "derived" },
+  be:          { id: "be",          label: "BE",         width: 78,  defaultVisible: false, category: "derived" },
+  iv:          { id: "iv",          label: "IV",         width: 72,  defaultVisible: true,  category: "price"   },
+  timeVal:     { id: "timeVal",     label: "Time Val",   width: 76,  defaultVisible: false, category: "derived" },
+  intrinsic:   { id: "intrinsic",   label: "Intr Val",   width: 76,  defaultVisible: false, category: "derived" },
+  annAskPct:   { id: "annAskPct",   label: "Ann Ask%",   width: 82,  defaultVisible: false, category: "derived" },
+  annBidPct:   { id: "annBidPct",   label: "Ann Bid%",   width: 82,  defaultVisible: false, category: "derived" },
+  askPct:      { id: "askPct",      label: "Ask%",       width: 70,  defaultVisible: false, category: "derived" },
+  bidPct:      { id: "bidPct",      label: "Bid%",       width: 70,  defaultVisible: false, category: "derived" },
+  ltp:         { id: "ltp",         label: "LTP",        width: 78,  defaultVisible: false, category: "price"   },
+  theoretical: { id: "theoretical", label: "Theor",      width: 78,  defaultVisible: false, category: "price"   },
+  spread:      { id: "spread",      label: "Spread",     width: 72,  defaultVisible: false, category: "price"   },
+  ask:         { id: "ask",         label: "Ask",        width: 80,  defaultVisible: true,  category: "price"   },
+  bid:         { id: "bid",         label: "Bid",        width: 80,  defaultVisible: true,  category: "price"   },
+  retDist:     { id: "retDist",     label: "Ret Dist",   width: 78,  defaultVisible: false, category: "derived" },
+  distance:    { id: "distance",    label: "Distance",   width: 78,  defaultVisible: false, category: "derived" },
+  volBar:      { id: "volBar",      label: "Volume",     width: 100, defaultVisible: true,  category: "visual"  },
 };
 
 // Calls: outermost (greeks) on the left → innermost (vol bar) on the right, reading toward center
@@ -207,14 +208,12 @@ function SideMetrics({
   side: OptionSide | null; isCall: boolean; itm: boolean;
   cols: ColDef[]; strike: number; underlyingPrice: number | null; maxVolume: number;
 }) {
-  const itmBorder = itm
-    ? isCall ? "border-l-2 border-l-[#00C853]/45" : "border-r-2 border-r-[#FF3D71]/45"
-    : "";
+  const itmBg = "";
   const ctx: CellCtx = { underlyingPrice, isCall, strike };
   const w = totalWidth(cols);
   return (
     <div
-      className={`grid h-full items-center font-mono text-[11px] tabular-nums ${itmBorder}`}
+      className={`grid h-full items-center font-mono text-[13px] tabular-nums ${itmBg}`}
       style={{ gridTemplateColumns: gridTemplate(cols), width: w, minWidth: w }}
     >
       {cols.map(col => {
@@ -230,7 +229,7 @@ function SideMetrics({
                 className={`h-[5px] rounded-full ${isCall ? "bg-[#00C853]/75" : "bg-[#FF3D71]/75"}`}
                 style={{ width: `${pct}%`, minWidth: pct > 0 ? 2 : 0 }}
               />
-              <span className={`font-mono text-[9px] tabular-nums ${volLabel === "—" ? "text-white/20" : isCall ? "text-[#00C853]/85" : "text-[#FF3D71]/85"}`}>
+              <span className={`font-mono text-[11px] tabular-nums ${volLabel === "—" ? "text-white/20" : isCall ? "text-[#00C853]/85" : "text-[#FF3D71]/85"}`}>
                 {volLabel}
               </span>
             </div>
@@ -256,7 +255,7 @@ function ChainHeaderLabels({ isCall, cols }: { isCall: boolean; cols: ColDef[] }
   const w = totalWidth(cols);
   return (
     <div
-      className={`grid font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-white ${isCall ? "text-right" : "text-left"}`}
+      className={`grid font-mono text-[12px] font-medium uppercase tracking-[0.1em] text-white ${isCall ? "text-right" : "text-left"}`}
       style={{ gridTemplateColumns: gridTemplate(cols), width: w, minWidth: w }}
     >
       {cols.map(col => (
@@ -337,16 +336,18 @@ function ChainSkeletonRows() {
   );
 }
 
-function SymbolLogo({ symbol }: { symbol: string }) {
+function SymbolLogo({ symbol, size = 40 }: { symbol: string; size?: number }) {
   const upper = symbol?.toUpperCase() ?? "";
   const [failed, setFailed] = useState(false);
+  const sz = `${size}px`;
 
   if (!failed && upper && LOGO_SYMBOLS.has(upper)) {
     return (
       <img
         src={`/dailyiq-brand-resources/logosvg/${upper}.svg`}
         alt={upper}
-        className="h-10 w-10 shrink-0 rounded-lg object-contain"
+        className="shrink-0 rounded-md object-contain"
+        style={{ width: sz, height: sz }}
         onError={() => setFailed(true)}
       />
     );
@@ -354,8 +355,8 @@ function SymbolLogo({ symbol }: { symbol: string }) {
 
   return (
     <div
-      className="flex h-10 w-10 shrink-0 items-center justify-center border border-[#1A56DB]/35 bg-[#1A56DB]/15 font-mono text-[14px] font-bold text-[#5b9bff]"
-      style={{ borderRadius: 6 }}
+      className="flex shrink-0 items-center justify-center border border-[#1A56DB]/35 bg-[#1A56DB]/15 font-mono font-bold text-[#5b9bff]"
+      style={{ width: sz, height: sz, borderRadius: 4, fontSize: size * 0.35 }}
     >
       {upper[0] ?? "?"}
     </div>
@@ -369,6 +370,12 @@ function OptionsPage() {
   const { summary, loading: summaryLoading, error: summaryError } = useOptionsSummary(selectedSymbol);
   const [selectedExpiration, setSelectedExpiration] = useState<number | null>(null);
   const { chain, loading: chainLoading, error: chainError } = useOptionsChain(selectedSymbol, selectedExpiration);
+  const estimate = useOptionsEstimate(selectedSymbol, selectedExpiration, summary?.session ?? null);
+  const estMap = useMemo(() => {
+    const m = new Map<number, { callEst: number | null; putEst: number | null }>();
+    estimate?.rows.forEach(r => m.set(r.strike, { callEst: r.call?.estPrice ?? null, putEst: r.put?.estPrice ?? null }));
+    return m;
+  }, [estimate]);
 
   useEffect(() => {
     if (!selectedSymbol) {
@@ -376,9 +383,21 @@ function OptionsPage() {
     }
   }, [defaultSymbol, selectedSymbol]);
 
+  const activeMonths = useMemo(() => {
+    const now = Date.now();
+    return (summary?.months ?? []).map((month) => ({
+      ...month,
+      expirations: month.expirations.filter((e) => {
+        // expiration is midnight UTC on expiry day — keep it until that day has fully passed
+        const expMs = e.expiration > 1e12 ? e.expiration : e.expiration * 1000;
+        return expMs + 24 * 60 * 60 * 1000 > now;
+      }),
+    })).filter((month) => month.expirations.length > 0);
+  }, [summary]);
+
   const flatExpirations = useMemo(
-    () => summary?.months.flatMap((month) => month.expirations) ?? [],
-    [summary],
+    () => activeMonths.flatMap((month) => month.expirations),
+    [activeMonths],
   );
 
   useEffect(() => {
@@ -392,7 +411,16 @@ function OptionsPage() {
   }, [flatExpirations, selectedExpiration]);
 
   const stale = summary?.capturedAt ? Date.now() - summary.capturedAt > 60 * 60 * 1000 : false;
-  const [strikesVisible, setStrikesVisible] = useState<number | "all">(20);
+  const [strikesVisible, setStrikesVisible] = useState<number | "all">(() => {
+    const saved = localStorage.getItem("options:strikesVisible");
+    if (saved === "all") return "all";
+    const n = Number(saved);
+    return n > 0 ? n : 20;
+  });
+
+  useEffect(() => {
+    localStorage.setItem("options:strikesVisible", String(strikesVisible));
+  }, [strikesVisible]);
   const [visibleCols, setVisibleCols] = useState<Set<ColId>>(DEFAULT_VISIBLE_COLS);
   const [showColPicker, setShowColPicker] = useState(false);
   const colPickerRef = useRef<HTMLDivElement>(null);
@@ -577,9 +605,9 @@ function OptionsPage() {
               />
             </div>
           </div>
-          <div className="overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-white/15 [&::-webkit-scrollbar-track]:bg-transparent">
+          <div className="overflow-x-auto pb-1 [scrollbar-color:#2a3140_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:rounded-sm [&::-webkit-scrollbar-thumb]:bg-white/[0.14] [&::-webkit-scrollbar-track]:bg-transparent">
             <div className="flex min-w-max gap-6 pb-1">
-              {(summary?.months ?? []).map((month) => (
+              {activeMonths.map((month) => (
                 <div
                   key={month.monthKey}
                   className="min-w-0 shrink-0"
@@ -650,11 +678,12 @@ function OptionsPage() {
             <div className="sticky top-0 z-20 shrink-0" style={{ backgroundColor: BG_HOVER }}>
               {/* Calls / Puts banner — flex-1 so each side spans full available width */}
               <div className="flex w-full border-b border-white/[0.06]">
+                {estimate && <div className="shrink-0 border-r border-white/[0.06]" style={{ width: 88 }} />}
                 <div
                   className="flex flex-1 items-center justify-end py-2.5 px-4"
-                  style={{ minWidth: totalWidth(callCols), borderLeft: "2px solid rgba(0,200,83,0.25)" }}
+                  style={{ minWidth: totalWidth(callCols) }}
                 >
-                  <span className="font-mono text-[13px] font-semibold tracking-[0.06em] text-[#00C853]">Calls</span>
+                  <span className="font-mono text-[15px] font-semibold tracking-[0.06em] text-[#00C853]">Calls</span>
                 </div>
                 <div
                   className="relative flex shrink-0 items-center justify-center gap-3 border-x border-white/[0.06] py-2.5"
@@ -685,25 +714,38 @@ function OptionsPage() {
                 </div>
                 <div
                   className="flex flex-1 items-center justify-start py-2.5 px-4"
-                  style={{ minWidth: totalWidth(putCols), borderRight: "2px solid rgba(255,61,113,0.25)" }}
+                  style={{ minWidth: totalWidth(putCols) }}
                 >
-                  <span className="font-mono text-[13px] font-semibold tracking-[0.06em] text-[#FF3D71]">Puts</span>
+                  <span className="font-mono text-[15px] font-semibold tracking-[0.06em] text-[#FF3D71]">Puts</span>
                 </div>
+                {estimate && <div className="shrink-0 border-l border-white/[0.06]" style={{ width: 88 }} />}
               </div>
               {/* Column labels */}
               <div className="flex border-b border-white/[0.06]">
-                <ChainHeaderLabels isCall={true} cols={callCols} />
-                {/* Center header: Vol C | Strike | IV | Vol P */}
+                {estimate && (
+                  <div className="flex shrink-0 items-center justify-center border-r border-white/[0.06] font-mono text-[11px] font-medium uppercase tracking-[0.1em] text-[#F59E0B]/80" style={{ width: 88 }}>
+                    Est. Price
+                  </div>
+                )}
+                <div className="flex flex-1 justify-end" style={{ minWidth: totalWidth(callCols) }}>
+                  <ChainHeaderLabels isCall={true} cols={callCols} />
+                </div>
+                {/* Center header: Strike | IV */}
                 <div
-                  className="flex items-center border-x border-white/[0.06] font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-white"
+                  className="flex items-center border-x border-white/[0.06] font-mono text-[12px] font-medium uppercase tracking-[0.1em] text-white"
                   style={{ width: CENTER_W, minWidth: CENTER_W }}
                 >
-                  <div className="flex-1 pr-1 text-right text-white/55">Vol C</div>
-                  <div style={{ width: 80 }} className="text-center">Strike</div>
-                  <div style={{ width: 56 }} className="text-center">IV</div>
-                  <div className="flex-1 pl-1 text-left text-white/55">Vol P</div>
+                  <div className="pr-2 text-right" style={{ width: 130 }}>Strike</div>
+                  <div className="border-l border-white/[0.08] pl-2 text-left" style={{ width: 130 }}>IV</div>
                 </div>
-                <ChainHeaderLabels isCall={false} cols={putCols} />
+                <div className="flex flex-1 justify-start" style={{ minWidth: totalWidth(putCols) }}>
+                  <ChainHeaderLabels isCall={false} cols={putCols} />
+                </div>
+                {estimate && (
+                  <div className="flex shrink-0 items-center justify-center border-l border-white/[0.06] font-mono text-[11px] font-medium uppercase tracking-[0.1em] text-[#F59E0B]/80" style={{ width: 88 }}>
+                    Est. Price
+                  </div>
+                )}
               </div>
             </div>
 
@@ -732,59 +774,75 @@ function OptionsPage() {
                     return (
                       <div key={row.strike}>
                         {atm && (
-                          <div
-                            className="flex items-center py-1.5"
-                            style={{ width: fullTableWidth, minWidth: fullTableWidth }}
-                          >
+                          <div className="flex w-full items-center py-2">
                             <div className="h-px flex-1 bg-white/[0.12]" />
-                            <span className="mx-3 whitespace-nowrap font-mono text-[10px] tabular-nums text-white/55">
-                              {selectedSymbol}
+                            <div className="mx-4 flex items-center gap-2 whitespace-nowrap">
+                              <SymbolLogo symbol={selectedSymbol} size={20} />
+                              <span className="font-mono text-[13px] font-semibold text-[#F59E0B]/80">${selectedSymbol}</span>
                               {underlyingPrice != null && (
-                                <> &nbsp;·&nbsp; <span className="text-[#00C853]/90">${formatPrice(underlyingPrice)}</span></>
+                                <span className="font-mono text-[13px] font-semibold tabular-nums text-[#00C853]">${formatPrice(underlyingPrice)}</span>
                               )}
-                            </span>
+                            </div>
                             <div className="h-px flex-1 bg-white/[0.12]" />
                           </div>
                         )}
                         <div
-                          className={`flex items-stretch border-b transition-colors duration-75 ease-out ${
+                          className={`flex min-h-[40px] items-stretch border-b transition-colors duration-75 ease-out ${
                             atm ? "border-[#1A56DB]/20 bg-[#1A56DB]/[0.05]" : "border-white/[0.05] hover:bg-white/[0.03]"
                           }`}
                         >
-                          <SideMetrics
-                            side={row.call} isCall={true} itm={callItm}
-                            cols={callCols} strike={row.strike}
-                            underlyingPrice={underlyingPrice} maxVolume={maxVolume}
-                          />
-                          {/* Center: Call Vol Bar | Strike | IV | Put Vol Bar */}
+                          {estimate && (() => {
+                            const est = estMap.get(row.strike);
+                            const callEst = est?.callEst ?? null;
+                            return (
+                              <div className="flex shrink-0 items-center justify-center border-r border-[#F59E0B]/20 bg-[#F59E0B]/[0.14]" style={{ width: 88 }}>
+                                <span className={`font-mono text-[13px] tabular-nums ${callEst != null ? "font-semibold text-[#F59E0B]" : "text-white/20"}`}>
+                                  {callEst != null ? `$${formatPrice(callEst)}` : "—"}
+                                </span>
+                              </div>
+                            );
+                          })()}
+                          <div className={`flex flex-1 justify-end ${callItm ? "bg-[#00C853]/[0.07]" : ""}`} style={{ minWidth: totalWidth(callCols) }}>
+                            <SideMetrics
+                              side={row.call} isCall={true} itm={callItm}
+                              cols={callCols} strike={row.strike}
+                              underlyingPrice={underlyingPrice} maxVolume={maxVolume}
+                            />
+                          </div>
+                          {/* Center: Strike IV */}
                           <div
-                            className={`flex items-center border-x py-2 ${atm ? "border-x-[#1A56DB]/25 bg-[#1A56DB]/[0.04]" : "border-x-white/[0.05]"}`}
+                            className={`flex flex-col items-center justify-center border-x py-1.5 ${atm ? "border-x-[#1A56DB]/25 bg-[#1A56DB]/[0.04]" : "border-x-white/[0.05]"}`}
                             style={{ width: CENTER_W, minWidth: CENTER_W }}
                           >
-                            {/* Call vol bar */}
-                            <div className="flex flex-1 items-center justify-end pr-2">
-                              <div className="h-[5px] rounded-full bg-[#00C853]/75" style={{ width: `${callVolPct}%` }} />
-                            </div>
-                            {/* Strike */}
-                            <div className="flex flex-col items-center" style={{ width: 80 }}>
-                              <span className={`font-mono text-[13px] font-semibold tabular-nums ${atm ? "text-white" : "text-white/88"}`}>
-                                {formatPrice(row.strike)}
-                              </span>
-                            </div>
-                            {/* IV */}
-                            <div className="text-center font-mono text-[11px] tabular-nums text-white/62" style={{ width: 56 }}>
-                              {formatIv(midIv)}
-                            </div>
-                            {/* Put vol bar */}
-                            <div className="flex flex-1 items-center justify-start pl-2">
-                              <div className="h-[5px] rounded-full bg-[#FF3D71]/75" style={{ width: `${putVolPct}%` }} />
+                            <div className="flex w-full items-center">
+                              <div className="pr-2 text-right" style={{ width: 130 }}>
+                                <span className={`font-mono text-[15px] font-semibold tabular-nums ${atm ? "text-white" : "text-white/88"}`}>
+                                  {formatPrice(row.strike)}
+                                </span>
+                              </div>
+                              <div className="border-l border-white/[0.08] pl-2 font-mono text-[13px] tabular-nums text-white/50" style={{ width: 130 }}>
+                                {formatIv(midIv)}
+                              </div>
                             </div>
                           </div>
-                          <SideMetrics
-                            side={row.put} isCall={false} itm={putItm}
-                            cols={putCols} strike={row.strike}
-                            underlyingPrice={underlyingPrice} maxVolume={maxVolume}
-                          />
+                          <div className={`flex flex-1 justify-start ${putItm ? "bg-[#FF3D71]/[0.07]" : ""}`} style={{ minWidth: totalWidth(putCols) }}>
+                            <SideMetrics
+                              side={row.put} isCall={false} itm={putItm}
+                              cols={putCols} strike={row.strike}
+                              underlyingPrice={underlyingPrice} maxVolume={maxVolume}
+                            />
+                          </div>
+                          {estimate && (() => {
+                            const est = estMap.get(row.strike);
+                            const putEst = est?.putEst ?? null;
+                            return (
+                              <div className="flex shrink-0 items-center justify-center border-l border-[#F59E0B]/20 bg-[#F59E0B]/[0.14]" style={{ width: 88 }}>
+                                <span className={`font-mono text-[13px] tabular-nums ${putEst != null ? "font-semibold text-[#F59E0B]" : "text-white/20"}`}>
+                                  {putEst != null ? `$${formatPrice(putEst)}` : "—"}
+                                </span>
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                     );

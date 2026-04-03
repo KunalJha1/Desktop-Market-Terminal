@@ -354,7 +354,7 @@ export default function Dashboard() {
           <div className="flex items-center gap-1.5">
             <span
               className={`inline-block h-1.5 w-1.5 rounded-full ${
-                isIbConnected
+                status === "connected"
                   ? "bg-green"
                   : status === "probing" || isIbReconnecting
                     ? "bg-amber animate-pulse"
@@ -362,13 +362,13 @@ export default function Dashboard() {
               }`}
             />
             <span className={
-              isIbConnected
+              status === "connected"
                 ? "text-green"
                 : isIbReconnecting || status === "probing"
                   ? "text-amber"
                   : "text-red"
             }>
-              {isIbConnected
+              {status === "connected"
                 ? footerConnectionLabel
                 : isIbReconnecting
                   ? "Reconnecting..."

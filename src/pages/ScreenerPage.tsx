@@ -690,29 +690,6 @@ function ScreenerPage() {
             </span>
           </div>
 
-          {/* Quick-select */}
-          <div className="flex items-center gap-0.5 rounded-btn border border-white/[0.07] bg-white/[0.03] p-0.5">
-            {(
-              [
-                ["mag7", "MAG 7"],
-                ["watchlist", "Watchlist"],
-                ["custom", "Custom"],
-              ] as const
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setFilter(key)}
-                className={`rounded-[3px] px-3 py-1 font-mono text-[12px] font-medium tracking-wide transition-colors ${
-                  filter === key
-                    ? "bg-blue/25 text-white"
-                    : "text-white/45 hover:bg-white/[0.05] hover:text-white/75"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
           {/* Search */}
           <div className="flex items-center gap-1.5">
             <button

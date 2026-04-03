@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, memo } from "react";
 import { createPortal } from "react-dom";
 import { Columns3, GripVertical, Search, X } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
+import SymbolSearchModal from "./SymbolSearchModal";
 import CircularGauge from "./CircularGauge";
 import { useWatchlist } from "../lib/watchlist";
 import { LOGO_SYMBOLS } from "../lib/logo-symbols";
@@ -17,6 +18,11 @@ import {
 } from "../lib/ta-score-timeframes";
 
 const ROW_HEIGHT = 46;
+const MAG7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"];
+const MINI_SCREENER_FILTER_KEY = "dailyiq.miniScreener.filter";
+const MINI_SCREENER_CUSTOM_KEY = "dailyiq.miniScreener.customSymbols";
+
+type MiniFilterType = "all" | "mag7" | "watchlist" | "custom";
 
 type BuiltInColumnId =
   | "symbol"
@@ -63,7 +69,7 @@ interface BuiltInColumnDef {
 }
 
 const BUILT_IN_COLUMNS: BuiltInColumnDef[] = [
-  { id: "symbol", label: "Symbol", width: 240, minWidth: 180, sortKey: "symbol", defaultVisible: true },
+  { id: "symbol", label: "Symbol", width: 160, minWidth: 120, sortKey: "symbol", defaultVisible: true },
   { id: "priceChange", label: "Price / Chg", width: 108, minWidth: 88, sortKey: "change", defaultVisible: true },
   { id: "mcap", label: "Mkt Cap", width: 96, minWidth: 72, sortKey: "mcap", defaultVisible: true },
   { id: "sentiment", label: "Sentiment", width: 88, minWidth: 68, sortKey: "sentiment", defaultVisible: true },
@@ -192,6 +198,16 @@ function MiniScreenerCard({
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [colPickerOpen, setColPickerOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [symbolModalOpen, setSymbolModalOpen] = useState(false);
+  const [filterType, setFilterType] = useState<MiniFilterType>(() => {
+    const stored = localStorage.getItem(MINI_SCREENER_FILTER_KEY);
+    return (["all", "mag7", "watchlist", "custom"].includes(stored ?? "") ? stored : "all") as MiniFilterType;
+  });
+  const [customSymbols, setCustomSymbols] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem(MINI_SCREENER_CUSTOM_KEY) ?? "[]") as string[]; }
+    catch { return []; }
+  });
+  const [customDraft, setCustomDraft] = useState("");
   const [colDragState, setColDragState] = useState<ColumnDragState | null>(null);
   const [colInsertBeforeId, setColInsertBeforeId] = useState<ColumnId | null>(null);
   const headerCellRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -248,7 +264,19 @@ function MiniScreenerCard({
   };
 
   const visibleTimeframes = useMemo(() => getVisibleTimeframes(visibleColumns), [visibleColumns]);
-  const technicals = useTechScores(watchlistSymbols, TA_SCORE_TIMEFRAMES);
+
+  useEffect(() => {
+    localStorage.setItem(MINI_SCREENER_FILTER_KEY, filterType);
+    if (filterType === "custom") setCustomDraft(customSymbols.join(", "));
+  }, [filterType, customSymbols]);
+
+  const scoreSymbols = useMemo(() => {
+    if (filterType === "mag7") return MAG7;
+    if (filterType === "watchlist") return watchlistSymbols;
+    if (filterType === "custom") return customSymbols;
+    return tiles.map((t) => t.symbol);
+  }, [filterType, watchlistSymbols, customSymbols, tiles]);
+  const technicals = useTechScores(scoreSymbols, TA_SCORE_TIMEFRAMES);
 
   useEffect(() => {
     const sortStillVisible =
@@ -398,8 +426,20 @@ function MiniScreenerCard({
       };
     });
 
+    let filtered = enriched;
+    if (filterType === "mag7") {
+      const set = new Set(MAG7);
+      filtered = enriched.filter((r) => set.has(r.symbol));
+    } else if (filterType === "watchlist") {
+      const set = new Set(watchlistSymbols);
+      filtered = enriched.filter((r) => set.has(r.symbol));
+    } else if (filterType === "custom" && customSymbols.length > 0) {
+      const set = new Set(customSymbols);
+      filtered = enriched.filter((r) => set.has(r.symbol));
+    }
+
     const dir = sortDir === "asc" ? 1 : -1;
-    enriched.sort((a, b) => {
+    filtered.sort((a, b) => {
       let va: number;
       let vb: number;
       switch (sortKey) {
@@ -440,10 +480,10 @@ function MiniScreenerCard({
 
     if (search.trim()) {
       const q = search.trim().toUpperCase();
-      return enriched.filter((r) => r.symbol.includes(q) || r.name?.toUpperCase().includes(q));
+      return filtered.filter((r) => r.symbol.includes(q) || r.name?.toUpperCase().includes(q));
     }
-    return enriched;
-  }, [tiles, technicals, visibleTimeframes, sortDir, sortKey, search]);
+    return filtered;
+  }, [tiles, technicals, visibleTimeframes, sortDir, sortKey, search, filterType, watchlistSymbols, customSymbols]);
 
   const gridTemplateColumns = useMemo(
     () =>
@@ -467,19 +507,47 @@ function MiniScreenerCard({
     <div className="flex h-full flex-col overflow-hidden border border-white/[0.06] bg-panel">
       <div className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.10] bg-base px-2">
         <div className="flex items-center gap-2">
-          <span className="shrink-0 text-[11px] font-medium text-white/80">Screener</span>
-          <div className="flex items-center gap-1 rounded-sm border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5">
-            <Search className="h-2.5 w-2.5 shrink-0 text-white/30" strokeWidth={1.5} />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search…"
-              className="w-20 bg-transparent font-mono text-[10px] text-white/80 placeholder-white/25 outline-none"
-            />
-            {search && (
-              <span className="font-mono text-[10px] text-white/35">{rows.length}</span>
-            )}
+          <button
+            type="button"
+            onClick={() => setSymbolModalOpen(true)}
+            className="flex items-center justify-center rounded-sm p-1 text-white transition-colors duration-75 hover:bg-white/[0.06]"
+            aria-label="Search symbols"
+          >
+            <Search className="h-3 w-3" strokeWidth={1.6} />
+          </button>
+          <div className="flex items-center gap-1.5">
+            <span className="shrink-0 text-[11px] font-medium text-white/80">Screener</span>
+            {visibleColumns.filter((c) => c.startsWith("ta:")).map((c) => {
+              const tf = c.slice(3) as TaScoreTimeframe;
+              return (
+                <span key={c} className="rounded-[3px] bg-white/[0.07] px-1 py-0.5 font-mono text-[9px] font-medium text-white/55">
+                  {TA_SCORE_TF_LABELS[tf]}
+                </span>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-0.5 rounded-sm border border-white/[0.07] bg-white/[0.03] p-0.5">
+            {(
+              [
+                ["all", "All"],
+                ["mag7", "MAG 7"],
+                ["watchlist", "WL"],
+                ["custom", "Custom"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setFilterType(key)}
+                className={`rounded-[2px] px-1.5 py-0.5 font-mono text-[9px] font-medium tracking-wide transition-colors ${
+                  filterType === key
+                    ? "bg-blue/25 text-white"
+                    : "text-white/40 hover:bg-white/[0.05] hover:text-white/70"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -592,6 +660,37 @@ function MiniScreenerCard({
         </div>
       </div>
 
+      {filterType === "custom" && (
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-white/[0.06] bg-[#0f141b] px-2 py-1.5">
+          <input
+            type="text"
+            spellCheck={false}
+            className="flex-1 rounded-sm border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-white/80 placeholder:text-white/20 focus:border-blue/40 focus:outline-none"
+            placeholder="AAPL, MSFT, NVDA…"
+            value={customDraft}
+            onChange={(e) => setCustomDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                const syms = customDraft.split(/[\s,;]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
+                setCustomSymbols(syms);
+                localStorage.setItem(MINI_SCREENER_CUSTOM_KEY, JSON.stringify(syms));
+              }
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              const syms = customDraft.split(/[\s,;]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
+              setCustomSymbols(syms);
+              localStorage.setItem(MINI_SCREENER_CUSTOM_KEY, JSON.stringify(syms));
+            }}
+            className="rounded-sm bg-blue/20 px-2 py-0.5 font-mono text-[9px] text-blue hover:bg-blue/30"
+          >
+            Apply
+          </button>
+        </div>
+      )}
+
       <div ref={containerRef} className="min-h-0 flex-1 overflow-auto scrollbar-none">
         <div style={{ width: tableMinWidth, minWidth: "100%" }} className="min-h-full">
           <div
@@ -689,7 +788,7 @@ function MiniScreenerCard({
                 <div
                   key={row.symbol}
                   className="grid cursor-pointer items-center border-b border-white/[0.03] transition-colors duration-75 hover:bg-white/[0.06]"
-                  style={{ height: ROW_HEIGHT, gridTemplateColumns }}
+                  style={{ minHeight: ROW_HEIGHT, gridTemplateColumns }}
                   onClick={() => {
                     if (linkChannel) linkBus.publish(linkChannel, row.symbol);
                     onSymbolSelect?.(row.symbol);
@@ -698,13 +797,15 @@ function MiniScreenerCard({
                   {visibleColumns.map((col) => {
                     if (col === "symbol") {
                       return (
-                        <div key={col} className="flex min-w-0 items-center gap-2 overflow-hidden px-1.5">
-                          <SymbolLogo symbol={row.symbol} />
+                        <div key={col} className="flex min-w-0 items-center gap-2 overflow-hidden px-1.5 py-2.5">
+                          <div className="shrink-0">
+                            <SymbolLogo symbol={row.symbol} />
+                          </div>
                           <div className="min-w-0">
                             <p className="font-mono text-[13px] font-semibold leading-tight text-white/90">
                               {row.symbol}
                             </p>
-                            <p className="mt-0.5 text-[11px] leading-tight text-white/60">
+                            <p className="mt-0.5 text-[11px] leading-snug text-white/60 break-words">
                               {row.name}
                             </p>
                           </div>
@@ -796,6 +897,16 @@ function MiniScreenerCard({
           )}
         </div>
       </div>
+
+      <SymbolSearchModal
+        isOpen={symbolModalOpen}
+        onClose={() => setSymbolModalOpen(false)}
+        onSelectSymbol={(sym) => {
+          if (linkChannel) linkBus.publish(linkChannel, sym);
+        }}
+        title="Symbol Search"
+        subtitle="Select a symbol to focus"
+      />
     </div>
   );
 }

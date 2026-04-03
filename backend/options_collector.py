@@ -329,7 +329,15 @@ def _solve_implied_volatility(
     upper = 5.0
     brentq = _get_brentq()
     if brentq is not None:
-        return float(brentq(objective, lower, upper, maxiter=200))
+        try:
+            return float(brentq(objective, lower, upper, maxiter=200))
+        except Exception:
+            # Deep ITM fallback: return lower bound if it gives the closer price
+            f_lo = objective(lower)
+            f_hi = objective(upper)
+            if abs(f_lo) < abs(f_hi):
+                return lower
+            raise
 
     lo = lower
     hi = upper
@@ -340,6 +348,12 @@ def _solve_implied_volatility(
     if f_hi == 0:
         return hi
     if f_lo * f_hi > 0:
+        # Deep ITM case: market price ≈ intrinsic value, so extrinsic ≈ 0.
+        # BS price at near-zero vol already ≈ intrinsic, so both f_lo and f_hi
+        # are positive and bracketing fails.  Return a very small IV so that
+        # Black-Scholes greeks (especially delta near ±1) can still be computed.
+        if abs(f_lo) < abs(f_hi):
+            return lo  # lower bound (1e-6) gives the closest price match
         raise ValueError("Unable to bracket implied volatility")
     for _ in range(200):
         mid = (lo + hi) / 2.0

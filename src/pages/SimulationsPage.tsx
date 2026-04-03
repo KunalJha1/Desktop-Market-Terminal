@@ -31,9 +31,8 @@ function buildFetchParams(timeframe: string, days: number): { barSize: string; d
   if (timeframe === "1D") return { barSize: "1+day", duration: `${days} D` };
   if (timeframe === "4H") return { barSize: "4+hours", duration: `${days} D` };
   if (timeframe === "1H") return { barSize: "1+hour", duration: `${days} D` };
-  // Intraday: fetch extra buffer for random start offsets, but cap growth for large day counts
-  const buffer = days <= 10 ? days * 3 : days + 30;
-  return { barSize: "1+min", duration: `${buffer} D` };
+  // Intraday: no extra buffer needed — we'll split bars into non-overlapping segments
+  return { barSize: "1+min", duration: `${days} D` };
 }
 
 function pickUniqueRandom(arr: typeof SEARCHABLE_SYMBOLS, count: number): string[] {
@@ -181,11 +180,19 @@ function SimulationsPage() {
     setSimStates([]);
 
     try {
-      const { barSize, duration } = buildFetchParams(timeframe, sessions);
+      const isMulti = symbolPool.length > 0;
+
+      // For single-symbol mode: fetch sessions × simCount days so we have enough data to
+      // give each sim a completely non-overlapping time window. Cap at 2000 to be reasonable.
+      // For multi-symbol mode: each symbol is typically used once, so sessions days is enough.
+      const totalDays = isMulti
+        ? sessions
+        : Math.min(sessions * simCount, 2000);
+
+      const { barSize, duration } = buildFetchParams(timeframe, totalDays);
       const baseUrl = `http://127.0.0.1:${port}/historical`;
 
-      // Determine symbol list: multi-symbol pool or single symbol repeated
-      const isMulti = symbolPool.length > 0;
+      // Determine symbol per sim
       const symList: string[] = isMulti
         ? Array.from({ length: simCount }, (_, i) => symbolPool[i % symbolPool.length])
         : Array(simCount).fill(symbol);
@@ -204,44 +211,43 @@ function SimulationsPage() {
         })));
       }));
 
-      const engines: SimulationEngine[] = [];
-      const resolvedSymbols: string[] = [];
-
+      // Group sim indices by symbol so we can split each symbol's data into
+      // non-overlapping segments — guaranteeing each sim sees a distinct time window.
+      const simIndicesBySym = new Map<string, number[]>();
       for (let i = 0; i < simCount; i++) {
         const sym = symList[i];
-        const raw = barsBySymbol.get(sym) ?? [];
+        if (!simIndicesBySym.has(sym)) simIndicesBySym.set(sym, []);
+        simIndicesBySym.get(sym)!.push(i);
+      }
 
-        if (raw.length < 10) {
-          // Skip symbols with insufficient data rather than aborting everything
-          engines.push(new SimulationEngine({
+      const engines: SimulationEngine[] = Array(simCount);
+      const resolvedSymbols: string[] = Array(simCount);
+
+      for (const [sym, indices] of simIndicesBySym) {
+        const raw = barsBySymbol.get(sym) ?? [];
+        const n = indices.length;
+        // Divide this symbol's bars into n equal non-overlapping segments
+        const segLen = n > 0 ? Math.floor(raw.length / n) : raw.length;
+
+        indices.forEach((simIdx, j) => {
+          const segStart = j * segLen;
+          // Last segment gets any remainder so we don't waste bars
+          const segEnd = j === n - 1 ? raw.length : segStart + segLen;
+          const segBars = raw.slice(segStart, segEnd);
+
+          engines[simIdx] = new SimulationEngine({
             symbol: sym,
             strategy: activeScript ? undefined : (activeStrategy ?? undefined),
             timeframe,
-            rawBars: raw.length >= 10 ? raw : [{ time: 0, open: 1, high: 1, low: 1, close: 1, volume: 0 }],
+            rawBars: segBars.length >= 2 ? segBars : [{ time: 0, open: 1, high: 1, low: 1, close: 1, volume: 0 }],
             startBarIndex: 0,
             sessionFilter: hours,
             rollDays,
             positionSize,
             scriptSource: activeScript || undefined,
-          }));
-          resolvedSymbols.push(sym);
-          continue;
-        }
-
-        const maxStart = Math.max(0, raw.length - Math.floor(raw.length * 0.5));
-        const startBarIndex = Math.floor(Math.random() * maxStart);
-        engines.push(new SimulationEngine({
-          symbol: sym,
-          strategy: activeScript ? undefined : (activeStrategy ?? undefined),
-          timeframe,
-          rawBars: raw,
-          startBarIndex,
-          sessionFilter: hours,
-          rollDays,
-          positionSize,
-          scriptSource: activeScript || undefined,
-        }));
-        resolvedSymbols.push(sym);
+          });
+          resolvedSymbols[simIdx] = sym;
+        });
       }
 
       enginesRef.current = engines;
