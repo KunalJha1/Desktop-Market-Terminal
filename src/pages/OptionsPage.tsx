@@ -203,7 +203,7 @@ function expirationMonthMinWidthPx(expirations: { label: string }[]): number {
 const CENTER_W = 260;
 
 function SideMetrics({
-  side, isCall, itm, cols, strike, underlyingPrice, maxVolume,
+  side, isCall, itm: _itm, cols, strike, underlyingPrice, maxVolume,
 }: {
   side: OptionSide | null; isCall: boolean; itm: boolean;
   cols: ColDef[]; strike: number; underlyingPrice: number | null; maxVolume: number;
@@ -452,7 +452,7 @@ function OptionsPage() {
 
   const callCols = useMemo(() => getOrderedCols(CALL_COL_IDS, visibleCols), [visibleCols]);
   const putCols  = useMemo(() => getOrderedCols(PUT_COL_IDS, visibleCols), [visibleCols]);
-  const fullTableWidth = useMemo(
+  const _fullTableWidth = useMemo(
     () => totalWidth(callCols) + CENTER_W + totalWidth(putCols),
     [callCols, putCols],
   );
@@ -768,8 +768,8 @@ function OptionsPage() {
                     const atm = isAtmRow(row.strike);
                     const callItm = row.call?.inTheMoney === true;
                     const putItm  = row.put?.inTheMoney === true;
-                    const callVolPct = row.call?.volume && maxVolume > 0 ? Math.min((row.call.volume / maxVolume) * 100, 100) : 0;
-                    const putVolPct  = row.put?.volume  && maxVolume > 0 ? Math.min((row.put.volume  / maxVolume) * 100, 100) : 0;
+                    const _callVolPct = row.call?.volume && maxVolume > 0 ? Math.min((row.call.volume / maxVolume) * 100, 100) : 0;
+                    const _putVolPct  = row.put?.volume  && maxVolume > 0 ? Math.min((row.put.volume  / maxVolume) * 100, 100) : 0;
                     const midIv = row.call?.impliedVolatility ?? row.put?.impliedVolatility;
                     return (
                       <div key={row.strike}>

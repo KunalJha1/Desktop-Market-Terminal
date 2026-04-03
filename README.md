@@ -146,11 +146,22 @@ graph TD
 
 ### Options analytics
 
-- Options chain worker fetches chains from Yahoo Finance and stores both contract metadata and point-in-time snapshots.
-- Black-Scholes Greeks are computed locally for delta, gamma, theta, vega, and rho.
-- The options UI groups expirations by month and displays calls and puts side-by-side by strike.
-- Stored chain rows include bid, ask, mid, IV, volume, open interest, intrinsic value, extrinsic value, and expiration context.
+- Options chain worker fetches full chains from Yahoo Finance and Interactive Brokers TWS, storing both contract metadata and point-in-time snapshots.
+- All five Black-Scholes Greeks — delta, gamma, theta, vega, and rho — are computed locally via a vectorized numpy implementation against live spot and cached chain data.
+- Implied volatility is solved per-contract using Brent's method (scipy) with a bisection fallback, converging to 1e-8 tolerance across up to 200 iterations. The risk-free rate is pulled live from the 10-year treasury (^TNX) and cached hourly.
+- Greek computation follows a priority cascade: TWS provider Greeks are used when complete; otherwise all five are derived locally through Black-Scholes, with an error field explaining any fallback.
+- The options UI groups expirations by month and displays calls and puts side-by-side by strike with all computed Greeks, IV, intrinsic and extrinsic values, volume, and open interest visible inline.
 - Symbol prioritization favors manual portfolio holdings and watchlist symbols before optional broader-universe collection.
+
+### Strategy simulations
+
+- A TypeScript `SimulationEngine` drives step-by-step bar replay: it aggregates 1-minute OHLCV bars into any requested timeframe, applies session filtering (regular, extended, or all-hours), and evaluates strategy signals bar-by-bar.
+- Supports 12+ built-in preset strategies including EMA crossovers (9/14, 5/20), RSI momentum, MACD crossover, Supertrend, DailyIQ technical score signal, and liquidity sweep detection.
+- A custom strategy builder lets users define multi-condition entry/exit logic across 30+ indicator sources (RSI, MACD, EMA, Supertrend, VWAP, OBV, ATR, Stochastic, and more) using a visual condition editor with AND semantics.
+- A Pine-like scripting DSL with a full lexer, parser, and AST interpreter allows writing arbitrary signal logic directly against indicator series, with support for `plot`, `shape`, `hline`, and `fill` directives.
+- Per-simulation performance metrics include total PnL, win rate, Sharpe ratio (annualized, trade-based), maximum drawdown, profit factor, and average trade PnL.
+- The simulation UI supports running up to 36 parallel simulations simultaneously across different symbols or strategy configurations, with adjustable playback speed and a per-sim trade log.
+- A dedicated backtesting page is in progress, extending the simulation engine toward batch historical runs with persistent result storage.
 
 ### Portfolio workflows
 
