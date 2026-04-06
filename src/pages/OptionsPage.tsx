@@ -221,7 +221,7 @@ function sideKey(s: OptionSide | null): string {
 }
 
 const SideMetrics = memo(function SideMetrics({
-  side, isCall, itm, cols, strike, underlyingPrice, maxVolume,
+  side, isCall, cols, strike, underlyingPrice, maxVolume,
 }: {
   side: OptionSide | null; isCall: boolean;
   cols: ColDef[]; strike: number; underlyingPrice: number | null; maxVolume: number;
@@ -269,7 +269,6 @@ const SideMetrics = memo(function SideMetrics({
   );
 }, (prev, next) =>
   prev.isCall === next.isCall &&
-  prev.itm === next.itm &&
   prev.strike === next.strike &&
   prev.underlyingPrice === next.underlyingPrice &&
   prev.maxVolume === next.maxVolume &&
@@ -435,7 +434,7 @@ function OptionsPage() {
   const [selectedExpiration, setSelectedExpiration] = useState<number | null>(null);
   const { chain, loading: chainLoading, error: chainError } = useOptionsChain(selectedSymbol, selectedExpiration);
   const estimate = useOptionsEstimate(selectedSymbol, selectedExpiration, summary?.session ?? null);
-  const { refreshing, lastRefreshed } = useOptionsRefresh(selectedSymbol, selectedExpiration, summary?.session ?? null, summary?.source ?? null);
+  const { refreshing } = useOptionsRefresh(selectedSymbol, selectedExpiration, summary?.session ?? null, summary?.source ?? null);
   const estMap = useMemo(() => {
     const m = new Map<number, { callEst: number | null; putEst: number | null }>();
     estimate?.rows.forEach(r => m.set(r.strike, { callEst: r.call?.estPrice ?? null, putEst: r.put?.estPrice ?? null }));
@@ -641,10 +640,7 @@ function OptionsPage() {
     [callColOrder, visibleCols, colWidthOverrides],
   );
   const putCols = useMemo(() => [...callCols].reverse(), [callCols]);
-  const fullTableWidth = useMemo(
-    () => totalWidth(callCols) + CENTER_W + totalWidth(putCols),
-    [callCols, putCols],
-  );
+
   const underlyingPrice = summary?.underlyingPrice ?? null;
   const analytics = useOptionsAnalytics(chain ?? null, effectiveCostBasis, underlyingPrice);
 
