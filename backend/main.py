@@ -40,6 +40,18 @@ from connection_pool import ConnectionPool, probe_tws_port
 from options_collector import get_market_session, estimate_option_price, DEFAULT_RISK_FREE_RATE as OPTIONS_DEFAULT_RISK_FREE_RATE
 from runtime_paths import data_dir, resource_path
 
+# Top-level imports for PyInstaller bundling — these modules are also imported
+# dynamically inside functions/routes, so static analysis misses them without this.
+import technicals  # noqa: F401
+import score_worker  # noqa: F401
+import dailyiq_provider  # noqa: F401
+import yahoo_provider  # noqa: F401
+import options_ib  # noqa: F401
+import worker_watchlist  # noqa: F401
+import worker_valuations  # noqa: F401
+import worker_options  # noqa: F401
+import prefetch  # noqa: F401
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -1152,11 +1164,16 @@ def read_options_chain(symbol: str, expiration: int | None = None) -> dict:
     }
 
 
+_refresh_last_triggered: dict[str, float] = {}
+_REFRESH_THROTTLE_SECONDS = 12.0
+
+
 def create_app() -> FastAPI:
     from options_collector import (
         DEFAULT_INTERVAL_MINUTES as OPTIONS_DEFAULT_INTERVAL_MINUTES,
         DEFAULT_SOURCE as OPTIONS_DEFAULT_SOURCE,
         OptionsCollectorWorker,
+        run_collection_cycle,
     )
     from score_worker import TechnicalsScorer
 
@@ -2154,6 +2171,31 @@ def create_app() -> FastAPI:
     @app.get("/options/estimate")
     async def get_options_estimate(symbol: str = "", expiration: int | None = None):
         return await run_db(read_options_estimate, symbol, expiration)
+
+    @app.post("/options/refresh")
+    async def trigger_options_refresh(symbol: str = ""):
+        sym = symbol.strip().upper()
+        if not sym:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="symbol is required")
+        now = time.time()
+        last = _refresh_last_triggered.get(sym, 0.0)
+        elapsed = now - last
+        if elapsed < _REFRESH_THROTTLE_SECONDS:
+            return {
+                "status": "throttled",
+                "symbol": sym,
+                "next_available_in": round(_REFRESH_THROTTLE_SECONDS - elapsed, 1),
+            }
+        _refresh_last_triggered[sym] = now
+        asyncio.create_task(
+            asyncio.to_thread(
+                run_collection_cycle,
+                source=OPTIONS_DEFAULT_SOURCE,
+                symbols_override=[sym],
+            )
+        )
+        return {"status": "triggered", "symbol": sym}
 
     class ActiveSymbolsPayload(BaseModel):
         symbols: list[str]

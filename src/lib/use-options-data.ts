@@ -249,3 +249,40 @@ export function useOptionsEstimate(
 
   return active ? estimate : null;
 }
+
+export function useOptionsRefresh(
+  symbol: string | null,
+  expiration: number | null,
+  session: MarketSession | null,
+  source: string | null,
+) {
+  const sidecarPort = useSidecarPort();
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
+
+  const intervalMs = source === "tws" ? 15_000 : 60_000;
+
+  useEffect(() => {
+    if (!sidecarPort || !symbol || session !== "REGULAR") return;
+
+    let cancelled = false;
+
+    async function doRefresh() {
+      if (cancelled) return;
+      setRefreshing(true);
+      try {
+        await fetch(`http://127.0.0.1:${sidecarPort}/options/refresh?symbol=${encodeURIComponent(symbol!)}`, {
+          method: "POST",
+        });
+        if (!cancelled) setLastRefreshed(new Date());
+      } catch { /* silent — backend may not be up yet */ }
+      if (!cancelled) setRefreshing(false);
+    }
+
+    doRefresh();
+    const id = setInterval(doRefresh, intervalMs);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [sidecarPort, symbol, expiration, session, intervalMs]);
+
+  return { refreshing, lastRefreshed };
+}

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -35,6 +36,10 @@ SUPPORTED_TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h", "1d", "1w"}
 HTTP_TIMEOUT_QUOTE = 5   # seconds — fast path for quotes
 HTTP_TIMEOUT = 15        # seconds — bars and other endpoints
 HTTP_TIMEOUT_BARS = 15   # alias for clarity
+
+# Per-cache-key locks to prevent concurrent duplicate fetches (single-flight).
+_inflight_lock = threading.Lock()           # guards the dict itself
+_inflight_keys: dict[str, threading.Lock] = {}
 
 
 # ── API key ──────────────────────────────────────────────────────────
@@ -105,29 +110,46 @@ def _dailyiq_get_json(
         parts.extend(f"{k}={v}" for k, v in sorted(params.items()))
     cache_key = ":".join(parts)
 
+    # Fast path: cache hit before acquiring any lock
     cached = _read_cache(cache_key, ttl_s)
     if cached is not None:
         logger.debug("DailyIQ cache hit: %s", cache_key)
         return cached
 
-    url = f"{base}/{endpoint.lstrip('/')}"
-    try:
-        r = requests.get(url, params=params, timeout=timeout)
-        if r.status_code == 429:
-            logger.warning("DailyIQ rate limited on %s — backing off", endpoint)
+    # Acquire (or create) a per-key lock so only one thread fetches this endpoint
+    with _inflight_lock:
+        if cache_key not in _inflight_keys:
+            _inflight_keys[cache_key] = threading.Lock()
+        key_lock = _inflight_keys[cache_key]
+
+    with key_lock:
+        # Double-check: another thread may have populated the cache while we waited
+        cached = _read_cache(cache_key, ttl_s)
+        if cached is not None:
+            logger.debug("DailyIQ cache hit (post-lock): %s", cache_key)
+            return cached
+
+        url = f"{base}/{endpoint.lstrip('/')}"
+        try:
+            r = requests.get(url, params=params, timeout=timeout)
+            if r.status_code == 429:
+                logger.warning("DailyIQ rate limited on %s — backing off", endpoint)
+                return None
+            if r.status_code != 200:
+                logger.warning("DailyIQ %s returned %d", endpoint, r.status_code)
+                return None
+            data = r.json()
+            _write_cache(cache_key, data)
+            return data
+        except requests.RequestException as exc:
+            logger.warning("DailyIQ request failed for %s: %s", endpoint, exc)
             return None
-        if r.status_code != 200:
-            logger.warning("DailyIQ %s returned %d", endpoint, r.status_code)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning("DailyIQ response not JSON for %s: %s", endpoint, exc)
             return None
-        data = r.json()
-        _write_cache(cache_key, data)
-        return data
-    except requests.RequestException as exc:
-        logger.warning("DailyIQ request failed for %s: %s", endpoint, exc)
-        return None
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("DailyIQ response not JSON for %s: %s", endpoint, exc)
-        return None
+        finally:
+            with _inflight_lock:
+                _inflight_keys.pop(cache_key, None)
 
 
 # ── Date parsing ─────────────────────────────────────────────────────

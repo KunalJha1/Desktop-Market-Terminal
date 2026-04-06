@@ -6,13 +6,26 @@ import {
   useDefaultOptionsSymbol,
   useOptionsChain,
   useOptionsEstimate,
+  useOptionsRefresh,
   useOptionsSummary,
   type OptionSide,
 } from "../lib/use-options-data";
+import { usePortfolioData } from "../lib/use-portfolio-data";
+import {
+  useOptionsAnalytics,
+  type AnalyticsHighlightType,
+} from "../lib/use-options-analytics";
 
 const BG_BASE = "#0D1117";
 const BG_PANEL = "#161B22";
 const BG_HOVER = "#1C2128";
+
+const ANALYTICS_COLORS: Record<AnalyticsHighlightType, string> = {
+  coveredCall: "#F59E0B",
+  equivalentPut: "#8B5CF6",
+  resistance: "#FF3D71",
+  support: "#00C853",
+};
 
 function formatPrice(value: number | null | undefined): string {
   if (value == null) return "—";
@@ -105,9 +118,6 @@ const CALL_COL_IDS: ColId[] = [
   "ltp","theoretical","spread","ask","bid",
   "retDist","distance","volBar",
 ];
-// Puts: mirror
-const PUT_COL_IDS: ColId[] = [...CALL_COL_IDS].reverse();
-
 const DEFAULT_VISIBLE_COLS = new Set<ColId>(
   (Object.values(COL_MAP) as ColDef[]).filter(c => c.defaultVisible).map(c => c.id)
 );
@@ -119,8 +129,11 @@ const COL_CATEGORIES: { label: string; ids: ColId[] }[] = [
   { label: "Visual",  ids: ["volBar"] },
 ];
 
-function getOrderedCols(ids: ColId[], visible: Set<ColId>): ColDef[] {
-  return ids.filter(id => visible.has(id)).map(id => COL_MAP[id]);
+function getOrderedColsFromOrder(order: ColId[], visible: Set<ColId>, widthOverrides: Partial<Record<ColId, number>>): ColDef[] {
+  return order.filter(id => visible.has(id)).map(id => ({
+    ...COL_MAP[id],
+    width: widthOverrides[id] ?? COL_MAP[id].width,
+  }));
 }
 function gridTemplate(cols: ColDef[]): string {
   return cols.map(c => `${c.width}px`).join(" ");
@@ -202,7 +215,12 @@ function expirationMonthMinWidthPx(expirations: { label: string }[]): number {
 
 const CENTER_W = 260;
 
-function SideMetrics({
+function sideKey(s: OptionSide | null): string {
+  if (!s) return "";
+  return `${s.bid}|${s.ask}|${s.mid}|${s.impliedVolatility}|${s.delta}|${s.gamma}|${s.theta}|${s.vega}|${s.volume}|${s.openInterest}|${s.inTheMoney}`;
+}
+
+const SideMetrics = memo(function SideMetrics({
   side, isCall, itm, cols, strike, underlyingPrice, maxVolume,
 }: {
   side: OptionSide | null; isCall: boolean; itm: boolean;
@@ -249,28 +267,64 @@ function SideMetrics({
       })}
     </div>
   );
-}
+}, (prev, next) =>
+  prev.isCall === next.isCall &&
+  prev.itm === next.itm &&
+  prev.strike === next.strike &&
+  prev.underlyingPrice === next.underlyingPrice &&
+  prev.maxVolume === next.maxVolume &&
+  prev.cols === next.cols &&
+  sideKey(prev.side) === sideKey(next.side)
+);
 
-function ChainHeaderLabels({ isCall, cols }: { isCall: boolean; cols: ColDef[] }) {
+function ChainHeaderLabels({
+  isCall, cols, headerRef, onResize, onStartDrag, dragColId, insertBeforeId,
+}: {
+  isCall: boolean;
+  cols: ColDef[];
+  headerRef?: React.RefObject<HTMLDivElement>;
+  onResize: (id: ColId, e: React.MouseEvent) => void;
+  onStartDrag?: (id: ColId, e: React.MouseEvent) => void;
+  dragColId: ColId | null;
+  insertBeforeId: ColId | null;
+}) {
   const w = totalWidth(cols);
   return (
     <div
+      ref={isCall ? headerRef : undefined}
       className={`grid font-mono text-[12px] font-medium uppercase tracking-[0.1em] text-white ${isCall ? "text-right" : "text-left"}`}
       style={{ gridTemplateColumns: gridTemplate(cols), width: w, minWidth: w }}
     >
-      {cols.map(col => (
-        <span key={col.id} className="truncate px-1.5 py-2" title={col.label}>
-          {col.label}
-        </span>
-      ))}
+      {cols.map(col => {
+        const isDragging = dragColId === col.id;
+        return (
+          <div
+            key={col.id}
+            title={col.label}
+            className={`group relative truncate px-1.5 py-2 select-none ${isCall && onStartDrag ? "cursor-grab active:cursor-grabbing" : ""} ${isDragging ? "opacity-40" : ""}`}
+            onMouseDown={isCall && onStartDrag ? (e) => onStartDrag(col.id, e) : undefined}
+          >
+            {/* Reorder insertion indicator */}
+            {isCall && insertBeforeId === col.id && (
+              <div className="pointer-events-none absolute left-0 top-0 z-10 h-full w-0.5 bg-[#1A56DB]" />
+            )}
+            <span className="truncate">{col.label}</span>
+            {/* Resize handle on right edge */}
+            <div
+              className="absolute right-0 top-0 z-20 h-full w-1 cursor-col-resize opacity-0 transition-opacity duration-75 group-hover:opacity-100 hover:bg-[#1A56DB]/60"
+              onMouseDown={(e) => { e.stopPropagation(); onResize(col.id, e); }}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }
 
 function ColumnPicker({
-  visible, onChange, onClose,
+  visible, onChange, onClose, onReset,
 }: {
-  visible: Set<ColId>; onChange: (id: ColId, on: boolean) => void; onClose: () => void;
+  visible: Set<ColId>; onChange: (id: ColId, on: boolean) => void; onClose: () => void; onReset: () => void;
 }) {
   return (
     <>
@@ -279,7 +333,17 @@ function ColumnPicker({
         className="absolute right-2 top-full z-40 mt-1 w-72 border border-white/[0.10] bg-[#1a2130] p-3 shadow-2xl shadow-black/50"
         style={{ borderRadius: 6 }}
       >
-        <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.16em] text-white/50">Toggle Columns</p>
+        <div className="mb-3 flex items-center justify-between">
+          <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-white/50">Toggle Columns</p>
+          <button
+            type="button"
+            onClick={onReset}
+            className="border border-white/[0.10] px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-white/40 transition-colors duration-75 hover:border-white/20 hover:text-white/65"
+            style={{ borderRadius: 3 }}
+          >
+            Reset
+          </button>
+        </div>
         {COL_CATEGORIES.map(cat => (
           <div key={cat.label} className="mb-3">
             <p className="mb-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-white/30">{cat.label}</p>
@@ -371,6 +435,7 @@ function OptionsPage() {
   const [selectedExpiration, setSelectedExpiration] = useState<number | null>(null);
   const { chain, loading: chainLoading, error: chainError } = useOptionsChain(selectedSymbol, selectedExpiration);
   const estimate = useOptionsEstimate(selectedSymbol, selectedExpiration, summary?.session ?? null);
+  const { refreshing, lastRefreshed } = useOptionsRefresh(selectedSymbol, selectedExpiration, summary?.session ?? null, summary?.source ?? null);
   const estMap = useMemo(() => {
     const m = new Map<number, { callEst: number | null; putEst: number | null }>();
     estimate?.rows.forEach(r => m.set(r.strike, { callEst: r.call?.estPrice ?? null, putEst: r.put?.estPrice ?? null }));
@@ -425,6 +490,127 @@ function OptionsPage() {
   const [showColPicker, setShowColPicker] = useState(false);
   const colPickerRef = useRef<HTMLDivElement>(null);
 
+  // ── Column order + width overrides (persisted) ─────────────────────────────
+  const [callColOrder, setCallColOrder] = useState<ColId[]>(() => {
+    try {
+      const saved = localStorage.getItem("options_col_order");
+      if (saved) return JSON.parse(saved) as ColId[];
+    } catch { /* ignore */ }
+    return CALL_COL_IDS;
+  });
+  const [colWidthOverrides, setColWidthOverrides] = useState<Partial<Record<ColId, number>>>(() => {
+    try {
+      const saved = localStorage.getItem("options_col_widths");
+      if (saved) return JSON.parse(saved) as Partial<Record<ColId, number>>;
+    } catch { /* ignore */ }
+    return {};
+  });
+  const [dragColId, setDragColId] = useState<ColId | null>(null);
+  const [insertBeforeId, setInsertBeforeId] = useState<ColId | null>(null);
+  const callHeaderRef = useRef<HTMLDivElement>(null);
+  const insertBeforeIdRef = useRef<ColId | null>(null);
+
+  function handleColResize(id: ColId, e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startW = colWidthOverrides[id] ?? COL_MAP[id].width;
+    const MIN_W = 48;
+    const onMove = (ev: MouseEvent) => {
+      const newW = Math.max(MIN_W, startW + (ev.clientX - startX));
+      setColWidthOverrides(prev => ({ ...prev, [id]: newW }));
+    };
+    const onUp = () => {
+      setColWidthOverrides(prev => {
+        localStorage.setItem("options_col_widths", JSON.stringify(prev));
+        return prev;
+      });
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
+  function startColDrag(id: ColId, e: React.MouseEvent) {
+    e.preventDefault();
+    const startX = e.clientX;
+    let didDrag = false;
+    setDragColId(id);
+    insertBeforeIdRef.current = null;
+
+    const onMove = (ev: MouseEvent) => {
+      if (!didDrag && Math.abs(ev.clientX - startX) > 4) didDrag = true;
+      if (!didDrag) return;
+      if (!callHeaderRef.current) return;
+      const rect = callHeaderRef.current.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      // Use latest callColOrder + visibleCols + colWidthOverrides captured in closure
+      let cum = 0;
+      let foundId: ColId | null = null;
+      for (const cid of callColOrder) {
+        if (!visibleCols.has(cid)) continue;
+        const w = colWidthOverrides[cid] ?? COL_MAP[cid].width;
+        if (x < cum + w / 2) { foundId = cid; break; }
+        cum += w;
+      }
+      insertBeforeIdRef.current = foundId;
+      setInsertBeforeId(foundId);
+    };
+
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      setDragColId(null);
+      const dst = insertBeforeIdRef.current;
+      insertBeforeIdRef.current = null;
+      setInsertBeforeId(null);
+      if (!didDrag || !dst || dst === id) return;
+      setCallColOrder(prev => {
+        const next = prev.filter(cid => cid !== id);
+        const dstIdx = next.indexOf(dst);
+        if (dstIdx === -1) { next.push(id); } else { next.splice(dstIdx, 0, id); }
+        localStorage.setItem("options_col_order", JSON.stringify(next));
+        return next;
+      });
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
+  function resetColLayout() {
+    setCallColOrder(CALL_COL_IDS);
+    setColWidthOverrides({});
+    localStorage.removeItem("options_col_order");
+    localStorage.removeItem("options_col_widths");
+  }
+
+  // ── Analytics: portfolio cost basis + manual override ───────────────────────
+  const { positions } = usePortfolioData();
+
+  const portfolioCostBasis = useMemo(() => {
+    const match = positions.find(
+      (p) => p.symbol.toUpperCase() === selectedSymbol.toUpperCase() && p.secType === "STK",
+    );
+    return match?.avgCost ?? null;
+  }, [positions, selectedSymbol]);
+
+  const [manualCostBasis, setManualCostBasis] = useState<number | null>(null);
+  const [manualCostBasisInput, setManualCostBasisInput] = useState<string>("");
+
+  useEffect(() => {
+    setManualCostBasis(null);
+    setManualCostBasisInput("");
+  }, [selectedSymbol]);
+
+  const effectiveCostBasis = manualCostBasis ?? portfolioCostBasis;
+
+  const [hoveredAnalytics, setHoveredAnalytics] = useState<{
+    strike: number;
+    x: number;
+    y: number;
+  } | null>(null);
+
   const atmStrike = useMemo(() => {
     const spot = summary?.underlyingPrice;
     const rows = chain?.rows ?? [];
@@ -450,13 +636,17 @@ function OptionsPage() {
     return rows.slice(adjStart, end);
   }, [chain?.rows, strikesVisible, atmStrike]);
 
-  const callCols = useMemo(() => getOrderedCols(CALL_COL_IDS, visibleCols), [visibleCols]);
-  const putCols  = useMemo(() => getOrderedCols(PUT_COL_IDS, visibleCols), [visibleCols]);
+  const callCols = useMemo(
+    () => getOrderedColsFromOrder(callColOrder, visibleCols, colWidthOverrides),
+    [callColOrder, visibleCols, colWidthOverrides],
+  );
+  const putCols = useMemo(() => [...callCols].reverse(), [callCols]);
   const fullTableWidth = useMemo(
     () => totalWidth(callCols) + CENTER_W + totalWidth(putCols),
     [callCols, putCols],
   );
   const underlyingPrice = summary?.underlyingPrice ?? null;
+  const analytics = useOptionsAnalytics(chain ?? null, effectiveCostBasis, underlyingPrice);
 
   const maxVolume = useMemo(() => {
     const rows = chain?.rows ?? [];
@@ -537,7 +727,9 @@ function OptionsPage() {
               className="flex min-w-[120px] flex-col gap-0.5 border border-white/[0.10] px-3 py-2"
               style={{ backgroundColor: BG_HOVER, borderRadius: 4 }}
             >
-              <span className="text-[10px] uppercase tracking-[0.14em] text-white/45">Updated</span>
+              <span className="text-[10px] uppercase tracking-[0.14em] text-white/45">
+                {refreshing ? "Fetching…" : "Updated"}
+              </span>
               <span
                 className={`font-mono text-[12px] tabular-nums ${stale ? "text-[#F59E0B]" : "text-white/80"}`}
               >
@@ -554,6 +746,62 @@ function OptionsPage() {
                 {sourceLabel(summary?.source)}
               </span>
             </div>
+          </div>
+        </div>
+
+        {/* Analytics: cost basis input + legend chips */}
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-white/[0.06] pt-3">
+          <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-white/45">
+            Analytics
+          </span>
+          {portfolioCostBasis != null && manualCostBasis == null && (
+            <span className="font-mono text-[11px] text-white/50">
+              Portfolio avg cost:{" "}
+              <span className="text-[#F59E0B]/80">${formatPrice(portfolioCostBasis)}</span>
+            </span>
+          )}
+          <div className="flex items-center gap-1.5" title="Your average cost per share of the underlying stock. Used to highlight the best covered call and equivalent put strikes for your position.">
+            <span className="font-mono text-[10px] text-white/40">Stock avg cost</span>
+            <input
+              type="number"
+              min={0}
+              step={0.01}
+              placeholder={portfolioCostBasis != null ? String(portfolioCostBasis.toFixed(2)) : "avg cost / share"}
+              value={manualCostBasisInput}
+              onChange={(e) => {
+                setManualCostBasisInput(e.target.value);
+                const v = parseFloat(e.target.value);
+                setManualCostBasis(!isNaN(v) && v > 0 ? v : null);
+              }}
+              className="h-6 w-28 border border-white/[0.10] bg-[#1C2128] px-1.5 text-center font-mono text-[10px] text-white/70 placeholder:text-white/25 focus:outline-none focus:border-[#F59E0B]/50 transition-colors duration-100 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              style={{ borderRadius: 4, MozAppearance: "textfield" } as React.CSSProperties}
+            />
+          </div>
+          <div className="ml-auto flex flex-wrap items-center gap-3">
+            {analytics.bestCoveredCall != null && (
+              <span className="flex items-center gap-1.5 font-mono text-[10px]" style={{ color: ANALYTICS_COLORS.coveredCall }}>
+                <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: ANALYTICS_COLORS.coveredCall }} />
+                CC @${formatPrice(analytics.bestCoveredCall)}
+              </span>
+            )}
+            {analytics.equivalentPut != null && (
+              <span className="flex items-center gap-1.5 font-mono text-[10px]" style={{ color: ANALYTICS_COLORS.equivalentPut }}>
+                <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: ANALYTICS_COLORS.equivalentPut }} />
+                NP @${formatPrice(analytics.equivalentPut)}
+              </span>
+            )}
+            {analytics.resistance != null && (
+              <span className="flex items-center gap-1.5 font-mono text-[10px]" style={{ color: ANALYTICS_COLORS.resistance }}>
+                <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: ANALYTICS_COLORS.resistance }} />
+                Res @${formatPrice(analytics.resistance)}
+              </span>
+            )}
+            {analytics.support != null && (
+              <span className="flex items-center gap-1.5 font-mono text-[10px]" style={{ color: ANALYTICS_COLORS.support }}>
+                <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: ANALYTICS_COLORS.support }} />
+                Sup @${formatPrice(analytics.support)}
+              </span>
+            )}
           </div>
         </div>
 
@@ -708,6 +956,7 @@ function OptionsPage() {
                         visible={visibleCols}
                         onChange={toggleCol}
                         onClose={() => setShowColPicker(false)}
+                        onReset={() => { resetColLayout(); setVisibleCols(DEFAULT_VISIBLE_COLS); }}
                       />
                     )}
                   </div>
@@ -728,7 +977,15 @@ function OptionsPage() {
                   </div>
                 )}
                 <div className="flex flex-1 justify-end" style={{ minWidth: totalWidth(callCols) }}>
-                  <ChainHeaderLabels isCall={true} cols={callCols} />
+                  <ChainHeaderLabels
+                    isCall={true}
+                    cols={callCols}
+                    headerRef={callHeaderRef}
+                    onResize={handleColResize}
+                    onStartDrag={startColDrag}
+                    dragColId={dragColId}
+                    insertBeforeId={insertBeforeId}
+                  />
                 </div>
                 {/* Center header: Strike | IV */}
                 <div
@@ -739,7 +996,13 @@ function OptionsPage() {
                   <div className="border-l border-white/[0.08] pl-2 text-left" style={{ width: 130 }}>IV</div>
                 </div>
                 <div className="flex flex-1 justify-start" style={{ minWidth: totalWidth(putCols) }}>
-                  <ChainHeaderLabels isCall={false} cols={putCols} />
+                  <ChainHeaderLabels
+                    isCall={false}
+                    cols={putCols}
+                    onResize={handleColResize}
+                    dragColId={dragColId}
+                    insertBeforeId={null}
+                  />
                 </div>
                 {estimate && (
                   <div className="flex shrink-0 items-center justify-center border-l border-white/[0.06] font-mono text-[11px] font-medium uppercase tracking-[0.1em] text-[#F59E0B]/80" style={{ width: 88 }}>
@@ -771,6 +1034,25 @@ function OptionsPage() {
                     const callVolPct = row.call?.volume && maxVolume > 0 ? Math.min((row.call.volume / maxVolume) * 100, 100) : 0;
                     const putVolPct  = row.put?.volume  && maxVolume > 0 ? Math.min((row.put.volume  / maxVolume) * 100, 100) : 0;
                     const midIv = row.call?.impliedVolatility ?? row.put?.impliedVolatility;
+
+                    // Analytics highlights
+                    const rowDetails = analytics.details.get(row.strike);
+                    const isResistance = analytics.resistance === row.strike;
+                    const isSupport = analytics.support === row.strike;
+                    const isCoveredCall = analytics.bestCoveredCall === row.strike;
+                    const isEquivPut = analytics.equivalentPut === row.strike;
+                    const hasAnalytics = (rowDetails?.length ?? 0) > 0;
+                    const rowBorderLeft = isResistance
+                      ? ANALYTICS_COLORS.resistance
+                      : isSupport
+                        ? ANALYTICS_COLORS.support
+                        : "transparent";
+                    const rowBgExtra = isResistance
+                      ? "bg-[#FF3D71]/[0.06]"
+                      : isSupport
+                        ? "bg-[#00C853]/[0.06]"
+                        : "";
+
                     return (
                       <div key={row.strike}>
                         {atm && (
@@ -789,7 +1071,11 @@ function OptionsPage() {
                         <div
                           className={`flex min-h-[40px] items-stretch border-b transition-colors duration-75 ease-out ${
                             atm ? "border-[#1A56DB]/20 bg-[#1A56DB]/[0.05]" : "border-white/[0.05] hover:bg-white/[0.03]"
-                          }`}
+                          } ${rowBgExtra}`}
+                          style={{ borderLeft: `4px solid ${rowBorderLeft}` }}
+                          onMouseEnter={hasAnalytics ? (e) => setHoveredAnalytics({ strike: row.strike, x: e.clientX, y: e.clientY }) : undefined}
+                          onMouseMove={hasAnalytics ? (e) => setHoveredAnalytics((prev) => prev ? { ...prev, x: e.clientX, y: e.clientY } : null) : undefined}
+                          onMouseLeave={hasAnalytics ? () => setHoveredAnalytics(null) : undefined}
                         >
                           {estimate && (() => {
                             const est = estMap.get(row.strike);
@@ -802,12 +1088,22 @@ function OptionsPage() {
                               </div>
                             );
                           })()}
-                          <div className={`flex flex-1 justify-end ${callItm ? "bg-[#00C853]/[0.07]" : ""}`} style={{ minWidth: totalWidth(callCols) }}>
+                          <div
+                            className={`flex flex-1 items-center justify-end ${callItm ? "bg-[#00C853]/[0.07]" : ""} ${isCoveredCall ? "bg-[#F59E0B]/[0.08]" : ""}`}
+                            style={{ minWidth: totalWidth(callCols), borderLeft: isCoveredCall ? "2px solid rgba(245,158,11,0.5)" : undefined }}
+                          >
                             <SideMetrics
                               side={row.call} isCall={true} itm={callItm}
                               cols={callCols} strike={row.strike}
                               underlyingPrice={underlyingPrice} maxVolume={maxVolume}
                             />
+                            {isCoveredCall && (
+                              <div className="flex shrink-0 items-center pr-2">
+                                <span className="rounded border border-[#F59E0B]/40 bg-[#F59E0B]/15 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-[#F59E0B]">
+                                  CC
+                                </span>
+                              </div>
+                            )}
                           </div>
                           {/* Center: Strike IV */}
                           <div
@@ -825,7 +1121,22 @@ function OptionsPage() {
                               </div>
                             </div>
                           </div>
-                          <div className={`flex flex-1 justify-start ${putItm ? "bg-[#FF3D71]/[0.07]" : ""}`} style={{ minWidth: totalWidth(putCols) }}>
+                          <div
+                            className={`flex flex-1 items-center justify-start ${putItm ? "bg-[#FF3D71]/[0.07]" : ""} ${isEquivPut ? "bg-[#8B5CF6]/[0.08]" : ""}`}
+                            style={{ minWidth: totalWidth(putCols), borderRight: isEquivPut ? "2px solid rgba(139,92,246,0.5)" : undefined }}
+                          >
+                            {isEquivPut && (() => {
+                              const putBid = row.put?.bid ?? null;
+                              const callBid = row.call?.bid ?? null;
+                              const putHigher = putBid != null && callBid != null && putBid > callBid;
+                              return (
+                                <div className="flex shrink-0 items-center pl-2">
+                                  <span className="rounded border border-[#8B5CF6]/40 bg-[#8B5CF6]/15 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.1em] text-[#8B5CF6]">
+                                    {putHigher ? "NP ▲" : "NP"}
+                                  </span>
+                                </div>
+                              );
+                            })()}
                             <SideMetrics
                               side={row.put} isCall={false} itm={putItm}
                               cols={putCols} strike={row.strike}
@@ -861,6 +1172,145 @@ function OptionsPage() {
         onSelectSymbol={(sym) => setSelectedSymbol(sym.trim().toUpperCase())}
         excludeSymbol={selectedSymbol}
       />
+
+      {/* Analytics floating tooltip */}
+      {hoveredAnalytics && (() => {
+        const details = analytics.details.get(hoveredAnalytics.strike);
+        if (!details || details.length === 0) return null;
+        const tooltipWidth = 264;
+        const x = Math.min(hoveredAnalytics.x + 14, window.innerWidth - tooltipWidth - 8);
+        const y = Math.min(hoveredAnalytics.y + 14, window.innerHeight - 220);
+        return (
+          <div
+            style={{
+              position: "fixed",
+              left: x,
+              top: y,
+              width: tooltipWidth,
+              zIndex: 9999,
+              pointerEvents: "none",
+              backgroundColor: "#161B22",
+              border: "1px solid rgba(255,255,255,0.10)",
+              borderRadius: 6,
+              padding: "10px 12px",
+            }}
+          >
+            {details.map((d, i) => (
+              <div key={d.type} style={i > 0 ? { marginTop: 10, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.07)" } : {}}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, backgroundColor: ANALYTICS_COLORS[d.type], flexShrink: 0 }} />
+                  <span style={{ fontFamily: "monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", color: ANALYTICS_COLORS[d.type], fontWeight: 600 }}>
+                    {d.label}
+                  </span>
+                </div>
+                <p style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5, marginBottom: 8, marginTop: 0 }}>
+                  {d.explanation}
+                </p>
+                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 14px", alignItems: "baseline" }}>
+                  {d.metrics.annualizedReturn != null && (
+                    <>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", whiteSpace: "nowrap" }}>Ann. Return</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 600, color: ANALYTICS_COLORS[d.type], fontVariantNumeric: "tabular-nums" }}>
+                        {(d.metrics.annualizedReturn * 100).toFixed(1)}%
+                      </span>
+                    </>
+                  )}
+                  {d.metrics.premium != null && (
+                    <>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", whiteSpace: "nowrap" }}>Bid Premium</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "rgba(255,255,255,0.82)", fontVariantNumeric: "tabular-nums" }}>${formatPrice(d.metrics.premium)}</span>
+                    </>
+                  )}
+                  {d.metrics.delta != null && (
+                    <>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", whiteSpace: "nowrap" }}>Delta</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "rgba(255,255,255,0.82)", fontVariantNumeric: "tabular-nums" }}>
+                        {formatGreek(d.metrics.delta, 2)}
+                        {d.type === "coveredCall" && d.metrics.delta != null && (
+                          <span style={{ marginLeft: 4, fontSize: 10, color: Math.abs(d.metrics.delta) >= 0.20 && Math.abs(d.metrics.delta) <= 0.35 ? "#00C853" : "rgba(255,255,255,0.40)" }}>
+                            {Math.abs(d.metrics.delta) >= 0.20 && Math.abs(d.metrics.delta) <= 0.35 ? "✓ sweet spot" : Math.abs(d.metrics.delta) < 0.20 ? "low prem" : "assign risk"}
+                          </span>
+                        )}
+                      </span>
+                    </>
+                  )}
+                  {d.metrics.dte != null && (
+                    <>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", whiteSpace: "nowrap" }}>DTE</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "rgba(255,255,255,0.82)", fontVariantNumeric: "tabular-nums" }}>
+                        {d.metrics.dte}d
+                        {(d.type === "coveredCall" || d.type === "equivalentPut") && (
+                          <span style={{ marginLeft: 4, fontSize: 10, color: d.metrics.dte >= 21 && d.metrics.dte <= 45 ? "#00C853" : "rgba(255,255,255,0.40)" }}>
+                            {d.metrics.dte >= 21 && d.metrics.dte <= 45 ? "✓ theta window" : d.metrics.dte < 21 ? "short" : "long"}
+                          </span>
+                        )}
+                      </span>
+                    </>
+                  )}
+                  {d.metrics.iv != null && (
+                    <>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", whiteSpace: "nowrap" }}>IV</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: d.metrics.iv >= 0.35 ? "#F59E0B" : "rgba(255,255,255,0.82)", fontVariantNumeric: "tabular-nums" }}>
+                        {formatIv(d.metrics.iv)}
+                        {d.metrics.iv >= 0.35 && <span style={{ marginLeft: 4, fontSize: 10, color: "#F59E0B" }}>elevated</span>}
+                      </span>
+                    </>
+                  )}
+                  {d.metrics.assignmentCushion != null && (
+                    <>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", whiteSpace: "nowrap" }}>Cushion</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: d.metrics.assignmentCushion >= 0.03 ? "#00C853" : "rgba(255,255,255,0.65)", fontVariantNumeric: "tabular-nums" }}>
+                        +{(d.metrics.assignmentCushion * 100).toFixed(1)}% above cost
+                      </span>
+                    </>
+                  )}
+                  {d.metrics.spreadPct != null && (
+                    <>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", whiteSpace: "nowrap" }}>B/A Spread</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: d.metrics.spreadPct <= 0.10 ? "rgba(255,255,255,0.82)" : "#F59E0B", fontVariantNumeric: "tabular-nums" }}>
+                        {(d.metrics.spreadPct * 100).toFixed(1)}%
+                        {d.metrics.spreadPct > 0.20 && <span style={{ marginLeft: 4, fontSize: 10, color: "#F59E0B" }}>wide</span>}
+                      </span>
+                    </>
+                  )}
+                  {d.metrics.callOI != null && (
+                    <>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", whiteSpace: "nowrap" }}>Call OI</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "rgba(255,255,255,0.82)", fontVariantNumeric: "tabular-nums" }}>{formatVolume(d.metrics.callOI)}</span>
+                    </>
+                  )}
+                  {d.metrics.callVolume != null && (
+                    <>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", whiteSpace: "nowrap" }}>Call Vol</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "rgba(255,255,255,0.82)", fontVariantNumeric: "tabular-nums" }}>{formatVolume(d.metrics.callVolume)}</span>
+                    </>
+                  )}
+                  {d.metrics.putOI != null && (
+                    <>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", whiteSpace: "nowrap" }}>Put OI</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "rgba(255,255,255,0.82)", fontVariantNumeric: "tabular-nums" }}>{formatVolume(d.metrics.putOI)}</span>
+                    </>
+                  )}
+                  {d.metrics.putVolume != null && (
+                    <>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", whiteSpace: "nowrap" }}>Put Vol</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "rgba(255,255,255,0.82)", fontVariantNumeric: "tabular-nums" }}>{formatVolume(d.metrics.putVolume)}</span>
+                    </>
+                  )}
+                  {d.metrics.comparePremium != null && d.metrics.premium != null && (
+                    <>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", whiteSpace: "nowrap" }}>vs Call bid</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: d.metrics.premium > d.metrics.comparePremium ? ANALYTICS_COLORS.equivalentPut : "rgba(255,255,255,0.55)", fontVariantNumeric: "tabular-nums" }}>
+                        ${formatPrice(d.metrics.comparePremium)} call
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
     </div>
   );
 }
