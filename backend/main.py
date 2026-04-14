@@ -1237,6 +1237,8 @@ def read_options_chain(symbol: str, expiration: int | None = None) -> dict:
 
 _refresh_last_triggered: dict[str, float] = {}
 _REFRESH_THROTTLE_SECONDS = 12.0
+_historical_revalidate_last_triggered: dict[str, float] = {}
+_HISTORICAL_REVALIDATE_THROTTLE_S = 8.0
 
 
 def create_app() -> FastAPI:
@@ -2590,6 +2592,45 @@ def create_app() -> FastAPI:
 
         await run_db(_touch_active)
 
+        refresh_key = f"{symbol}:{db_bar_size}:{what_to_show.upper()}"
+
+        def _spawn_background_revalidate(fetch_duration: str) -> None:
+            now = time.time()
+            last = _historical_revalidate_last_triggered.get(refresh_key, 0.0)
+            if (now - last) < _HISTORICAL_REVALIDATE_THROTTLE_S:
+                return
+            _historical_revalidate_last_triggered[refresh_key] = now
+
+            async def _revalidate_task() -> None:
+                # Always enqueue for the dedicated worker so TWS/backfill can
+                # deepen history, then run a local fetch for fast DailyIQ refresh.
+                try:
+                    await run_db(
+                        enqueue_historical_priority,
+                        symbol,
+                        db_bar_size,
+                        what_to_show,
+                        fetch_duration,
+                    )
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(
+                        get_historical_bars(
+                            symbol=symbol,
+                            ib=None,
+                            tws_connected=False,
+                            duration=fetch_duration,
+                            bar_size=bar_size,
+                            what_to_show=what_to_show,
+                        ),
+                        timeout=URGENT_HISTORICAL_WAIT_S,
+                    )
+                except Exception:
+                    pass
+
+            asyncio.create_task(_revalidate_task())
+
         # Fast path: windowed read from DB cache (no network fetch)
         if ts_start is not None or ts_end is not None or limit is not None:
             result = await run_db(
@@ -2611,6 +2652,7 @@ def create_app() -> FastAPI:
                 "ts_max": result["ts_max"],
             }
             if result["count"] > 0:
+                _spawn_background_revalidate(requested_duration)
                 return payload
 
             await run_db(
@@ -2662,14 +2704,7 @@ def create_app() -> FastAPI:
             requested_duration,
         )
         if cached["count"] > 0:
-            if not cached["is_fresh"] or not cached.get("has_full_coverage", False):
-                await run_db(
-                    enqueue_historical_priority,
-                    symbol,
-                    db_bar_size,
-                    what_to_show,
-                    requested_duration,
-                )
+            _spawn_background_revalidate(requested_duration)
             bars, source = cached["bars"], "cache"
         else:
             await run_db(
@@ -2695,6 +2730,8 @@ def create_app() -> FastAPI:
                 )
             except Exception:
                 pass
+            if bars:
+                _spawn_background_revalidate(requested_duration)
         return {
             "symbol": symbol,
             "bars": bars,

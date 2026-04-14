@@ -59,6 +59,27 @@ function parseBars(payload: { bars: Array<Record<string, number | boolean>> }): 
   }));
 }
 
+function clampInt(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function estimateIntradayDurationDays(timeframe: string, rawBarSize: RawBarSize): number {
+  const factor = Math.max(1, getResampleFactor(timeframe));
+  const targetRawBars = DEFAULT_BARS_VISIBLE * BUFFER_MULTIPLIER * factor;
+
+  if (rawBarSize === '1m') {
+    // Yahoo 1m hard-limit is ~29 days; keep this bounded.
+    const days = Math.ceil((targetRawBars / 390) * 2);
+    return clampInt(days, 3, 29);
+  }
+  if (rawBarSize === '5m') {
+    const days = Math.ceil((targetRawBars / 78) * 2);
+    return clampInt(days, 5, 365);
+  }
+  const days = Math.ceil((targetRawBars / 26) * 2);
+  return clampInt(days, 10, 730);
+}
+
 function getHistoricalRequestConfig(timeframe: string): {
   barSizeParam: '1 min' | '5 mins' | '15 mins' | '1 day';
   rawBarSize: RawBarSize;
@@ -70,12 +91,15 @@ function getHistoricalRequestConfig(timeframe: string): {
     return { barSizeParam: '1 day', rawBarSize: '1d', duration: '30 Y', stepMs: 86_400_000 };
   }
   if (tfMs <= 3 * 60_000) {
-    return { barSizeParam: '1 min', rawBarSize: '1m', duration: '20 D', stepMs: 60_000 };
+    const durationDays = estimateIntradayDurationDays(timeframe, '1m');
+    return { barSizeParam: '1 min', rawBarSize: '1m', duration: `${durationDays} D`, stepMs: 60_000 };
   }
   if (tfMs <= 10 * 60_000) {
-    return { barSizeParam: '5 mins', rawBarSize: '5m', duration: '90 D', stepMs: 5 * 60_000 };
+    const durationDays = estimateIntradayDurationDays(timeframe, '5m');
+    return { barSizeParam: '5 mins', rawBarSize: '5m', duration: `${durationDays} D`, stepMs: 5 * 60_000 };
   }
-  return { barSizeParam: '15 mins', rawBarSize: '15m', duration: '270 D', stepMs: 15 * 60_000 };
+  const durationDays = estimateIntradayDurationDays(timeframe, '15m');
+  return { barSizeParam: '15 mins', rawBarSize: '15m', duration: `${durationDays} D`, stepMs: 15 * 60_000 };
 }
 
 function mergeBarsByTime(existingBars: OHLCVBar[], incomingBars: OHLCVBar[]): OHLCVBar[] {

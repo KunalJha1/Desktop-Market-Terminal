@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 import sqlite3
 import time
 from datetime import date, datetime, timezone
@@ -58,6 +59,7 @@ BAR_SIZE_TARGET_DURATIONS = {
 MIN_INCREMENTAL_DAYS = 1
 MIN_INCREMENTAL_DAILY_DAYS = 30  # 1m minimum window for daily bar incremental fetches
 MAX_INCREMENTAL_INTRADAY_DAYS = 14
+MIN_INCREMENTAL_INTRADAY_SECONDS = 60
 
 # Per-symbol async locks to prevent concurrent fetches for the same symbol+bar_size.
 # Key: "{symbol}:{bar_size}" (e.g. "HIMS:1m")
@@ -237,11 +239,23 @@ def _days_to_ib_duration(days: int, is_daily: bool) -> str:
 
 
 def _incremental_tws_duration(last_ts_ms: int | None, default: str, is_daily: bool) -> str:
-    """Return the gap-to-now duration, with 1D minimum and 14D intraday cap."""
+    """Return gap-to-now duration; intraday uses seconds rounded up to 1 minute."""
     if last_ts_ms is None:
         return default
-    gap_days = int((time.time() - last_ts_ms / 1000) / 86400) + 1
-    return _days_to_ib_duration(gap_days, is_daily)
+    if is_daily:
+        gap_days = int((time.time() - last_ts_ms / 1000) / 86400) + 1
+        return _days_to_ib_duration(gap_days, True)
+
+    now_ms = int(time.time() * 1000)
+    gap_seconds = max(1, int(math.ceil((now_ms - int(last_ts_ms)) / 1000)))
+    # Add one minute cushion and round up to a full minute.
+    rounded_minute_seconds = int(math.ceil((gap_seconds + 60) / 60) * 60)
+    max_intraday_seconds = MAX_INCREMENTAL_INTRADAY_DAYS * 24 * 60 * 60
+    clamped_seconds = max(
+        MIN_INCREMENTAL_INTRADAY_SECONDS,
+        min(rounded_minute_seconds, max_intraday_seconds),
+    )
+    return f"{clamped_seconds} S"
 
 
 def _incremental_yahoo_period(last_ts_ms: int | None, default: str, is_daily: bool) -> str:
@@ -305,6 +319,52 @@ def _yahoo_seed_period(bar_size: str, lookback_days: int) -> str:
     if days <= 3650:
         return "10y"
     return "max"
+
+
+def _dailyiq_limit_for_fetch(
+    bar_size: str,
+    lookback_days: int,
+    last_ts_ms: int | None,
+) -> int:
+    """Estimate a DailyIQ limit sized to the actual gap, with bounded fallback."""
+    normalized = _normalize_bar_size(bar_size)
+    bars_per_day = {
+        "1m": 390.0,
+        "5m": 78.0,
+        "15m": 26.0,
+        "1h": 7.0,
+        "4h": 2.0,
+        "1d": 1.0,
+        "1w": 1.0 / 7.0,
+    }
+    step_ms = {
+        "1m": 60_000,
+        "5m": 5 * 60_000,
+        "15m": 15 * 60_000,
+        "1h": 60 * 60_000,
+        "4h": 4 * 60 * 60_000,
+        "1d": 24 * 60 * 60_000,
+        "1w": 7 * 24 * 60 * 60_000,
+    }
+
+    bpd = bars_per_day.get(normalized, 1.0)
+    lookback_cap = max(1, int(math.ceil(max(1, lookback_days) * bpd)))
+
+    if last_ts_ms is None:
+        # Cold cache: size from requested horizon, plus modest cushion.
+        estimate = int(math.ceil(lookback_cap * 1.15))
+        return max(50, min(5000, estimate))
+
+    # Incremental path: fetch only the gap since last cached bar (+ small buffer).
+    step = step_ms.get(normalized)
+    if step is None:
+        return max(50, min(5000, lookback_cap))
+
+    gap_ms = max(0, int(time.time() * 1000) - int(last_ts_ms))
+    gap_bars = max(1, int(math.ceil(gap_ms / step)))
+    buffer_bars = 12 if normalized in {"1m", "5m", "15m"} else 4
+    estimate = min(lookback_cap, gap_bars + buffer_bars)
+    return max(50, min(5000, estimate))
 
 
 def _ensure_schema(conn: sqlite3.Connection):
@@ -1156,7 +1216,7 @@ async def get_historical_bars(
         if _diq_supported and last_ts_ms is None:
             try:
                 from dailyiq_provider import fetch_bars_from_dailyiq_async
-                diq_limit = max(50, min(5000, lookback_days * ({"1m": 390, "5m": 78, "15m": 26, "1h": 7, "4h": 2, "1d": 1, "1w": 1}.get(db_bar_size, 1))))
+                diq_limit = _dailyiq_limit_for_fetch(db_bar_size, lookback_days, None)
                 diq_bars = await fetch_bars_from_dailyiq_async(symbol, timeframe=db_bar_size, limit=diq_limit)
                 if diq_bars:
                     fetched_bars = diq_bars
@@ -1189,8 +1249,8 @@ async def get_historical_bars(
                         # Fast seed for cold-cache intraday: return a small window
                         # immediately so the chart isn't blank. The background
                         # backfill_loop fills out the full history with force_deep=True.
-                        _cold_seed = {"1m": "1 D", "5m": "1 D", "15m": "1 D"}
-                        seed_dur = _cold_seed.get(db_bar_size, "1 D")
+                        _cold_seed = {"1m": "23400 S", "5m": "23400 S", "15m": "23400 S"}
+                        seed_dur = _cold_seed.get(db_bar_size, "23400 S")
                         tws_bars = await fetch_from_tws(
                             ib, symbol, seed_dur, tws_bar, what_to_show
                         )
@@ -1224,7 +1284,7 @@ async def get_historical_bars(
         if not fetched_bars and _diq_supported:
             try:
                 from dailyiq_provider import fetch_bars_from_dailyiq_async
-                diq_limit = max(50, min(5000, lookback_days * ({"1m": 390, "5m": 78, "15m": 26, "1h": 7, "4h": 2, "1d": 1, "1w": 1}.get(db_bar_size, 1))))
+                diq_limit = _dailyiq_limit_for_fetch(db_bar_size, lookback_days, last_ts_ms)
                 diq_bars = await fetch_bars_from_dailyiq_async(symbol, timeframe=db_bar_size, limit=diq_limit)
                 if diq_bars:
                     fetched_bars = diq_bars
