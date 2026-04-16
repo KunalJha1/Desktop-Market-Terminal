@@ -5,6 +5,7 @@ import { INDICATOR_COLORS } from '../constants';
 import smaScript from './scripts/sma.diq?raw';
 import emaScript from './scripts/ema.diq?raw';
 import emaRibbonScript from './scripts/emaRibbon.diq?raw';
+import dailyIQTechnicalTableScript from './scripts/dailyIQTechnicalTable.diq?raw';
 import bollingerScript from './scripts/bollinger.diq?raw';
 import vwapScript from './scripts/vwap.diq?raw';
 import envelopeScript from './scripts/envelope.diq?raw';
@@ -70,6 +71,47 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
       { key: 'slow', label: 'EMA 200', color: C[6], style: 'line', lineWidth: 1.5 },
     ],
     scriptSource: emaRibbonScript,
+    isBuiltIn: true,
+  },
+
+  'DailyIQ Technical Table': {
+    name: 'DailyIQ Technical Table',
+    shortName: 'DIQ Table',
+    category: 'overlay',
+    defaultParams: {
+      fastLen: 5,
+      slowLen: 20,
+      trendLen: 50,
+      useVolFilter: 0,
+      volLen: 20,
+      sweepLookback: 10,
+      requireSweepEntry: 0,
+      showTrendEma: 0,
+      showEma200: 1,
+    },
+    paramLabels: {
+      fastLen: 'Fast EMA',
+      slowLen: 'Slow EMA',
+      trendLen: 'Trend EMA',
+      useVolFilter: 'Use Volume Filter (1/0)',
+      volLen: 'Volume MA Length',
+      sweepLookback: 'Sweep Lookback',
+      requireSweepEntry: 'Require Sweep Entry (1/0)',
+      showTrendEma: 'Show Trend EMA (1/0)',
+      showEma200: 'Show EMA 200 (1/0)',
+    },
+    legendSwatchKeys: ['fast', 'slow', 'trend', 'ema200'],
+    outputs: [
+      { key: 'fast', label: 'EMA Fast', color: '#00C853', style: 'line', lineWidth: 1.8 },
+      { key: 'slow', label: 'EMA Slow', color: '#FF3D71', style: 'line', lineWidth: 1.8 },
+      { key: 'trend', label: 'EMA Trend', color: '#FFFFFF', style: 'line', lineWidth: 1.4 },
+      { key: 'ema200', label: 'EMA 200', color: '#1A56DB', style: 'line', lineWidth: 1.8 },
+      { key: 'buy', label: 'BUY', color: '#00C853', style: 'markers' },
+      { key: 'sell', label: 'SELL', color: '#FF3D71', style: 'markers' },
+      { key: 'bullSweep', label: 'Bull Sweep', color: '#22C55E', style: 'dots' },
+      { key: 'bearSweep', label: 'Bear Sweep', color: '#EF4444', style: 'dots' },
+    ],
+    scriptSource: dailyIQTechnicalTableScript,
     isBuiltIn: true,
   },
 
@@ -763,6 +805,8 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     outputs: [
       { key: 'prices', label: 'Price Levels', color: C[0], style: 'histogram' },
       { key: 'volumes', label: 'Volume', color: C[5], style: 'histogram' },
+      { key: 'upVolume', label: 'Up Volume', color: '#00C853', style: 'histogram' },
+      { key: 'downVolume', label: 'Down Volume', color: '#FF3D71', style: 'histogram' },
     ],
   },
 };

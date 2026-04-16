@@ -88,6 +88,7 @@ export default function ChartCanvas({
   const [yAxisHovered, setYAxisHovered] = useState(false);
   const [xAxisHovered, setXAxisHovered] = useState(false);
   const [drawingHovered, setDrawingHovered] = useState(false);
+  const [volumeProfileHovered, setVolumeProfileHovered] = useState(false);
   const [selectedDrawing, setSelectedDrawing] = useState<DrawingSelection | null>(null);
   const [pendingTextAnchor, setPendingTextAnchor] = useState<DrawingAnchor | null>(null);
   const [pendingTextValue, setPendingTextValue] = useState('');
@@ -368,12 +369,15 @@ export default function ChartCanvas({
     setXAxisHovered(prev => prev === overXAxis ? prev : overXAxis);
     const hovered = !!engineRef.current?.getHoveredDrawingId();
     setDrawingHovered(prev => prev === hovered ? prev : hovered);
+    const hoveredVolumeProfile = !!engineRef.current?.getHoveredVolumeProfileId();
+    setVolumeProfileHovered(prev => prev === hoveredVolumeProfile ? prev : hoveredVolumeProfile);
   }, [engineRef]);
 
   const handleCanvasPointerLeave = useCallback(() => {
     setYAxisHovered(false);
     setXAxisHovered(false);
     setDrawingHovered(false);
+    setVolumeProfileHovered(false);
   }, []);
 
   useEffect(() => {
@@ -498,7 +502,7 @@ export default function ChartCanvas({
           className="absolute inset-0"
           onMouseMove={handleCanvasPointerMove}
           onMouseLeave={handleCanvasPointerLeave}
-          style={{ cursor: yAxisHovered ? 'ns-resize' : xAxisHovered ? 'ew-resize' : activeTool !== 'none' ? 'copy' : drawingHovered ? 'move' : 'crosshair' }}
+          style={{ cursor: yAxisHovered ? 'ns-resize' : xAxisHovered ? 'ew-resize' : activeTool !== 'none' ? 'copy' : drawingHovered ? 'move' : volumeProfileHovered ? 'grab' : 'crosshair' }}
         />
         {/* A / L scale mode buttons pinned to bottom of price section y-axis */}
         <div

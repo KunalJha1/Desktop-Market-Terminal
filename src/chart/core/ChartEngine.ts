@@ -151,6 +151,12 @@ export class ChartEngine {
   private dragDrawingOriginEnd: DrawingAnchor | null = null;
   private dragEndpoint: 'start' | 'end' | 'whole' = 'whole';
   private hoveredDrawingId: string | null = null;
+  private volumeProfileOffsetsPx: Map<string, number> = new Map();
+  private volumeProfileHitAreas: Map<string, { left: number; right: number; top: number; bottom: number }> = new Map();
+  private hoveredVolumeProfileId: string | null = null;
+  private draggedVolumeProfileId: string | null = null;
+  private dragVolumeProfileOriginMouseX = 0;
+  private dragVolumeProfileOriginOffsetPx = 0;
   private selectedDrawingId: string | null = null;
   private _onTextPlacementRequest: ((anchor: DrawingAnchor) => void) | null = null;
   private _onDrawingSelectionChange: ((selection: DrawingSelection | null) => void) | null = null;
@@ -572,7 +578,7 @@ export class ChartEngine {
       }
     }
     const id = `ind_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const paneId = meta.category === 'overlay' ? 'main' : `pane:${id}`;
+    const paneId = (meta.category === 'overlay' || name === 'Volume Profile') ? 'main' : `pane:${id}`;
     const colors: Record<string, string> = {};
     const lineWidths: Record<string, number> = {};
     const lineStyles: Record<string, 'solid' | 'dashed' | 'dotted'> = {};
@@ -601,6 +607,10 @@ export class ChartEngine {
 
   removeIndicator(id: string) {
     this.activeIndicators = this.activeIndicators.filter(ind => ind.id !== id);
+    this.volumeProfileOffsetsPx.delete(id);
+    this.volumeProfileHitAreas.delete(id);
+    if (this.hoveredVolumeProfileId === id) this.hoveredVolumeProfileId = null;
+    if (this.draggedVolumeProfileId === id) this.draggedVolumeProfileId = null;
     this.markDirty();
   }
 
@@ -1074,6 +1084,7 @@ export class ChartEngine {
   private render() {
     const layout = this.computeLayout();
     const chartAreaWidth = this.width - PRICE_AXIS_WIDTH;
+    this.volumeProfileHitAreas.clear();
 
     this.viewport.setRegion(0, layout.mainTop, chartAreaWidth, layout.mainHeight);
     if (this.chartType === 'volume-weighted') {
@@ -2386,6 +2397,37 @@ export class ChartEngine {
     }
   }
 
+  private clampVolumeProfileOffsetPx(
+    indicatorId: string,
+    chartAreaWidth: number,
+    maxProfileWidth: number,
+  ): number {
+    const baseRightX = chartAreaWidth - 8;
+    const rawOffset = this.volumeProfileOffsetsPx.get(indicatorId) ?? 0;
+    const minRightX = maxProfileWidth + 6;
+    const maxRightX = chartAreaWidth - 4;
+    const clampedRightX = Math.min(maxRightX, Math.max(minRightX, baseRightX + rawOffset));
+    const clampedOffset = clampedRightX - baseRightX;
+    if (Math.abs(clampedOffset - rawOffset) > 0.5) {
+      this.volumeProfileOffsetsPx.set(indicatorId, clampedOffset);
+    }
+    return clampedOffset;
+  }
+
+  private hitTestVolumeProfile(mx: number, my: number): string | null {
+    let hitId: string | null = null;
+    for (const [id, area] of this.volumeProfileHitAreas.entries()) {
+      if (mx >= area.left && mx <= area.right && my >= area.top && my <= area.bottom) {
+        hitId = id;
+      }
+    }
+    return hitId;
+  }
+
+  getHoveredVolumeProfileId(): string | null {
+    return this.hoveredVolumeProfileId;
+  }
+
   private renderVolumeProfile(
     ind: ActiveIndicator,
     toY: (value: number) => number,
@@ -2393,32 +2435,81 @@ export class ChartEngine {
     clipBottom: number,
   ) {
     const prices = ind.data[0] ?? [];
-    const volumes = ind.data[1] ?? [];
-    const bins = Math.min(prices.length, volumes.length);
+    const totalVolumes = ind.data[1] ?? [];
+    const upVolumes = ind.data[2] ?? [];
+    const downVolumes = ind.data[3] ?? [];
+    const bins = Math.min(prices.length, totalVolumes.length);
     if (bins === 0) return;
 
     let maxVolume = 0;
     for (let i = 0; i < bins; i++) {
-      if (!isNaN(volumes[i]) && volumes[i] > maxVolume) maxVolume = volumes[i];
+      if (!isNaN(totalVolumes[i]) && totalVolumes[i] > maxVolume) maxVolume = totalVolumes[i];
     }
     if (!(maxVolume > 0)) return;
 
     const chartAreaWidth = this.width - PRICE_AXIS_WIDTH;
-    const rightX = chartAreaWidth - 8;
     const maxProfileWidth = Math.max(24, Math.min(chartAreaWidth * 0.28, 140));
+    const baseRightX = chartAreaWidth - 8;
+    const rightX = baseRightX + this.clampVolumeProfileOffsetPx(ind.id, chartAreaWidth, maxProfileWidth);
     const drawColor = ind.colors?.volumes ?? indicatorRegistry[ind.name].outputs[1]?.color ?? COLORS.blue;
+    const upColor = ind.colors?.upVolume ?? '#00C853';
+    const downColor = ind.colors?.downVolume ?? '#FF3D71';
     const binHeight = Math.max(2, Math.floor((clipBottom - clipTop) / Math.max(bins, 1) * 0.9));
+
+    let maxDrawnWidth = 0;
+    let minDrawnY = Infinity;
+    let maxDrawnY = -Infinity;
 
     for (let i = 0; i < bins; i++) {
       const price = prices[i];
-      const volume = volumes[i];
-      if (isNaN(price) || isNaN(volume) || volume <= 0) continue;
+      const total = totalVolumes[i];
+      if (isNaN(price) || isNaN(total) || total <= 0) continue;
 
       const y = toY(price);
       if (y < clipTop - binHeight || y > clipBottom + binHeight) continue;
 
-      const width = Math.max(1, (volume / maxVolume) * maxProfileWidth);
-      this.renderer.rect(rightX - width, y - binHeight / 2, width, binHeight, drawColor);
+      const width = Math.max(1, (total / maxVolume) * maxProfileWidth);
+      const leftX = rightX - width;
+      const topY = y - binHeight / 2;
+      const up = Number.isFinite(upVolumes[i]) ? upVolumes[i] : NaN;
+      const down = Number.isFinite(downVolumes[i]) ? downVolumes[i] : NaN;
+      const splitSum = (Number.isFinite(up) ? up : 0) + (Number.isFinite(down) ? down : 0);
+
+      if (splitSum > 0) {
+        const downWidth = width * ((Number.isFinite(down) ? down : 0) / splitSum);
+        const upWidth = width - downWidth;
+        if (downWidth > 0.5) this.renderer.rect(leftX, topY, downWidth, binHeight, downColor);
+        if (upWidth > 0.5) this.renderer.rect(leftX + downWidth, topY, upWidth, binHeight, upColor);
+      } else {
+        this.renderer.rect(leftX, topY, width, binHeight, drawColor);
+      }
+
+      maxDrawnWidth = Math.max(maxDrawnWidth, width);
+      minDrawnY = Math.min(minDrawnY, topY);
+      maxDrawnY = Math.max(maxDrawnY, topY + binHeight);
+    }
+
+    if (maxDrawnWidth > 0 && Number.isFinite(minDrawnY) && Number.isFinite(maxDrawnY)) {
+      const hitArea = {
+        left: Math.max(0, rightX - Math.max(maxDrawnWidth, 8) - 6),
+        right: Math.min(chartAreaWidth, rightX + 4),
+        top: Math.max(clipTop, minDrawnY - 4),
+        bottom: Math.min(clipBottom, maxDrawnY + 4),
+      };
+      this.volumeProfileHitAreas.set(ind.id, hitArea);
+      if (this.hoveredVolumeProfileId === ind.id || this.draggedVolumeProfileId === ind.id) {
+        const strokeColor = this.draggedVolumeProfileId === ind.id
+          ? this.withAlpha('#93C5FD', 0.85)
+          : this.withAlpha('#93C5FD', 0.55);
+        this.renderer.rectStroke(
+          hitArea.left,
+          hitArea.top,
+          Math.max(1, hitArea.right - hitArea.left),
+          Math.max(1, hitArea.bottom - hitArea.top),
+          strokeColor,
+          1,
+        );
+      }
     }
   }
 
@@ -3072,6 +3163,15 @@ export class ChartEngine {
         this.markDirty();
         return;
       }
+      const volumeProfileHitId = this.hitTestVolumeProfile(mx, my);
+      if (volumeProfileHitId) {
+        this.draggedVolumeProfileId = volumeProfileHitId;
+        this.dragVolumeProfileOriginMouseX = mx;
+        this.dragVolumeProfileOriginOffsetPx = this.volumeProfileOffsetsPx.get(volumeProfileHitId) ?? 0;
+        this.hoveredVolumeProfileId = volumeProfileHitId;
+        this.markDirty();
+        return;
+      }
       this.setSelectedDrawingId(null);
     }
     this.panZoom.onMouseDown(e);
@@ -3080,7 +3180,7 @@ export class ChartEngine {
   // Coalesced into RAF loop for crosshair — drawing/drag paths still run per-event for responsiveness
   private onMouseMove = (e: MouseEvent) => {
     // Drawing and drag operations need immediate response — bypass the RAF coalescing
-    if (this.drawingPointerActive || this.draggedDrawingId) {
+    if (this.drawingPointerActive || this.draggedDrawingId || this.draggedVolumeProfileId) {
       this.processMouseMove(e);
       return;
     }
@@ -3146,6 +3246,20 @@ export class ChartEngine {
       return;
     }
 
+    if (this.draggedVolumeProfileId) {
+      const chartAreaWidth = this.width - PRICE_AXIS_WIDTH;
+      const maxProfileWidth = Math.max(24, Math.min(chartAreaWidth * 0.28, 140));
+      const baseRightX = chartAreaWidth - 8;
+      const minRightX = maxProfileWidth + 6;
+      const maxRightX = chartAreaWidth - 4;
+      const wantedRightX = baseRightX + this.dragVolumeProfileOriginOffsetPx + (mx - this.dragVolumeProfileOriginMouseX);
+      const clampedRightX = Math.min(maxRightX, Math.max(minRightX, wantedRightX));
+      this.volumeProfileOffsetsPx.set(this.draggedVolumeProfileId, clampedRightX - baseRightX);
+      this.hoveredVolumeProfileId = this.draggedVolumeProfileId;
+      this.markDirty();
+      return;
+    }
+
     this.panZoom.onMouseMove(e, rect);
 
     // Update hover state for drawings (when no tool active and not dragging)
@@ -3157,6 +3271,14 @@ export class ChartEngine {
         this._onDrawingHoverChange?.(newHoveredId);
         this.markDirty();
       }
+      const hoveredVolumeProfileId = this.hitTestVolumeProfile(mx, my);
+      if (hoveredVolumeProfileId !== this.hoveredVolumeProfileId) {
+        this.hoveredVolumeProfileId = hoveredVolumeProfileId;
+        this.markDirty();
+      }
+    } else if (this.hoveredVolumeProfileId) {
+      this.hoveredVolumeProfileId = null;
+      this.markDirty();
     }
 
     // Crosshair — only redraw if the bar index or chart-presence changed
@@ -3222,6 +3344,10 @@ export class ChartEngine {
       this.dragEndpoint = 'whole';
       return;
     }
+    if (this.draggedVolumeProfileId) {
+      this.draggedVolumeProfileId = null;
+      return;
+    }
     this.panZoom.onMouseUp(e);
   };
 
@@ -3247,6 +3373,7 @@ export class ChartEngine {
     this.crosshair.visible = false;
     this.crosshair.hit = null;
     this.hoveredDrawingId = null;
+    this.hoveredVolumeProfileId = null;
     this.markDirty();
   };
 

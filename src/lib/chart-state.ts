@@ -33,6 +33,18 @@ export interface ProbEngWidgetState {
   locked: boolean;
 }
 
+export interface TechnicalTableWidgetState {
+  x: number;
+  y: number;
+  width: number;
+  /** 0-1 horizontal position in the draggable band (persists across resize). */
+  normX?: number;
+  /** 0-1 vertical position in the draggable band (persists across resize). */
+  normY?: number;
+  visible: boolean;
+  locked: boolean;
+}
+
 export interface ChartState {
   symbol: string;
   timeframe: Timeframe;
@@ -47,6 +59,7 @@ export interface ChartState {
   customStrategies?: CustomStrategyDefinition[];
   activeCustomStrategyIds?: string[];
   probEngWidget?: ProbEngWidgetState;
+  technicalTableWidget?: TechnicalTableWidgetState;
   tooltipFields?: Record<string, boolean>;
   indicatorPanelOpen?: boolean;
   strategyPanelOpen?: boolean;
@@ -62,6 +75,16 @@ export function createDefaultProbEngWidgetState(): ProbEngWidgetState {
     y: 64,
     visible: true,
     detailed: false,
+    locked: false,
+  };
+}
+
+export function createDefaultTechnicalTableWidgetState(): TechnicalTableWidgetState {
+  return {
+    x: 120,
+    y: 120,
+    width: 520,
+    visible: true,
     locked: false,
   };
 }
@@ -265,6 +288,23 @@ export function loadChartState(tabId: string): ChartState | null {
               : base;
           })()
         : createDefaultProbEngWidgetState(),
+      technicalTableWidget: isRecord((parsed as { technicalTableWidget?: unknown }).technicalTableWidget)
+        ? (() => {
+            const tw = (parsed as { technicalTableWidget?: unknown }).technicalTableWidget as Record<string, unknown>;
+            const base = {
+              x: typeof tw.x === "number" ? tw.x : 120,
+              y: typeof tw.y === "number" ? tw.y : 120,
+              width: typeof tw.width === "number" ? Math.max(460, Math.min(680, tw.width)) : 520,
+              visible: typeof tw.visible === "boolean" ? tw.visible : true,
+              locked: typeof tw.locked === "boolean" ? tw.locked : false,
+            };
+            const normX = typeof tw.normX === "number" && Number.isFinite(tw.normX) ? tw.normX : undefined;
+            const normY = typeof tw.normY === "number" && Number.isFinite(tw.normY) ? tw.normY : undefined;
+            return normX !== undefined && normY !== undefined
+              ? { ...base, normX, normY }
+              : base;
+          })()
+        : createDefaultTechnicalTableWidgetState(),
     };
   } catch {
     return null;

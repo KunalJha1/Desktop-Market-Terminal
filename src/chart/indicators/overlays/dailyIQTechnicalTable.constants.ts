@@ -1,0 +1,40 @@
+export const DIQ_TABLE_TIMEFRAMES = ['1m', '5m', '15m', '30m', '1H', '4H', '1D', '1W'] as const;
+
+export const DIQ_TABLE_METRICS_PER_TF = 9;
+
+export const DIQ_TABLE_OUTPUT_INDEX = {
+  FAST_EMA: 0,
+  SLOW_EMA: 1,
+  TREND_EMA: 2,
+  EMA_200: 3,
+  BUY_SIGNAL: 4,
+  SELL_SIGNAL: 5,
+  BULL_SWEEP: 6,
+  BEAR_SWEEP: 7,
+} as const;
+
+export const DIQ_TABLE_TF_START = 8;
+
+export const DIQ_TABLE_TF_METRIC_INDEX = {
+  TREND: 0,
+  STRENGTH: 1,
+  CHOP_ANGLE: 2,
+  RSI_NOW: 3,
+  RSI_PREV: 4,
+  MACD_NOW: 5,
+  MACD_SIGNAL: 6,
+  MACD_PREV: 7,
+  MACD_SIGNAL_PREV: 8,
+} as const;
+
+export function diqTableTfMetricSeriesIndex(tfIndex: number, metricIndex: number): number {
+  return DIQ_TABLE_TF_START + (tfIndex * DIQ_TABLE_METRICS_PER_TF) + metricIndex;
+}
+
+export const DIQ_TABLE_OVERALL_INDEX = {
+  TREND: DIQ_TABLE_TF_START + (DIQ_TABLE_TIMEFRAMES.length * DIQ_TABLE_METRICS_PER_TF),
+  STRENGTH: DIQ_TABLE_TF_START + (DIQ_TABLE_TIMEFRAMES.length * DIQ_TABLE_METRICS_PER_TF) + 1,
+  CHOP_ANGLE: DIQ_TABLE_TF_START + (DIQ_TABLE_TIMEFRAMES.length * DIQ_TABLE_METRICS_PER_TF) + 2,
+  RSI_AVG: DIQ_TABLE_TF_START + (DIQ_TABLE_TIMEFRAMES.length * DIQ_TABLE_METRICS_PER_TF) + 3,
+  MACD_STATE: DIQ_TABLE_TF_START + (DIQ_TABLE_TIMEFRAMES.length * DIQ_TABLE_METRICS_PER_TF) + 4,
+} as const;

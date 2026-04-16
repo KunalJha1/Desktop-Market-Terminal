@@ -76,6 +76,7 @@ export function stdev(data: number[], period: number): number[] {
 import { computeSMA } from './overlays/sma';
 import { computeEMA } from './overlays/ema';
 import { computeEMARibbon } from './overlays/emaRibbon';
+import { computeDailyIQTechnicalTable } from './overlays/dailyIQTechnicalTable';
 import { computeBollinger } from './overlays/bollinger';
 import { computeVWAP } from './overlays/vwap';
 import { computeIchimoku } from './overlays/ichimoku';
@@ -124,6 +125,7 @@ const computeFns: Record<string, (bars: OHLCVBar[], params: Record<string, numbe
   SMA: computeSMA,
   EMA: computeEMA,
   'EMA Ribbon 5/20/200': computeEMARibbon,
+  'DailyIQ Technical Table': computeDailyIQTechnicalTable,
   'Bollinger Bands': computeBollinger,
   VWAP: computeVWAP,
   Ichimoku: computeIchimoku,

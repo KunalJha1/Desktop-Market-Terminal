@@ -13,12 +13,14 @@ import { interpretScript } from '../chart/scripting/interpreter';
 import {
   createDefaultPersistedChartIndicators,
   createDefaultProbEngWidgetState,
+  createDefaultTechnicalTableWidgetState,
   loadChartState,
   saveChartState,
   type PersistedChartIndicator,
   type PersistedChartScript,
   type ChartState,
   type ProbEngWidgetState,
+  type TechnicalTableWidgetState,
 } from '../lib/chart-state';
 // DISABLED: import/export not yet functional (restore chart-config imports when enabling)
 // import {
@@ -43,6 +45,9 @@ import {
   probEngPixelFromNorm,
 } from '../lib/probEngLayout';
 import { MASTER_PROMPT } from '../lib/master-prompt';
+import {
+  DIQ_TABLE_TIMEFRAMES,
+} from '../chart/indicators/overlays/dailyIQTechnicalTable.constants';
 
 interface ChartPageProps {
   tabId?: string;
@@ -53,6 +58,13 @@ const PROBENG_WIDGET_WIDTH_DETAILED = 230;
 const PROBENG_WIDGET_HEADER_HEIGHT = 24;
 const PROBENG_WIDGET_EDGE_PADDING = 10;
 const PROBENG_WIDGET_DRAG_THRESHOLD = 4;
+const TECH_TABLE_HEADER_HEIGHT = 28;
+const TECH_TABLE_EDGE_PADDING = 10;
+const TECH_TABLE_DRAG_THRESHOLD = 4;
+const TECH_TABLE_RESIZE_THRESHOLD = 3;
+const TECH_TABLE_MIN_WIDTH = 460;
+const TECH_TABLE_MAX_WIDTH = 680;
+const TECH_TABLE_APPROX_HEIGHT = 286;
 
 function getChartProbEngDragBounds(
   detailed: boolean,
@@ -105,6 +117,71 @@ function getDefaultProbEngWidgetPosition(
   const x = Math.max(chartToolRailWidth + 8, hostWidth - chartLayout.priceAxisWidth - width - 12);
   const y = chartLayout.mainTop + 12;
   return { x, y };
+}
+
+function getTechnicalTableDragBounds(
+  widget: TechnicalTableWidgetState,
+  chartLayout: ChartLayout,
+  hostWidth: number,
+  hostHeight: number,
+  chartToolRailWidth: number,
+): { minX: number; maxX: number; minY: number; maxY: number } {
+  const width = Math.max(TECH_TABLE_MIN_WIDTH, Math.min(TECH_TABLE_MAX_WIDTH, widget.width));
+  const minX = chartToolRailWidth + TECH_TABLE_EDGE_PADDING;
+  const maxX = Math.max(minX, hostWidth - chartLayout.priceAxisWidth - width - TECH_TABLE_EDGE_PADDING);
+  const minY = chartLayout.mainTop + TECH_TABLE_EDGE_PADDING;
+  const maxY = Math.max(minY, hostHeight - chartLayout.timeAxisHeight - TECH_TABLE_APPROX_HEIGHT - TECH_TABLE_EDGE_PADDING);
+  return { minX, maxX, minY, maxY };
+}
+
+function clampTechnicalTableWidgetPosition(
+  widget: TechnicalTableWidgetState,
+  chartLayout: ChartLayout | null,
+  hostWidth: number,
+  hostHeight: number,
+  chartToolRailWidth: number,
+): TechnicalTableWidgetState {
+  if (!chartLayout) return widget;
+  const width = Math.max(TECH_TABLE_MIN_WIDTH, Math.min(TECH_TABLE_MAX_WIDTH, widget.width));
+  const b = getTechnicalTableDragBounds({ ...widget, width }, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+  return {
+    ...widget,
+    width,
+    x: Math.round(Math.min(Math.max(widget.x, b.minX), b.maxX)),
+    y: Math.round(Math.min(Math.max(widget.y, b.minY), b.maxY)),
+  };
+}
+
+function chartTechnicalTableClampWithNorm(
+  widget: TechnicalTableWidgetState,
+  chartLayout: ChartLayout,
+  hostWidth: number,
+  hostHeight: number,
+  chartToolRailWidth: number,
+): TechnicalTableWidgetState {
+  const next = clampTechnicalTableWidgetPosition(widget, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+  const b = getTechnicalTableDragBounds(next, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+  const { normX, normY } = probEngNormFromPixel(next.x, next.y, b.minX, b.maxX, b.minY, b.maxY);
+  return { ...next, normX, normY };
+}
+
+function getDefaultTechnicalTableWidgetPosition(
+  chartLayout: ChartLayout,
+  hostWidth: number,
+  hostHeight: number,
+  chartToolRailWidth: number,
+  width: number,
+): Pick<TechnicalTableWidgetState, 'x' | 'y'> {
+  const widget: TechnicalTableWidgetState = {
+    ...createDefaultTechnicalTableWidgetState(),
+    width,
+  };
+  const b = getTechnicalTableDragBounds(widget, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+  return { x: b.maxX, y: b.maxY };
+}
+
+function technicalTableHasNorm(widget: TechnicalTableWidgetState): boolean {
+  return Number.isFinite(widget.normX) && Number.isFinite(widget.normY);
 }
 
 function getProbEngSourceLabel(source: number): string {
@@ -318,6 +395,683 @@ function ProbEngFloatingWidget({
   );
 }
 
+function diqTrendText(value: number): string {
+  if (value === 1) return 'Bullish';
+  if (value === -1) return 'Bearish';
+  return 'Neutral';
+}
+
+function diqTrendColor(value: number): string {
+  if (value === 1) return '#00C853';
+  if (value === -1) return '#FF3D71';
+  return '#6B7280';
+}
+
+function diqStrengthText(score: number): string {
+  if (!Number.isFinite(score)) return '--';
+  if (score >= 0.6) return 'High';
+  if (score >= 0.25) return 'Medium';
+  return 'Low';
+}
+
+function diqStrengthColor(score: number): string {
+  if (!Number.isFinite(score)) return '#6B7280';
+  if (score >= 0.6) return '#00C853';
+  if (score >= 0.25) return '#F59E0B';
+  return '#FB923C';
+}
+
+function diqChopText(angle: number): string {
+  if (!Number.isFinite(angle)) return '--';
+  if (angle >= 5) return 'Strong Up';
+  if (angle >= 3.57) return 'Up';
+  if (angle >= 2.14) return 'Med Up';
+  if (angle >= 0.71) return 'Weak Up';
+  if (angle <= -5) return 'Strong Down';
+  if (angle <= -3.57) return 'Down';
+  if (angle <= -2.14) return 'Med Down';
+  if (angle <= -0.71) return 'Weak Down';
+  return 'Chop';
+}
+
+function diqChopColor(angle: number): string {
+  if (!Number.isFinite(angle)) return '#6B7280';
+  if (angle >= 5) return '#26C6DA';
+  if (angle >= 3.57) return '#43A047';
+  if (angle >= 2.14) return '#A5D6A7';
+  if (angle >= 0.71) return '#009688';
+  if (angle <= -5) return '#D50000';
+  if (angle <= -3.57) return '#E91E63';
+  if (angle <= -2.14) return '#FF6D00';
+  if (angle <= -0.71) return '#FFB74D';
+  return '#FDD835';
+}
+
+function diqRsiText(now: number, prev: number): string {
+  if (!Number.isFinite(now)) return '--';
+  const diff = Number.isFinite(prev) ? now - prev : 0;
+  const arrow = diff > 0.25 ? '↑' : diff < -0.25 ? '↓' : '→';
+  return `${now.toFixed(1)} ${arrow}`;
+}
+
+function diqRsiColor(now: number, prev: number): string {
+  if (!Number.isFinite(now)) return '#6B7280';
+  const diff = Number.isFinite(prev) ? now - prev : 0;
+  if (diff > 0.25 && now >= 55) return '#00C853';
+  if (diff < -0.25 && now <= 45) return '#FF3D71';
+  if (Math.abs(diff) <= 0.25) return '#6B7280';
+  if (now > 60) return '#22C55E';
+  if (now < 40) return '#991B1B';
+  return '#F59E0B';
+}
+
+function diqMacdText(macdNow: number, signalNow: number, macdPrev: number, signalPrev: number): string {
+  if (!Number.isFinite(macdNow) || !Number.isFinite(signalNow)) return '--';
+  const bullCross = Number.isFinite(macdPrev) && Number.isFinite(signalPrev) && macdPrev <= signalPrev && macdNow > signalNow;
+  const bearCross = Number.isFinite(macdPrev) && Number.isFinite(signalPrev) && macdPrev >= signalPrev && macdNow < signalNow;
+  const diff = Number.isFinite(macdPrev) ? macdNow - macdPrev : 0;
+  const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '→';
+  if (bullCross) return 'Bull X ↑';
+  if (bearCross) return 'Bear X ↓';
+  if (macdNow > signalNow) return `Bull ${arrow}`;
+  if (macdNow < signalNow) return `Bear ${arrow}`;
+  return 'Flat →';
+}
+
+function diqMacdColor(macdNow: number, signalNow: number, macdPrev: number, signalPrev: number): string {
+  if (!Number.isFinite(macdNow) || !Number.isFinite(signalNow)) return '#6B7280';
+  const bullCross = Number.isFinite(macdPrev) && Number.isFinite(signalPrev) && macdPrev <= signalPrev && macdNow > signalNow;
+  const bearCross = Number.isFinite(macdPrev) && Number.isFinite(signalPrev) && macdPrev >= signalPrev && macdNow < signalNow;
+  if (bullCross) return '#00C853';
+  if (bearCross) return '#FF3D71';
+  if (macdNow > signalNow) return '#22C55E';
+  if (macdNow < signalNow) return '#FB923C';
+  return '#6B7280';
+}
+
+interface TechnicalTableRowSnapshot {
+  tf: string;
+  trend: number;
+  strength: number;
+  chop: number;
+  rsiNow: number;
+  rsiPrev: number;
+  macdNow: number;
+  macdSignal: number;
+  macdPrev: number;
+  macdSignalPrev: number;
+}
+
+interface TechnicalTableSnapshot {
+  rows: TechnicalTableRowSnapshot[];
+  overallTrend: number;
+  overallStrength: number;
+  overallChop: number;
+  overallRsi: number;
+  overallMacdState: number;
+}
+
+function tableBucketFor(tsMs: number, timeframe: string): number {
+  if (timeframe === '1W') {
+    const mondayOffsetMs = 4 * 86_400_000;
+    return Math.floor((tsMs - mondayOffsetMs) / 604_800_000) * 604_800_000 + mondayOffsetMs;
+  }
+  if (timeframe === '1M' || timeframe === '3M' || timeframe === '6M' || timeframe === '12M') {
+    const d = new Date(tsMs);
+    const monthsPerBucket = timeframe === '3M' ? 3 : timeframe === '6M' ? 6 : timeframe === '12M' ? 12 : 1;
+    const bucketMonth = Math.floor(d.getUTCMonth() / monthsPerBucket) * monthsPerBucket;
+    return Date.UTC(d.getUTCFullYear(), bucketMonth, 1);
+  }
+  const ms = getTimeframeMs(timeframe);
+  return Math.floor(tsMs / ms) * ms;
+}
+
+function normalizeHistoricalBarTimeMs(rawTime: number): number {
+  if (!Number.isFinite(rawTime)) return NaN;
+  // Some providers can send epoch seconds while others send epoch ms.
+  return Math.abs(rawTime) < 100_000_000_000 ? Math.round(rawTime * 1000) : Math.round(rawTime);
+}
+
+function tableResampleBars(bars: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number; synthetic?: boolean }>, timeframe: string) {
+  const result: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number; synthetic?: boolean }> = [];
+  let current: { time: number; open: number; high: number; low: number; close: number; volume: number; synthetic?: boolean } | null = null;
+  let currentBucket = -1;
+  let bucketHasSynthetic = false;
+
+  for (const bar of bars) {
+    const bucket = tableBucketFor(bar.time, timeframe);
+    if (bucket !== currentBucket || !current) {
+      if (current) {
+        if (bucketHasSynthetic) current.synthetic = true;
+        result.push(current);
+      }
+      currentBucket = bucket;
+      bucketHasSynthetic = !!bar.synthetic;
+      current = {
+        time: bucket,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+        volume: bar.volume,
+      };
+    } else {
+      current.high = Math.max(current.high, bar.high);
+      current.low = Math.min(current.low, bar.low);
+      current.close = bar.close;
+      current.volume += bar.volume;
+      if (bar.synthetic) bucketHasSynthetic = true;
+    }
+  }
+
+  if (current) {
+    if (bucketHasSynthetic) current.synthetic = true;
+    result.push(current);
+  }
+
+  return result;
+}
+
+function tableEma(values: number[], period: number): number[] {
+  const len = values.length;
+  const result = new Array<number>(len).fill(NaN);
+  const k = 2 / (period + 1);
+  let seeded = false;
+  let seedSum = 0;
+  let seedCount = 0;
+  let prev = NaN;
+  for (let i = 0; i < len; i += 1) {
+    const value = values[i];
+    if (!Number.isFinite(value)) continue;
+    if (!seeded) {
+      seedSum += value;
+      seedCount += 1;
+      if (seedCount === period) {
+        prev = seedSum / period;
+        result[i] = prev;
+        seeded = true;
+      }
+    } else {
+      prev = (value * k) + (prev * (1 - k));
+      result[i] = prev;
+    }
+  }
+  return result;
+}
+
+function tableAtr(bars: Array<{ high: number; low: number; close: number }>, period: number): number[] {
+  const tr = new Array<number>(bars.length).fill(NaN);
+  const result = new Array<number>(bars.length).fill(NaN);
+  for (let i = 0; i < bars.length; i += 1) {
+    if (i === 0) tr[i] = bars[i].high - bars[i].low;
+    else {
+      tr[i] = Math.max(
+        bars[i].high - bars[i].low,
+        Math.abs(bars[i].high - bars[i - 1].close),
+        Math.abs(bars[i].low - bars[i - 1].close),
+      );
+    }
+  }
+  if (bars.length < period) return result;
+  let seed = 0;
+  for (let i = 0; i < period; i += 1) seed += tr[i];
+  result[period - 1] = seed / period;
+  for (let i = period; i < bars.length; i += 1) {
+    result[i] = ((result[i - 1] * (period - 1)) + tr[i]) / period;
+  }
+  return result;
+}
+
+function tableRsi(closes: number[], period: number): number[] {
+  const result = new Array<number>(closes.length).fill(NaN);
+  if (closes.length <= period) return result;
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i += 1) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) avgGain += diff;
+    else avgLoss += -diff;
+  }
+  avgGain /= period;
+  avgLoss /= period;
+  result[period] = avgLoss === 0 ? 100 : 100 - (100 / (1 + (avgGain / avgLoss)));
+  for (let i = period + 1; i < closes.length; i += 1) {
+    const diff = closes[i] - closes[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = ((avgGain * (period - 1)) + gain) / period;
+    avgLoss = ((avgLoss * (period - 1)) + loss) / period;
+    result[i] = avgLoss === 0 ? 100 : 100 - (100 / (1 + (avgGain / avgLoss)));
+  }
+  return result;
+}
+
+function tableRollingHighest(values: number[], period: number): number[] {
+  const result = new Array<number>(values.length).fill(NaN);
+  for (let i = period - 1; i < values.length; i += 1) {
+    let highest = -Infinity;
+    for (let j = i - period + 1; j <= i; j += 1) highest = Math.max(highest, values[j]);
+    result[i] = highest;
+  }
+  return result;
+}
+
+function tableRollingLowest(values: number[], period: number): number[] {
+  const result = new Array<number>(values.length).fill(NaN);
+  for (let i = period - 1; i < values.length; i += 1) {
+    let lowest = Infinity;
+    for (let j = i - period + 1; j <= i; j += 1) lowest = Math.min(lowest, values[j]);
+    result[i] = lowest;
+  }
+  return result;
+}
+
+function tableChopAngle(ema34: number, ema34Prev: number, avg: number, highestHigh: number, lowestLow: number): number {
+  const rangeVal = highestHigh - lowestLow;
+  const safeRange = rangeVal === 0 ? 0.000001 : rangeVal;
+  const safeAvg = avg === 0 ? 0.000001 : avg;
+  const span = (25 / safeRange) * lowestLow;
+  const y2 = ((ema34Prev - ema34) / safeAvg) * span;
+  const c = Math.sqrt(1 + (y2 * y2));
+  const angle1 = Math.round((180 * Math.acos(1 / c)) / Math.PI);
+  return y2 > 0 ? -angle1 : angle1;
+}
+
+function computeTechnicalTableRowFromBars(
+  tf: string,
+  bars: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number; synthetic?: boolean }>,
+  fastLen: number,
+  slowLen: number,
+  trendLen: number,
+): TechnicalTableRowSnapshot {
+  const row: TechnicalTableRowSnapshot = {
+    tf,
+    trend: NaN,
+    strength: NaN,
+    chop: NaN,
+    rsiNow: NaN,
+    rsiPrev: NaN,
+    macdNow: NaN,
+    macdSignal: NaN,
+    macdPrev: NaN,
+    macdSignalPrev: NaN,
+  };
+
+  if (bars.length === 0) return row;
+
+  const closes = bars.map((bar) => bar.close);
+  const highs = bars.map((bar) => bar.high);
+  const lows = bars.map((bar) => bar.low);
+  const avg = bars.map((bar) => (bar.high + bar.low + bar.close) / 3);
+  const fast = tableEma(closes, fastLen);
+  const slow = tableEma(closes, slowLen);
+  const trend = tableEma(closes, trendLen);
+  const atr14 = tableAtr(bars, 14);
+  const rsi14 = tableRsi(closes, 14);
+  const macdFast = tableEma(closes, 12);
+  const macdSlow = tableEma(closes, 26);
+  const macdLine = macdFast.map((value, i) => Number.isFinite(value) && Number.isFinite(macdSlow[i]) ? value - macdSlow[i] : NaN);
+  const macdSignal = tableEma(macdLine, 9);
+  const ema34 = tableEma(closes, 34);
+  const high30 = tableRollingHighest(highs, 30);
+  const low30 = tableRollingLowest(lows, 30);
+
+  const findLastFiniteIndex = (series: number[], startAt = series.length - 1): number => {
+    for (let i = Math.min(startAt, series.length - 1); i >= 0; i -= 1) {
+      if (Number.isFinite(series[i])) return i;
+    }
+    return -1;
+  };
+
+  const findPreviousFiniteIndex = (series: number[], beforeIndex: number): number => {
+    for (let i = Math.min(beforeIndex - 1, series.length - 1); i >= 0; i -= 1) {
+      if (Number.isFinite(series[i])) return i;
+    }
+    return -1;
+  };
+
+  const i = findLastFiniteIndex(closes);
+  if (i < 0) return row;
+
+  const trendIndex = (() => {
+    for (let idx = i; idx >= 0; idx -= 1) {
+      if (Number.isFinite(closes[idx]) && Number.isFinite(fast[idx]) && Number.isFinite(slow[idx]) && Number.isFinite(trend[idx])) {
+        return idx;
+      }
+    }
+    return -1;
+  })();
+  if (trendIndex >= 0) {
+    row.trend = closes[trendIndex] > trend[trendIndex] && fast[trendIndex] > slow[trendIndex]
+      ? 1
+      : closes[trendIndex] < trend[trendIndex] && fast[trendIndex] < slow[trendIndex]
+        ? -1
+        : 0;
+  }
+
+  const strengthIndex = (() => {
+    for (let idx = i; idx >= 0; idx -= 1) {
+      if (Number.isFinite(fast[idx]) && Number.isFinite(slow[idx]) && Number.isFinite(atr14[idx]) && atr14[idx] !== 0) {
+        return idx;
+      }
+    }
+    return -1;
+  })();
+  if (strengthIndex >= 0) {
+    row.strength = Math.abs(fast[strengthIndex] - slow[strengthIndex]) / atr14[strengthIndex];
+  }
+
+  const rsiIdx = findLastFiniteIndex(rsi14, i);
+  if (rsiIdx >= 0) row.rsiNow = rsi14[rsiIdx];
+  const rsiPrevIdx = findPreviousFiniteIndex(rsi14, rsiIdx);
+  if (rsiPrevIdx >= 0) row.rsiPrev = rsi14[rsiPrevIdx];
+
+  const macdIdx = (() => {
+    for (let idx = i; idx >= 0; idx -= 1) {
+      if (Number.isFinite(macdLine[idx]) && Number.isFinite(macdSignal[idx])) return idx;
+    }
+    return -1;
+  })();
+  if (macdIdx >= 0) {
+    row.macdNow = macdLine[macdIdx];
+    row.macdSignal = macdSignal[macdIdx];
+  }
+  const macdPrevIdx = findPreviousFiniteIndex(macdLine, macdIdx);
+  const macdSignalPrevIdx = findPreviousFiniteIndex(macdSignal, macdIdx);
+  if (macdPrevIdx >= 0) row.macdPrev = macdLine[macdPrevIdx];
+  if (macdSignalPrevIdx >= 0) row.macdSignalPrev = macdSignal[macdSignalPrevIdx];
+
+  const chopIndex = (() => {
+    for (let idx = i; idx > 0; idx -= 1) {
+      if (
+        Number.isFinite(ema34[idx])
+        && Number.isFinite(ema34[idx - 1])
+        && Number.isFinite(avg[idx])
+        && Number.isFinite(high30[idx])
+        && Number.isFinite(low30[idx])
+      ) {
+        return idx;
+      }
+    }
+    return -1;
+  })();
+  if (chopIndex >= 0) {
+    row.chop = tableChopAngle(ema34[chopIndex], ema34[chopIndex - 1], avg[chopIndex], high30[chopIndex], low30[chopIndex]);
+  }
+
+  return row;
+}
+
+async function fetchTableBars(
+  sidecarPort: number,
+  symbol: string,
+  barSize: '1 min' | '5 mins' | '15 mins' | '1 day',
+  duration: string,
+): Promise<Array<{ time: number; open: number; high: number; low: number; close: number; volume: number; synthetic?: boolean }>> {
+  const url = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
+  url.searchParams.set('symbol', symbol);
+  url.searchParams.set('bar_size', barSize);
+  url.searchParams.set('duration', duration);
+  const res = await fetch(url.toString());
+  if (!res.ok) return [];
+  const payload = await res.json() as { bars?: Array<Record<string, number | boolean>> };
+  const bars = payload.bars ?? [];
+  const byTime = new Map<number, { time: number; open: number; high: number; low: number; close: number; volume: number; synthetic?: boolean }>();
+
+  for (const raw of bars) {
+    const time = normalizeHistoricalBarTimeMs(Number(raw.time));
+    const open = Number(raw.open);
+    const high = Number(raw.high);
+    const low = Number(raw.low);
+    const close = Number(raw.close);
+    const volume = Number(raw.volume);
+
+    if (
+      !Number.isFinite(time)
+      || !Number.isFinite(open)
+      || !Number.isFinite(high)
+      || !Number.isFinite(low)
+      || !Number.isFinite(close)
+      || !Number.isFinite(volume)
+    ) {
+      continue;
+    }
+
+    const existing = byTime.get(time);
+    byTime.set(time, {
+      time,
+      open,
+      high,
+      low,
+      close,
+      volume,
+      ...(Boolean(raw.synthetic) || Boolean(existing?.synthetic) ? { synthetic: true } : {}),
+    });
+  }
+
+  return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+}
+
+function DailyIQTechnicalTableOverlay({
+  snapshot,
+  widget,
+  dragging,
+  resizing,
+  onHeaderPointerDown,
+  onHeaderPointerMove,
+  onHeaderPointerUp,
+  onHeaderPointerCancel,
+  onResizePointerDown,
+  onResizePointerMove,
+  onResizePointerUp,
+  onResizePointerCancel,
+  onToggleLock,
+}: {
+  snapshot: TechnicalTableSnapshot | null;
+  widget: TechnicalTableWidgetState;
+  dragging: boolean;
+  resizing: boolean;
+  onHeaderPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onHeaderPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onHeaderPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onHeaderPointerCancel: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onResizePointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onResizePointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onResizePointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onResizePointerCancel: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onToggleLock: () => void;
+}) {
+  const rows = snapshot?.rows ?? DIQ_TABLE_TIMEFRAMES.map((tf) => ({
+    tf,
+    trend: NaN,
+    strength: NaN,
+    chop: NaN,
+    rsiNow: NaN,
+    rsiPrev: NaN,
+    macdNow: NaN,
+    macdSignal: NaN,
+    macdPrev: NaN,
+    macdSignalPrev: NaN,
+  }));
+
+  const overallTrend = snapshot?.overallTrend ?? NaN;
+  const overallStrength = snapshot?.overallStrength ?? NaN;
+  const overallChop = snapshot?.overallChop ?? NaN;
+  const overallRsi = snapshot?.overallRsi ?? NaN;
+  const overallMacdState = snapshot?.overallMacdState ?? NaN;
+  const overallMacdText = overallMacdState === 1 ? 'Bull' : overallMacdState === -1 ? 'Bear' : 'Flat';
+  const overallMacdColor = overallMacdState === 1 ? '#00C853' : overallMacdState === -1 ? '#FF3D71' : '#6B7280';
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: widget.x,
+        top: widget.y,
+        zIndex: 18,
+        pointerEvents: 'auto',
+        border: '1px solid rgba(255,255,255,0.12)',
+        backgroundColor: 'rgba(0,0,0,0.92)',
+        borderRadius: 8,
+        overflow: 'hidden',
+        boxShadow: dragging || resizing ? '0 16px 36px rgba(0,0,0,0.52)' : '0 10px 24px rgba(0,0,0,0.42)',
+        width: widget.width,
+        transform: dragging || resizing ? 'scale(1.01)' : 'scale(1)',
+        transition: dragging || resizing ? 'none' : 'box-shadow 120ms ease-out, transform 120ms ease-out',
+      }}
+    >
+      <div
+        onPointerDown={widget.locked ? undefined : onHeaderPointerDown}
+        onPointerMove={widget.locked ? undefined : onHeaderPointerMove}
+        onPointerUp={widget.locked ? undefined : onHeaderPointerUp}
+        onPointerCancel={widget.locked ? undefined : onHeaderPointerCancel}
+        style={{
+          minHeight: TECH_TABLE_HEADER_HEIGHT,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: widget.locked ? '0 6px 0 8px' : '0 8px 0 6px',
+          borderBottom: '1px solid rgba(255,255,255,0.12)',
+          fontSize: 10,
+          fontFamily: '"JetBrains Mono", monospace',
+          color: '#E6EDF3',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+          background: widget.locked
+            ? '#000000'
+            : dragging
+              ? 'linear-gradient(180deg, rgba(39,56,82,0.98) 0%, rgba(19,28,43,0.98) 100%)'
+              : 'linear-gradient(180deg, rgba(28,33,40,0.98) 0%, rgba(15,23,32,0.98) 100%)',
+          cursor: widget.locked ? 'default' : dragging ? 'grabbing' : 'grab',
+          touchAction: widget.locked ? undefined : 'none',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          {!widget.locked && (
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 16,
+                height: 16,
+                borderRadius: 4,
+                color: dragging ? '#C7D2FE' : '#8B949E',
+                background: dragging ? 'rgba(140,180,255,0.16)' : 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                flexShrink: 0,
+              }}
+            >
+              <GripHorizontal size={10} strokeWidth={1.7} />
+            </span>
+          )}
+          <span style={{ color: '#8B949E' }}>Technical Table</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          <button
+            type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleLock();
+            }}
+            style={{
+              border: '1px solid rgba(255,255,255,0.12)',
+              borderRadius: 4,
+              background: 'transparent',
+              color: '#E6EDF3',
+              width: 20,
+              height: 20,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              lineHeight: 1,
+              fontSize: 11,
+              fontFamily: '"JetBrains Mono", monospace',
+              padding: 0,
+              cursor: 'pointer',
+            }}
+            title={widget.locked ? 'Unlock placement' : 'Lock placement'}
+            aria-label={widget.locked ? 'Unlock placement' : 'Lock placement'}
+          >
+            {widget.locked ? <Lock size={12} strokeWidth={1.5} /> : <Unlock size={12} strokeWidth={1.5} />}
+          </button>
+        </div>
+      </div>
+
+      <table
+        style={{
+          width: '100%',
+          borderCollapse: 'collapse',
+          fontSize: 10,
+          fontFamily: '"JetBrains Mono", monospace',
+          color: '#E6EDF3',
+        }}
+      >
+        <thead>
+          <tr>
+            {['Timeframe', 'Trend', 'Strength', 'Chop', 'RSI', 'MACD'].map((head) => (
+              <th
+                key={head}
+                style={{
+                  padding: '6px 8px',
+                  borderBottom: '1px solid rgba(255,255,255,0.14)',
+                  backgroundColor: '#1E2232',
+                  color: '#FFFFFF',
+                  textAlign: head === 'Timeframe' ? 'left' : 'center',
+                  fontWeight: 600,
+                }}
+              >
+                {head}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.tf}>
+              <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', backgroundColor: '#141821' }}>{row.tf}</td>
+              <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', backgroundColor: diqTrendColor(row.trend), color: '#FFFFFF', textAlign: 'center' }}>{diqTrendText(row.trend)}</td>
+              <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', backgroundColor: diqStrengthColor(row.strength), color: '#111827', textAlign: 'center' }}>{diqStrengthText(row.strength)}</td>
+              <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', backgroundColor: diqChopColor(row.chop), color: '#111827', textAlign: 'center' }}>{diqChopText(row.chop)}</td>
+              <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', backgroundColor: diqRsiColor(row.rsiNow, row.rsiPrev), color: '#FFFFFF', textAlign: 'center' }}>{diqRsiText(row.rsiNow, row.rsiPrev)}</td>
+              <td style={{ padding: '5px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', backgroundColor: diqMacdColor(row.macdNow, row.macdSignal, row.macdPrev, row.macdSignalPrev), color: '#FFFFFF', textAlign: 'center' }}>{diqMacdText(row.macdNow, row.macdSignal, row.macdPrev, row.macdSignalPrev)}</td>
+            </tr>
+          ))}
+          <tr>
+            <td style={{ padding: '6px 8px', backgroundColor: '#1E2232', color: '#FFFFFF', fontWeight: 600 }}>Overall</td>
+            <td style={{ padding: '6px 8px', backgroundColor: diqTrendColor(overallTrend), color: '#FFFFFF', textAlign: 'center', fontWeight: 600 }}>{diqTrendText(overallTrend)}</td>
+            <td style={{ padding: '6px 8px', backgroundColor: diqStrengthColor(overallStrength), color: '#111827', textAlign: 'center', fontWeight: 600 }}>{diqStrengthText(overallStrength)}</td>
+            <td style={{ padding: '6px 8px', backgroundColor: diqChopColor(overallChop), color: '#111827', textAlign: 'center', fontWeight: 600 }}>{diqChopText(overallChop)}</td>
+            <td style={{ padding: '6px 8px', backgroundColor: diqRsiColor(overallRsi, overallRsi), color: '#FFFFFF', textAlign: 'center', fontWeight: 600 }}>{Number.isFinite(overallRsi) ? overallRsi.toFixed(1) : '--'}</td>
+            <td style={{ padding: '6px 8px', backgroundColor: overallMacdColor, color: '#FFFFFF', textAlign: 'center', fontWeight: 600 }}>{overallMacdText}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      {!widget.locked && (
+        <div
+          onPointerDown={onResizePointerDown}
+          onPointerMove={onResizePointerMove}
+          onPointerUp={onResizePointerUp}
+          onPointerCancel={onResizePointerCancel}
+          title="Resize table"
+          style={{
+            position: 'absolute',
+            right: 0,
+            bottom: 0,
+            width: 16,
+            height: 16,
+            cursor: 'nwse-resize',
+            background: 'linear-gradient(135deg, transparent 0%, transparent 50%, rgba(255,255,255,0.3) 50%, rgba(255,255,255,0.5) 100%)',
+            touchAction: 'none',
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 function ChartPage({ tabId }: ChartPageProps) {
   const chartToolRailWidth = 56;
   const defaultIndicatorsRef = useRef<PersistedChartIndicator[]>(createDefaultPersistedChartIndicators());
@@ -336,6 +1090,7 @@ function ChartPage({ tabId }: ChartPageProps) {
     customStrategies: [],
     activeCustomStrategyIds: [],
     probEngWidget: createDefaultProbEngWidgetState(),
+    technicalTableWidget: createDefaultTechnicalTableWidgetState(),
     tooltipFields: { O: true, H: true, L: true, C: true, V: true, Δ: true },
   };
   const [persisted, setPersisted] = useState<ChartState | null>(() => (tabId ? loadChartState(tabId) : null));
@@ -380,12 +1135,18 @@ function ChartPage({ tabId }: ChartPageProps) {
   const [probEngWidget, setProbEngWidget] = useState<ProbEngWidgetState>(
     initialState.probEngWidget ?? createDefaultProbEngWidgetState(),
   );
+  const [technicalTableWidget, setTechnicalTableWidget] = useState<TechnicalTableWidgetState>(
+    initialState.technicalTableWidget ?? createDefaultTechnicalTableWidgetState(),
+  );
+  const [technicalTableSnapshot, setTechnicalTableSnapshot] = useState<TechnicalTableSnapshot | null>(null);
   const [chartNotice, setChartNotice] = useState<string | null>(null);
   const [chartLayout, setChartLayout] = useState<ChartLayout | null>(null);
   const [dragState, setDragState] = useState<{ indicatorId: string; sourcePaneId: string } | null>(null);
   const [draggingMouse, setDraggingMouse] = useState<{ x: number; y: number } | null>(null);
   const [dragHoverPaneId, setDragHoverPaneId] = useState<string | null>(null);
   const [probEngDragging, setProbEngDragging] = useState(false);
+  const [technicalTableDragging, setTechnicalTableDragging] = useState(false);
+  const [technicalTableResizing, setTechnicalTableResizing] = useState(false);
   const restoredIndicatorsRef = useRef(false);
   const paneDividerDragRef = useRef<{ paneId: string; startY: number; startHeight: number } | null>(null);
   const scriptDividerDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -395,6 +1156,20 @@ function ChartPage({ tabId }: ChartPageProps) {
     offsetY: number;
     startClientX: number;
     startClientY: number;
+    moved: boolean;
+  } | null>(null);
+  const technicalTableDragRef = useRef<{
+    pointerId: number;
+    offsetX: number;
+    offsetY: number;
+    startClientX: number;
+    startClientY: number;
+    moved: boolean;
+  } | null>(null);
+  const technicalTableResizeRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startWidth: number;
     moved: boolean;
   } | null>(null);
 
@@ -655,6 +1430,8 @@ function ChartPage({ tabId }: ChartPageProps) {
     }
     setActiveCustomStrategyIds(nextState.activeCustomStrategyIds ?? []);
     setProbEngWidget(nextState.probEngWidget ?? createDefaultProbEngWidgetState());
+    setTechnicalTableWidget(nextState.technicalTableWidget ?? createDefaultTechnicalTableWidgetState());
+    setTechnicalTableSnapshot(null);
     setIndicatorPanelOpen(nextState.indicatorPanelOpen ?? false);
     setStrategyPanelOpen(nextState.strategyPanelOpen ?? false);
     setLegendCollapsed(nextState.legendCollapsed ?? false);
@@ -663,6 +1440,8 @@ function ChartPage({ tabId }: ChartPageProps) {
     setDraggingMouse(null);
     setDragHoverPaneId(null);
     setProbEngDragging(false);
+    setTechnicalTableDragging(false);
+    setTechnicalTableResizing(false);
     restoredIndicatorsRef.current = false;
 
     const engine = engineRef.current;
@@ -717,13 +1496,14 @@ function ChartPage({ tabId }: ChartPageProps) {
       customStrategies,
       activeCustomStrategyIds,
       probEngWidget,
+      technicalTableWidget,
       tooltipFields,
       indicatorPanelOpen,
       strategyPanelOpen,
       legendCollapsed,
       subPaneState,
     });
-  }, [tabId, symbol, timeframe, chartType, yScaleMode, linkChannel, activeIndicators, stopperPx, indicatorColorDefaults, activeScriptSources, activeScriptIds, customStrategies, activeCustomStrategyIds, probEngWidget, tooltipFields, indicatorPanelOpen, strategyPanelOpen, legendCollapsed, serializeIndicators, getEngineSubPaneState, persisted?.subPaneState, chartSubPaneLayoutKey]);
+  }, [tabId, symbol, timeframe, chartType, yScaleMode, linkChannel, activeIndicators, stopperPx, indicatorColorDefaults, activeScriptSources, activeScriptIds, customStrategies, activeCustomStrategyIds, probEngWidget, technicalTableWidget, tooltipFields, indicatorPanelOpen, strategyPanelOpen, legendCollapsed, serializeIndicators, getEngineSubPaneState, persisted?.subPaneState, chartSubPaneLayoutKey]);
 
   // Re-add persisted indicators once engine is ready
   useEffect(() => {
@@ -772,6 +1552,12 @@ function ChartPage({ tabId }: ChartPageProps) {
   const activeProbEngIndicator = activeIndicators.find(
     (indicator) => indicator.name === 'Probability Engine' && indicator.visible,
   );
+  const activeTechnicalTableIndicator = activeIndicators.find(
+    (indicator) => indicator.name === 'DailyIQ Technical Table' && indicator.visible,
+  );
+  const technicalTableFastLen = Math.max(1, Math.round(activeTechnicalTableIndicator?.params.fastLen ?? 5));
+  const technicalTableSlowLen = Math.max(technicalTableFastLen + 1, Math.round(activeTechnicalTableIndicator?.params.slowLen ?? 20));
+  const technicalTableTrendLen = Math.max(1, Math.round(activeTechnicalTableIndicator?.params.trendLen ?? 50));
 
   useEffect(() => {
     if (!activeProbEngIndicator) return;
@@ -782,6 +1568,108 @@ function ChartPage({ tabId }: ChartPageProps) {
         : { ...prev, detailed, visible: true }
     ));
   }, [activeProbEngIndicator]);
+
+  useEffect(() => {
+    if (!sidecarPort || !symbol.trim()) {
+      setTechnicalTableSnapshot(null);
+      return;
+    }
+    if (!activeTechnicalTableIndicator) return;
+
+    let cancelled = false;
+
+    const pullSnapshot = async () => {
+      try {
+        const normalizedSymbol = symbol.trim().toUpperCase();
+        const [rawBars1m, rawBars5m, rawBars15m, rawBars1d] = await Promise.all([
+          fetchTableBars(sidecarPort, normalizedSymbol, '1 min', '29 D'),
+          fetchTableBars(sidecarPort, normalizedSymbol, '5 mins', '365 D'),
+          fetchTableBars(sidecarPort, normalizedSymbol, '15 mins', '730 D'),
+          fetchTableBars(sidecarPort, normalizedSymbol, '1 day', '30 Y'),
+        ]);
+        if (cancelled) return;
+
+        const bars1m = rawBars1m;
+        const bars5m = rawBars5m.length > 0 ? rawBars5m : tableResampleBars(bars1m, '5m');
+        const bars15m = rawBars15m.length > 0 ? rawBars15m : tableResampleBars(bars5m, '15m');
+        const bars1d = rawBars1d.length > 0 ? rawBars1d : tableResampleBars(bars15m, '1D');
+        const bars30m = tableResampleBars(bars15m, '30m');
+        const bars1h = tableResampleBars(bars15m, '1H');
+        const bars4h = tableResampleBars(bars15m, '4H');
+        const bars1w = tableResampleBars(bars1d, '1W');
+
+        const rows = [
+          computeTechnicalTableRowFromBars('1m', bars1m, technicalTableFastLen, technicalTableSlowLen, technicalTableTrendLen),
+          computeTechnicalTableRowFromBars('5m', bars5m, technicalTableFastLen, technicalTableSlowLen, technicalTableTrendLen),
+          computeTechnicalTableRowFromBars('15m', bars15m, technicalTableFastLen, technicalTableSlowLen, technicalTableTrendLen),
+          computeTechnicalTableRowFromBars('30m', bars30m, technicalTableFastLen, technicalTableSlowLen, technicalTableTrendLen),
+          computeTechnicalTableRowFromBars('1H', bars1h, technicalTableFastLen, technicalTableSlowLen, technicalTableTrendLen),
+          computeTechnicalTableRowFromBars('4H', bars4h, technicalTableFastLen, technicalTableSlowLen, technicalTableTrendLen),
+          computeTechnicalTableRowFromBars('1D', bars1d, technicalTableFastLen, technicalTableSlowLen, technicalTableTrendLen),
+          computeTechnicalTableRowFromBars('1W', bars1w, technicalTableFastLen, technicalTableSlowLen, technicalTableTrendLen),
+        ] satisfies TechnicalTableRowSnapshot[];
+
+        let bullCount = 0;
+        let bearCount = 0;
+        let strengthSum = 0;
+        let strengthCount = 0;
+        let chopSum = 0;
+        let chopCount = 0;
+        let rsiSum = 0;
+        let rsiCount = 0;
+        let macdBull = 0;
+        let macdBear = 0;
+
+        for (const row of rows) {
+          if (row.trend === 1) bullCount += 1;
+          else if (row.trend === -1) bearCount += 1;
+          if (Number.isFinite(row.strength)) {
+            strengthSum += row.strength;
+            strengthCount += 1;
+          }
+          if (Number.isFinite(row.chop)) {
+            chopSum += row.chop;
+            chopCount += 1;
+          }
+          if (Number.isFinite(row.rsiNow)) {
+            rsiSum += row.rsiNow;
+            rsiCount += 1;
+          }
+          if (Number.isFinite(row.macdNow) && Number.isFinite(row.macdSignal)) {
+            if (row.macdNow > row.macdSignal) macdBull += 1;
+            else if (row.macdNow < row.macdSignal) macdBear += 1;
+          }
+        }
+
+        const snapshot: TechnicalTableSnapshot = {
+          rows,
+          overallTrend: bullCount > bearCount ? 1 : bearCount > bullCount ? -1 : 0,
+          overallStrength: strengthCount > 0 ? (strengthSum / strengthCount) : NaN,
+          overallChop: chopCount > 0 ? (chopSum / chopCount) : NaN,
+          overallRsi: rsiCount > 0 ? (rsiSum / rsiCount) : NaN,
+          overallMacdState: macdBull > macdBear ? 1 : macdBear > macdBull ? -1 : 0,
+        };
+
+        if (!cancelled) setTechnicalTableSnapshot(snapshot);
+      } catch {
+        if (!cancelled) setTechnicalTableSnapshot(null);
+      }
+    };
+
+    pullSnapshot();
+    const interval = window.setInterval(pullSnapshot, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [
+    activeTechnicalTableIndicator?.id,
+    sidecarPort,
+    symbol,
+    technicalTableFastLen,
+    technicalTableSlowLen,
+    technicalTableTrendLen,
+  ]);
 
   useEffect(() => {
     if (!chartLayout || probEngDragRef.current) return;
@@ -816,6 +1704,47 @@ function ChartPage({ tabId }: ChartPageProps) {
       return { ...prev, x, y, normX, normY, visible: true };
     });
   }, [chartLayout, activeProbEngIndicator, chartToolRailWidth]);
+
+  useEffect(() => {
+    if (!activeTechnicalTableIndicator) return;
+    setTechnicalTableWidget((prev) => (prev.visible ? prev : { ...prev, visible: true }));
+  }, [activeTechnicalTableIndicator]);
+
+  useEffect(() => {
+    if (!chartLayout || technicalTableDragRef.current || technicalTableResizeRef.current) return;
+    const overlay = chartOverlayRef.current;
+    const hostWidth = overlay ? overlay.offsetWidth : chartLayout.width;
+    const hostHeight = overlay ? overlay.offsetHeight : chartLayout.height;
+    setTechnicalTableWidget((prev) => {
+      const b = getTechnicalTableDragBounds(prev, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+      if (technicalTableHasNorm(prev)) {
+        const { x, y } = probEngPixelFromNorm(prev.normX!, prev.normY!, b.minX, b.maxX, b.minY, b.maxY);
+        if (x === prev.x && y === prev.y) return prev;
+        return { ...prev, x, y };
+      }
+      const next = clampTechnicalTableWidgetPosition(prev, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+      const { normX, normY } = probEngNormFromPixel(next.x, next.y, b.minX, b.maxX, b.minY, b.maxY);
+      if (next.x === prev.x && next.y === prev.y && prev.normX === normX && prev.normY === normY) return prev;
+      return { ...next, normX, normY };
+    });
+  }, [chartLayout, chartToolRailWidth, activeTechnicalTableIndicator]);
+
+  useEffect(() => {
+    if (!chartLayout || !activeTechnicalTableIndicator || technicalTableDragRef.current || technicalTableResizeRef.current) return;
+    const overlay = chartOverlayRef.current;
+    const hostWidth = overlay ? overlay.offsetWidth : chartLayout.width;
+    const hostHeight = overlay ? overlay.offsetHeight : chartLayout.height;
+    setTechnicalTableWidget((prev) => {
+      const defaultLike = (prev.x === 120 && prev.y === 120) || (prev.x === 0 && prev.y === 0);
+      if (!defaultLike) return prev;
+      const pos = getDefaultTechnicalTableWidgetPosition(chartLayout, hostWidth, hostHeight, chartToolRailWidth, prev.width);
+      const x = Math.round(pos.x);
+      const y = Math.round(pos.y);
+      const b = getTechnicalTableDragBounds(prev, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+      const { normX, normY } = probEngNormFromPixel(x, y, b.minX, b.maxX, b.minY, b.maxY);
+      return { ...prev, x, y, normX, normY, visible: true };
+    });
+  }, [chartLayout, activeTechnicalTableIndicator, chartToolRailWidth]);
 
   const handleSymbolChange = useCallback((newSymbol: string) => {
     setSymbol(newSymbol);
@@ -1317,8 +2246,152 @@ function ChartPage({ tabId }: ChartPageProps) {
     clearProbEngDrag(event.currentTarget);
   }, [clearProbEngDrag]);
 
+  const clearTechnicalTableDrag = useCallback((target?: HTMLDivElement | null) => {
+    const drag = technicalTableDragRef.current;
+    if (drag && target?.hasPointerCapture?.(drag.pointerId)) {
+      target.releasePointerCapture(drag.pointerId);
+    }
+    technicalTableDragRef.current = null;
+    setTechnicalTableDragging(false);
+    if (!technicalTableResizeRef.current) {
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    }
+  }, []);
+
+  const clearTechnicalTableResize = useCallback((target?: HTMLDivElement | null) => {
+    const resize = technicalTableResizeRef.current;
+    if (resize && target?.hasPointerCapture?.(resize.pointerId)) {
+      target.releasePointerCapture(resize.pointerId);
+    }
+    technicalTableResizeRef.current = null;
+    setTechnicalTableResizing(false);
+    if (!technicalTableDragRef.current) {
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    }
+  }, []);
+
+  const handleTechnicalTableHeaderPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (technicalTableWidget.locked || event.button !== 0) return;
+    const host = chartOverlayRef.current;
+    const widgetEl = event.currentTarget.parentElement as HTMLDivElement | null;
+    if (!host || !widgetEl || !chartLayout) return;
+    const hostRect = host.getBoundingClientRect();
+    const widgetRect = widgetEl.getBoundingClientRect();
+    technicalTableDragRef.current = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - widgetRect.left,
+      offsetY: event.clientY - widgetRect.top,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'grab';
+    const unclamped = {
+      ...technicalTableWidget,
+      x: widgetRect.left - hostRect.left,
+      y: widgetRect.top - hostRect.top,
+    };
+    setTechnicalTableWidget(chartTechnicalTableClampWithNorm(unclamped, chartLayout, hostRect.width, hostRect.height, chartToolRailWidth));
+  }, [technicalTableWidget, chartLayout, chartToolRailWidth]);
+
+  const handleTechnicalTableHeaderPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = technicalTableDragRef.current;
+    const host = chartOverlayRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !host || !chartLayout) return;
+    const moveDistance = Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY);
+    if (!drag.moved && moveDistance < TECH_TABLE_DRAG_THRESHOLD) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      setTechnicalTableDragging(true);
+      document.body.style.cursor = 'grabbing';
+    }
+    const rect = host.getBoundingClientRect();
+    const unclamped = {
+      ...technicalTableWidget,
+      x: event.clientX - rect.left - drag.offsetX,
+      y: event.clientY - rect.top - drag.offsetY,
+    };
+    setTechnicalTableWidget(chartTechnicalTableClampWithNorm(unclamped, chartLayout, rect.width, rect.height, chartToolRailWidth));
+  }, [technicalTableWidget, chartLayout, chartToolRailWidth]);
+
+  const handleTechnicalTableHeaderPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = technicalTableDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    clearTechnicalTableDrag(event.currentTarget);
+  }, [clearTechnicalTableDrag]);
+
+  const handleTechnicalTableHeaderPointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = technicalTableDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    clearTechnicalTableDrag(event.currentTarget);
+  }, [clearTechnicalTableDrag]);
+
+  const handleTechnicalTableResizePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (technicalTableWidget.locked || event.button !== 0) return;
+    const host = chartOverlayRef.current;
+    const widgetEl = event.currentTarget.parentElement as HTMLDivElement | null;
+    if (!host || !widgetEl || !chartLayout) return;
+    const hostRect = host.getBoundingClientRect();
+    const widgetRect = widgetEl.getBoundingClientRect();
+    technicalTableResizeRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startWidth: widgetRect.width,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.stopPropagation();
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'nwse-resize';
+    const unclamped = {
+      ...technicalTableWidget,
+      x: widgetRect.left - hostRect.left,
+      y: widgetRect.top - hostRect.top,
+      width: widgetRect.width,
+    };
+    setTechnicalTableWidget(chartTechnicalTableClampWithNorm(unclamped, chartLayout, hostRect.width, hostRect.height, chartToolRailWidth));
+  }, [technicalTableWidget, chartLayout, chartToolRailWidth]);
+
+  const handleTechnicalTableResizePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = technicalTableResizeRef.current;
+    const host = chartOverlayRef.current;
+    if (!resize || resize.pointerId !== event.pointerId || !host || !chartLayout) return;
+    const deltaX = event.clientX - resize.startClientX;
+    if (!resize.moved && Math.abs(deltaX) < TECH_TABLE_RESIZE_THRESHOLD) return;
+    if (!resize.moved) {
+      resize.moved = true;
+      setTechnicalTableResizing(true);
+      document.body.style.cursor = 'nwse-resize';
+    }
+    const rect = host.getBoundingClientRect();
+    const nextWidth = Math.max(TECH_TABLE_MIN_WIDTH, Math.min(TECH_TABLE_MAX_WIDTH, resize.startWidth + deltaX));
+    const unclamped = {
+      ...technicalTableWidget,
+      width: nextWidth,
+    };
+    setTechnicalTableWidget(chartTechnicalTableClampWithNorm(unclamped, chartLayout, rect.width, rect.height, chartToolRailWidth));
+  }, [technicalTableWidget, chartLayout, chartToolRailWidth]);
+
+  const handleTechnicalTableResizePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = technicalTableResizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    clearTechnicalTableResize(event.currentTarget);
+  }, [clearTechnicalTableResize]);
+
+  const handleTechnicalTableResizePointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = technicalTableResizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    clearTechnicalTableResize(event.currentTarget);
+  }, [clearTechnicalTableResize]);
+
   useEffect(() => () => {
     probEngDragRef.current = null;
+    technicalTableDragRef.current = null;
+    technicalTableResizeRef.current = null;
     document.body.style.userSelect = '';
     document.body.style.cursor = '';
   }, []);
@@ -1722,6 +2795,26 @@ function ChartPage({ tabId }: ChartPageProps) {
             onHeaderPointerCancel={handleProbEngPointerCancel}
             onToggleLock={() => {
               setProbEngWidget((prev) => ({ ...prev, locked: !prev.locked }));
+            }}
+          />
+        )}
+
+        {chartLayout && activeTechnicalTableIndicator && (
+          <DailyIQTechnicalTableOverlay
+            snapshot={technicalTableSnapshot}
+            widget={technicalTableWidget}
+            dragging={technicalTableDragging}
+            resizing={technicalTableResizing}
+            onHeaderPointerDown={handleTechnicalTableHeaderPointerDown}
+            onHeaderPointerMove={handleTechnicalTableHeaderPointerMove}
+            onHeaderPointerUp={handleTechnicalTableHeaderPointerUp}
+            onHeaderPointerCancel={handleTechnicalTableHeaderPointerCancel}
+            onResizePointerDown={handleTechnicalTableResizePointerDown}
+            onResizePointerMove={handleTechnicalTableResizePointerMove}
+            onResizePointerUp={handleTechnicalTableResizePointerUp}
+            onResizePointerCancel={handleTechnicalTableResizePointerCancel}
+            onToggleLock={() => {
+              setTechnicalTableWidget((prev) => ({ ...prev, locked: !prev.locked }));
             }}
           />
         )}

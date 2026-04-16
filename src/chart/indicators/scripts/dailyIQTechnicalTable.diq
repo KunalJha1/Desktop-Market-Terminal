@@ -1,0 +1,22 @@
+//@version=1
+indicator("DailyIQ Technical Table", overlay=true)
+
+// This built-in script is the editable source companion for the native
+// TypeScript implementation. The app computes the full multi-timeframe
+// dashboard, sweep-aware EMA signals, and overlay rendering internally.
+
+fastLen = input.int(5, "Fast EMA")
+slowLen = input.int(20, "Slow EMA")
+trendLen = input.int(50, "Trend EMA")
+showTrendEma = input.bool(false, "Show Trend EMA")
+showEma200 = input.bool(true, "Show EMA 200")
+
+fast = ta.ema(close, fastLen)
+slow = ta.ema(close, slowLen)
+trend = ta.ema(close, trendLen)
+ema200 = ta.ema(close, 200)
+
+plot(fast, "Fast EMA", color=#00C853)
+plot(slow, "Slow EMA", color=#FF3D71)
+plot(showTrendEma ? trend : na, "Trend EMA", color=#FFFFFF)
+plot(showEma200 ? ema200 : na, "EMA 200", color=#1A56DB)
