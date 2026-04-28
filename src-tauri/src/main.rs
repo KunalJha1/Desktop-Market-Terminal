@@ -9,7 +9,10 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::api::process::{Command as SidecarCommand, CommandChild as SidecarChild};
 use tauri::{AppHandle, Manager};
@@ -229,124 +232,161 @@ fn url_decode(s: &str) -> String {
     out
 }
 
-#[tauri::command]
-fn start_oauth_server(app_handle: tauri::AppHandle) -> Result<u16, String> {
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", OAUTH_CALLBACK_PORT))
-        .map_err(|e| format!("Failed to start OAuth listener: {}", e))?;
+/// Shared accept loop used by both the IPv4 and IPv6 OAuth listener threads.
+/// The `handled` AtomicBool is shared between the two threads; whichever receives
+/// the callback first claims it and the other exits immediately, ensuring the auth
+/// event fires exactly once regardless of which loopback address the browser used.
+fn oauth_accept_loop(
+    listener: TcpListener,
+    app_handle: AppHandle,
+    handled: Arc<AtomicBool>,
+    relay_page: String,
+    success_page: String,
+) {
+    let empty_response = b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+    listener.set_nonblocking(false).ok();
 
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    for _ in 0..10 {
+        if handled.load(Ordering::SeqCst) {
+            break;
+        }
 
-    std::thread::spawn(move || {
-        let relay_page = RELAY_HTML
-            .replace("PAGESTYLE", PAGE_STYLE)
-            .replace("LOGOSVG", LOGO_SVG);
-        let success_page = SUCCESS_HTML
-            .replace("PAGESTYLE", PAGE_STYLE)
-            .replace("LOGOSVG", LOGO_SVG);
+        let (mut stream, _) = match listener.accept() {
+            Ok(conn) => conn,
+            Err(_) => break,
+        };
 
-        let empty_response = b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+        let mut buf = [0u8; 16384];
+        let n = match stream.read(&mut buf) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
 
-        // Set a timeout so this thread doesn't hang forever if the user
-        // closes the browser tab before completing the flow.
-        listener.set_nonblocking(false).ok();
+        let request = String::from_utf8_lossy(&buf[..n]);
+        let path = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap_or("");
 
-        // Loop to handle requests — browsers send extra requests (favicon, etc.)
-        // that we need to skip past to reach the /token request.
-        let mut got_tokens = false;
-        for _ in 0..10 {
-            let (mut stream, _) = match listener.accept() {
-                Ok(conn) => conn,
-                Err(_) => break,
-            };
+        if path.starts_with("/callback") {
+            let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+            let code = extract_param(query, "code").map(|s| url_decode(s));
 
-            let mut buf = [0u8; 16384];
-            let n = match stream.read(&mut buf) {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-
-            let request = String::from_utf8_lossy(&buf[..n]);
-            let path = request
-                .lines()
-                .next()
-                .and_then(|line| line.split_whitespace().nth(1))
-                .unwrap_or("");
-
-            if path.starts_with("/callback") {
-                let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
-                let code = extract_param(query, "code").map(|s| url_decode(s));
-
-                if let Some(code) = code {
-                    // Google authorization code flow — emit code to frontend
-                    let _ = stream.write_all(success_page.as_bytes());
-                    let _ = stream.flush();
-                    drop(stream);
-
-                    let payload = serde_json::json!({ "code": code });
-
-                    if let Some(window) = app_handle.get_window("main") {
-                        let json = serde_json::to_string(&payload).unwrap_or_default();
-                        let js = format!(
-                            "window.dispatchEvent(new CustomEvent('oauth-code', {{ detail: {} }}));",
-                            json
-                        );
-                        let _ = window.eval(&js);
-                        let _ = window.set_focus();
-                    }
-
-                    let _ = app_handle.emit_all("oauth-code", payload);
-                    got_tokens = true;
+            if let Some(code) = code {
+                // Claim the auth slot — if the other thread already handled it, bail.
+                if handled.swap(true, Ordering::SeqCst) {
                     break;
-                } else {
-                    // No code param — serve relay page (fragment-based fallback)
-                    let _ = stream.write_all(relay_page.as_bytes());
-                    let _ = stream.flush();
                 }
-            } else if path.starts_with("/token?") {
-                // Legacy fragment relay path
-                let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
-                let access_token = extract_param(query, "access_token")
-                    .unwrap_or_default()
-                    .to_string();
-                let refresh_token = extract_param(query, "refresh_token")
-                    .unwrap_or_default()
-                    .to_string();
 
                 let _ = stream.write_all(success_page.as_bytes());
                 let _ = stream.flush();
                 drop(stream);
 
-                if !access_token.is_empty() && !refresh_token.is_empty() {
-                    let payload = serde_json::json!({
-                        "access_token": access_token,
-                        "refresh_token": refresh_token,
-                    });
+                let payload = serde_json::json!({ "code": code });
 
-                    if let Some(window) = app_handle.get_window("main") {
-                        let json = serde_json::to_string(&payload).unwrap_or_default();
-                        let js = format!(
-                            "window.dispatchEvent(new CustomEvent('oauth-tokens', {{ detail: {} }}));",
-                            json
-                        );
-                        let _ = window.eval(&js);
-                        let _ = window.set_focus();
-                    }
-
-                    let _ = app_handle.emit_all("oauth-callback", payload);
+                if let Some(window) = app_handle.get_window("main") {
+                    let json = serde_json::to_string(&payload).unwrap_or_default();
+                    let js = format!(
+                        "window.dispatchEvent(new CustomEvent('oauth-code', {{ detail: {} }}));",
+                        json
+                    );
+                    let _ = window.eval(&js);
+                    let _ = window.set_focus();
+                    // On Windows, SetForegroundWindow silently fails when the app isn't
+                    // already in the foreground (the user is in the browser). Flash the
+                    // taskbar button so they know to switch back.
+                    #[cfg(target_os = "windows")]
+                    let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
                 }
-                got_tokens = true;
+
+                let _ = app_handle.emit_all("oauth-code", payload);
                 break;
             } else {
-                // Favicon, preflight, or other browser request — ignore
-                let _ = stream.write_all(empty_response);
+                let _ = stream.write_all(relay_page.as_bytes());
                 let _ = stream.flush();
             }
-        }
+        } else if path.starts_with("/token?") {
+            // Legacy fragment relay path
+            let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+            let access_token = extract_param(query, "access_token")
+                .unwrap_or_default()
+                .to_string();
+            let refresh_token = extract_param(query, "refresh_token")
+                .unwrap_or_default()
+                .to_string();
 
-        if !got_tokens {
-            eprintln!("OAuth server: timed out waiting for tokens");
+            let _ = stream.write_all(success_page.as_bytes());
+            let _ = stream.flush();
+            drop(stream);
+
+            if !access_token.is_empty() && !refresh_token.is_empty() {
+                if handled.swap(true, Ordering::SeqCst) {
+                    break;
+                }
+
+                let payload = serde_json::json!({
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                });
+
+                if let Some(window) = app_handle.get_window("main") {
+                    let json = serde_json::to_string(&payload).unwrap_or_default();
+                    let js = format!(
+                        "window.dispatchEvent(new CustomEvent('oauth-tokens', {{ detail: {} }}));",
+                        json
+                    );
+                    let _ = window.eval(&js);
+                    let _ = window.set_focus();
+                    #[cfg(target_os = "windows")]
+                    let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+                }
+
+                let _ = app_handle.emit_all("oauth-callback", payload);
+            }
+            break;
+        } else {
+            let _ = stream.write_all(empty_response);
+            let _ = stream.flush();
         }
-    });
+    }
+}
+
+#[tauri::command]
+fn start_oauth_server(app_handle: tauri::AppHandle) -> Result<u16, String> {
+    // Bind IPv4 loopback (works everywhere).
+    let listener_v4 = TcpListener::bind(format!("127.0.0.1:{}", OAUTH_CALLBACK_PORT))
+        .map_err(|e| format!("Failed to start OAuth listener: {}", e))?;
+    let port = listener_v4.local_addr().map_err(|e| e.to_string())?.port();
+
+    // Also bind IPv6 loopback — on Windows, 'localhost' often resolves to ::1,
+    // so without this the browser redirect would hit an empty port and login hangs.
+    let listener_v6 = TcpListener::bind(format!("[::1]:{}", port)).ok();
+
+    let relay_page = RELAY_HTML
+        .replace("PAGESTYLE", PAGE_STYLE)
+        .replace("LOGOSVG", LOGO_SVG);
+    let success_page = SUCCESS_HTML
+        .replace("PAGESTYLE", PAGE_STYLE)
+        .replace("LOGOSVG", LOGO_SVG);
+
+    // Shared flag: whichever thread receives the callback first sets this to true
+    // so the other thread exits without firing a duplicate auth event.
+    let handled = Arc::new(AtomicBool::new(false));
+
+    // IPv4 listener thread
+    {
+        let ah = app_handle.clone();
+        let h = handled.clone();
+        let (r, s) = (relay_page.clone(), success_page.clone());
+        std::thread::spawn(move || oauth_accept_loop(listener_v4, ah, h, r, s));
+    }
+
+    // IPv6 listener thread — only spawned when ::1 binding succeeded
+    if let Some(v6) = listener_v6 {
+        let h = handled.clone();
+        std::thread::spawn(move || oauth_accept_loop(v6, app_handle, h, relay_page, success_page));
+    }
 
     Ok(port)
 }

@@ -54,6 +54,7 @@ type SplitLayout = '1' | '2h' | '2v' | '4' | '3h' | '3v' | '9';
 interface ChartPageProps {
   tabId?: string;
   allowSplit?: boolean;
+  compact?: boolean;
 }
 
 const PROBENG_WIDGET_WIDTH = 188;
@@ -1107,7 +1108,7 @@ function LayoutPicker({ current, onSelect, style }: { current: SplitLayout; onSe
   );
 }
 
-function ChartPage({ tabId, allowSplit = true }: ChartPageProps) {
+function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps) {
   const chartToolRailWidth = 56;
   const defaultIndicatorsRef = useRef<PersistedChartIndicator[]>(createDefaultPersistedChartIndicators());
   const chartOverlayRef = useRef<HTMLDivElement>(null);
@@ -2501,7 +2502,7 @@ function ChartPage({ tabId, allowSplit = true }: ChartPageProps) {
         <div style={gridStyle}>
           {Array.from({ length: paneCount }).map((_, i) => (
             <div key={i} style={{ position: 'relative', overflow: 'hidden', borderRight: (i + 1) % cols !== 0 ? '1px solid rgba(255,255,255,0.06)' : undefined, borderBottom: Math.floor(i / cols) < rows - 1 ? '1px solid rgba(255,255,255,0.06)' : undefined }}>
-              <ChartPage tabId={i === 0 ? tabId : `${tabId ?? 'chart'}-pane${i}`} allowSplit={false} />
+              <ChartPage tabId={i === 0 ? tabId : `${tabId ?? 'chart'}-pane${i}`} allowSplit={false} compact={true} />
             </div>
           ))}
         </div>
@@ -2521,6 +2522,7 @@ function ChartPage({ tabId, allowSplit = true }: ChartPageProps) {
   return (
     <div className="flex flex-col h-full bg-base relative">
       <ChartToolbar
+        compact={compact}
         symbol={symbol}
         onSymbolChange={handleSymbolChange}
         timeframe={timeframe}

@@ -65,6 +65,7 @@ interface ChartToolbarProps {
   onExportChart?: () => void;
   onImportChart?: () => void;
   rightSlot?: React.ReactNode;
+  compact?: boolean;
 }
 
 export default function ChartToolbar({
@@ -111,6 +112,7 @@ export default function ChartToolbar({
   onExportChart: _onExportChart,
   onImportChart: _onImportChart,
   rightSlot,
+  compact = false,
 }: ChartToolbarProps) {
   const [chartTypeOpen, setChartTypeOpen] = useState(false);
   const [symbolSearchOpen, setSymbolSearchOpen] = useState(false);
@@ -186,10 +188,11 @@ export default function ChartToolbar({
           onClick={() => setChartTypeOpen(!chartTypeOpen)}
           className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-white
                      hover:text-white hover:bg-hover rounded-btn transition-colors duration-120"
+          title={CHART_TYPES.find(ct => ct.value === chartType)?.label}
         >
           {chartTypeIcon()}
-          <span className="font-mono">{CHART_TYPES.find(ct => ct.value === chartType)?.label}</span>
-          <ChevronDown size={10} />
+          {!compact && <span className="font-mono">{CHART_TYPES.find(ct => ct.value === chartType)?.label}</span>}
+          {!compact && <ChevronDown size={10} />}
         </button>
         {chartTypeOpen && (
           <div className="absolute top-full left-0 mt-1 bg-panel border border-border-default rounded-btn py-1 z-50 min-w-[120px]">
@@ -218,9 +221,10 @@ export default function ChartToolbar({
           onClick={onIndicatorPanelToggle}
           className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-white
                      hover:text-white hover:bg-hover rounded-btn transition-colors duration-120"
+          title="Indicators"
         >
           <Activity size={12} />
-          <span className="font-mono">Indicators</span>
+          {!compact && <span className="font-mono">Indicators</span>}
         </button>
         <IndicatorPanel
           open={indicatorPanelOpen}
@@ -237,9 +241,10 @@ export default function ChartToolbar({
           onClick={onStrategyPanelToggle}
           className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-white
                      hover:text-white hover:bg-hover rounded-btn transition-colors duration-120"
+          title="Strategies"
         >
           <BrainCircuit size={13} />
-          <span className="font-mono">Strategies</span>
+          {!compact && <span className="font-mono">Strategies</span>}
         </button>
         <IndicatorPanel
           open={strategyPanelOpen}
@@ -300,9 +305,10 @@ export default function ChartToolbar({
         onClick={onScriptEditorToggle}
         className="flex items-center gap-1 px-2 py-0.5 text-[10px] text-purple
                    hover:text-purple hover:bg-purple/10 rounded-btn transition-colors duration-120"
+        title="Script"
       >
         <Code size={12} />
-        <span>Script</span>
+        {!compact && <span>Script</span>}
       </button>
 
       <div className="w-px h-4 bg-border-default" />
