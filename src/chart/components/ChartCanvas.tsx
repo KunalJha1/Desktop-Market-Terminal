@@ -61,6 +61,7 @@ interface ChartCanvasProps {
   activeIndicators?: ActiveIndicator[];
   alerts?: ChartAlert[];
   onAddAlert?: (price: number, symbol: string) => void;
+  onDeleteAlert?: (alertId: string) => void;
   children?: React.ReactNode;
 }
 
@@ -88,6 +89,7 @@ export default function ChartCanvas({
   activeIndicators = [],
   alerts = [],
   onAddAlert,
+  onDeleteAlert,
   children,
 }: ChartCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -106,6 +108,7 @@ export default function ChartCanvas({
   const [pendingTextValue, setPendingTextValue] = useState('');
   const [ctxMenu, setCtxMenu] = useState<DrawingContextMenu | null>(null);
   const [alertCtxMenu, setAlertCtxMenu] = useState<{ x: number; y: number; price: number } | null>(null);
+  const [alertLineCtxMenu, setAlertLineCtxMenu] = useState<{ x: number; y: number; alertId: string } | null>(null);
   const [alertDialogOpen, setAlertDialogOpen] = useState(false);
   const [alertDialogPrice, setAlertDialogPrice] = useState(0);
   const [priceSectionHeight, setPriceSectionHeight] = useState(0);
@@ -256,12 +259,16 @@ export default function ChartCanvas({
     engine.setOnChartContextMenu((info) => {
       setAlertCtxMenu({ x: info.screenX, y: info.screenY, price: info.price });
     });
+    engine.setOnAlertContextMenu((info) => {
+      setAlertLineCtxMenu({ x: info.screenX, y: info.screenY, alertId: info.alertId });
+    });
     return () => {
       engine.setOnTextPlacementRequest(null);
       engine.setOnDrawingSelectionChange(null);
       engine.setOnDrawingContextMenu(null);
       engine.setOnDrawingHoverChange(null);
       engine.setOnChartContextMenu(null);
+      engine.setOnAlertContextMenu(null);
     };
   }, [engineRef]);
 
@@ -792,6 +799,16 @@ export default function ChartCanvas({
               }
             }}
             onClose={() => setAlertCtxMenu(null)}
+          />
+        )}
+        {alertLineCtxMenu && (
+          <ChartContextMenu
+            x={alertLineCtxMenu.x}
+            y={alertLineCtxMenu.y}
+            onDeleteAlert={() => {
+              if (onDeleteAlert) onDeleteAlert(alertLineCtxMenu.alertId);
+            }}
+            onClose={() => setAlertLineCtxMenu(null)}
           />
         )}
         <AlertDialog

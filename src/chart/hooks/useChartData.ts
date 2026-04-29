@@ -295,6 +295,17 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
           serverExtentRef.current = { tsMin: payload.ts_min, tsMax: payload.ts_max };
         }
 
+        // Proactive backfill detection: if the server's oldest bar is earlier than
+        // what we have locally, the background worker has populated older history.
+        // Trigger a prepend fetch so the chart grows left automatically.
+        if (!useDaily) {
+          const extent = serverExtentRef.current;
+          const localBars = rawBarsRef.current;
+          if (extent && localBars.length > 0 && extent.tsMin < localBars[0].time) {
+            fetchOlderBars(localBars[0].time - 1).catch(() => {});
+          }
+        }
+
         const newBars = parseBars(payload);
 
         if (newBars.length > 0) {
@@ -332,6 +343,50 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
         }
       } catch {
         // Swallow poll errors — next poll will retry
+      }
+    }
+
+    // ── Shared: fetch and prepend older bars up to tsEnd ─────────────
+    async function fetchOlderBars(tsEnd: number) {
+      if (panFetchingRef.current || cancelled || requestId !== requestIdRef.current) return;
+      panFetchingRef.current = true;
+      try {
+        const url = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
+        url.searchParams.set('symbol', normalizedSymbol);
+        url.searchParams.set('bar_size', requestConfig.barSizeParam);
+        url.searchParams.set('prefer_live_refresh', '1');
+        url.searchParams.set('ts_end', String(tsEnd));
+        url.searchParams.set('limit', String(initialLimit));
+
+        const res = await fetch(url.toString());
+        if (!res.ok || cancelled || requestId !== requestIdRef.current) return;
+        const payload = await res.json();
+
+        if (payload.ts_min != null && payload.ts_max != null) {
+          serverExtentRef.current = { tsMin: payload.ts_min, tsMax: payload.ts_max };
+        }
+        const olderBars = parseBars(payload);
+        if (olderBars.length > 0) {
+          const anchor = viewportAnchorRef.current;
+          const currentRawBars = rawBarsRef.current;
+          const merged = [...olderBars, ...currentRawBars];
+          const nextRawBars = merged.length > MAX_INTRADAY_RAW_BARS
+            ? merged.slice(0, MAX_INTRADAY_RAW_BARS)
+            : merged;
+          if (anchor) {
+            const nextDisplayBars = getDisplayBars(nextRawBars, requestConfig.rawBarSize, timeframe);
+            const nextAnchorIdx = nextDisplayBars.findIndex(b => b.time === anchor.anchorTime);
+            if (nextAnchorIdx > anchor.startIdx) {
+              setPendingViewportShift(shift => shift + (nextAnchorIdx - anchor.startIdx));
+            }
+          }
+          setUpdateMode('full');
+          setRawBars(nextRawBars);
+        }
+      } catch {
+        // Swallow — next poll/pan will retry
+      } finally {
+        panFetchingRef.current = false;
       }
     }
 
@@ -377,6 +432,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
 
       if (panDebounceRef.current) clearTimeout(panDebounceRef.current);
       panDebounceRef.current = setTimeout(async () => {
+        if (panFetchingRef.current) return;
         panFetchingRef.current = true;
         try {
           const url = new URL(`http://127.0.0.1:${sidecarPort}/historical`);

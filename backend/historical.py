@@ -1514,7 +1514,7 @@ async def get_historical_bars(
         # the background.  For incremental updates (last_ts_ms set) TWS is
         # preferred because it delivers precise gap fills.
         _diq_supported = what_to_show == "TRADES" and db_bar_size in ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
-        if _diq_supported and last_ts_ms is None:
+        if _diq_supported and last_ts_ms is None and not tws_connected:
             try:
                 from dailyiq_provider import fetch_bars_from_dailyiq_async, CACHE_TTL_BARS_LIVE
                 diq_limit = _dailyiq_limit_for_fetch(db_bar_size, lookback_days, None)
@@ -1607,7 +1607,7 @@ async def get_historical_bars(
                 logger.warning(f"TWS historical fetch failed for {symbol}: {e}")
 
         # ── Step 2b: DailyIQ fallback for incremental / non-cold paths ──
-        if not fetched_bars and _diq_supported:
+        if not fetched_bars and _diq_supported and not tws_connected:
             try:
                 from dailyiq_provider import fetch_bars_from_dailyiq_async, CACHE_TTL_BARS_LIVE
                 diq_limit = _dailyiq_limit_for_fetch(db_bar_size, lookback_days, last_ts_ms)

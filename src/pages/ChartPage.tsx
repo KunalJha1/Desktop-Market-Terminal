@@ -380,6 +380,8 @@ function getProbEngStatColor(value: number | undefined): string {
   return `rgb(${mixChannel(248, 255, t)}, ${mixChannel(163, 61, t)}, ${mixChannel(184, 113, t)})`;
 }
 
+const PROBENG_HEADER_HEIGHT = 28;
+
 function ProbEngFloatingWidget({
   indicator,
   widget,
@@ -399,6 +401,7 @@ function ProbEngFloatingWidget({
   onHeaderPointerCancel: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onToggleLock: () => void;
 }) {
+  const [headerHovered, setHeaderHovered] = useState(false);
   const latestProb1 = [...(indicator.data[0] ?? [])].reverse().find((value) => Number.isFinite(value));
   const latestProb3 = [...(indicator.data[1] ?? [])].reverse().find((value) => Number.isFinite(value));
   const width = widget.detailed ? PROBENG_WIDGET_WIDTH_DETAILED : PROBENG_WIDGET_WIDTH;
@@ -411,10 +414,12 @@ function ProbEngFloatingWidget({
     { label: 'Min Obs', value: String(Math.round(indicator.params.minObs ?? 0)) },
     { label: 'Use Body', value: (indicator.params.useBody ?? 1) > 0 ? 'Yes' : 'No' },
   ];
+  const showHeader = !widget.locked || headerHovered;
 
   return (
     <div
-      title={widget.locked ? 'Placement locked' : 'Drag to reposition'}
+      onPointerEnter={() => setHeaderHovered(true)}
+      onPointerLeave={() => setHeaderHovered(false)}
       style={{
         position: 'absolute',
         left: widget.x,
@@ -438,11 +443,16 @@ function ProbEngFloatingWidget({
         onPointerUp={widget.locked ? undefined : onHeaderPointerUp}
         onPointerCancel={widget.locked ? undefined : onHeaderPointerCancel}
         style={{
-          minHeight: widget.locked ? 22 : 28,
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: PROBENG_HEADER_HEIGHT,
+          zIndex: 2,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: widget.locked ? '0 6px 0 8px' : '0 8px 0 6px',
+          padding: '0 8px 0 6px',
           borderBottom: '1px solid rgba(255,255,255,0.12)',
           fontSize: 10,
           fontFamily: '"JetBrains Mono", monospace',
@@ -455,9 +465,12 @@ function ProbEngFloatingWidget({
               ? 'linear-gradient(180deg, rgba(39,56,82,0.98) 0%, rgba(19,28,43,0.98) 100%)'
               : 'linear-gradient(180deg, rgba(28,33,40,0.98) 0%, rgba(15,23,32,0.98) 100%)',
           cursor: widget.locked ? 'default' : dragging ? 'grabbing' : 'grab',
-          touchAction: 'none',
+          touchAction: widget.locked ? undefined : 'none',
+          opacity: showHeader ? 1 : 0,
+          pointerEvents: showHeader ? 'auto' : 'none',
+          transform: showHeader ? 'translateY(0)' : 'translateY(-100%)',
+          transition: 'opacity 120ms ease-out, transform 120ms ease-out',
         }}
-        title={widget.locked ? 'Placement locked' : 'Drag from header to reposition'}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
           {!widget.locked && (
@@ -478,12 +491,9 @@ function ProbEngFloatingWidget({
               <GripHorizontal size={10} strokeWidth={1.7} />
             </span>
           )}
-          <span style={{ color: '#8B949E' }}>{widget.locked ? '1-bar (Up)' : 'Probability Table'}</span>
+          <span style={{ color: '#8B949E' }}>DailyIQ Bar Probability Table</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-          {widget.locked && (
-            <span style={{ color: prob1Color, fontWeight: 700 }}>{formatProbEngValue(latestProb1)}</span>
-          )}
           <button
             type="button"
             onPointerDown={(event) => event.stopPropagation()}
@@ -526,21 +536,17 @@ function ProbEngFloatingWidget({
         }}
       >
         <tbody>
-          {!widget.locked && (
-            <tr>
-              <td style={{ padding: '6px 8px', color: '#8B949E', backgroundColor: '#000000' }}>1-bar (Up)</td>
-              <td style={{ padding: '6px 8px', textAlign: 'right', color: prob1Color, fontWeight: 700, backgroundColor: '#000000' }}>{formatProbEngValue(latestProb1)}</td>
-            </tr>
-          )}
           <tr>
-            <td style={{ padding: '6px 8px', color: '#8B949E', borderTop: widget.locked ? 'none' : '1px solid rgba(255,255,255,0.06)', backgroundColor: '#000000' }}>
-              {widget.locked ? '3-bar (Up)' : '3-bar (Up)'}
-            </td>
-            <td style={{ padding: '6px 8px', textAlign: 'right', color: prob3Color, fontWeight: 700, borderTop: widget.locked ? 'none' : '1px solid rgba(255,255,255,0.06)', backgroundColor: '#000000' }}>
+            <td style={{ padding: '6px 8px', color: '#8B949E', backgroundColor: '#000000' }}>1-bar (Up)</td>
+            <td style={{ padding: '6px 8px', textAlign: 'right', color: prob1Color, fontWeight: 700, backgroundColor: '#000000' }}>{formatProbEngValue(latestProb1)}</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '6px 8px', color: '#8B949E', borderTop: '1px solid rgba(255,255,255,0.06)', backgroundColor: '#000000' }}>3-bar (Up)</td>
+            <td style={{ padding: '6px 8px', textAlign: 'right', color: prob3Color, fontWeight: 700, borderTop: '1px solid rgba(255,255,255,0.06)', backgroundColor: '#000000' }}>
               {formatProbEngValue(latestProb3)}
             </td>
           </tr>
-          {!widget.locked && widget.detailed && (
+          {widget.detailed && (
             <>
               {detailRows.map((row) => (
                 <tr key={row.label}>
@@ -2220,7 +2226,7 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
     sidecarPort,
   });
   // Alert system
-  const { addAlert, alerts } = useAlerts();
+  const { addAlert, removeAlert, alerts } = useAlerts();
   const [alertDialogOpen, setAlertDialogOpen] = useState(false);
   const [alertDialogPrice, setAlertDialogPrice] = useState(0);
   const [alertDialogSymbol, setAlertDialogSymbol] = useState('');
@@ -4080,6 +4086,7 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
           activeIndicators={activeIndicators}
           alerts={chartAlerts}
           onAddAlert={handleAddAlert}
+          onDeleteAlert={removeAlert}
         >
           {dragState && chartLayout && (
             <>

@@ -1,0 +1,18 @@
+[Unit]
+Description=IBKR Gateway watchdog — restarts ibgateway if unreachable for 2 consecutive polls
+After=network.target
+
+[Service]
+Type=simple
+User=kunal
+WorkingDirectory=/home/kunal/apps/dailyiq/backend
+ExecStart=/home/kunal/apps/dailyiq/backend/.venv/bin/python /home/kunal/apps/dailyiq/backend/ibkr_watchdog.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/kunal/apps/dailyiq/backend/.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

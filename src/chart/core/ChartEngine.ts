@@ -170,6 +170,7 @@ export class ChartEngine {
   private _onDrawingSelectionChange: ((selection: DrawingSelection | null) => void) | null = null;
   private _onDrawingContextMenu: ((info: { drawingId: string; color: string; screenX: number; screenY: number }) => void) | null = null;
   private _onChartContextMenu: ((info: { price: number; screenX: number; screenY: number }) => void) | null = null;
+  private _onAlertContextMenu: ((info: { alertId: string; screenX: number; screenY: number }) => void) | null = null;
   private _onDrawingHoverChange: ((hoveredId: string | null) => void) | null = null;
   onYScaleModeChange: ((mode: YScaleMode) => void) | null = null;
   private lastNotifiedViewportStart: number | null = null;
@@ -501,6 +502,10 @@ export class ChartEngine {
 
   setOnChartContextMenu(cb: ((info: { price: number; screenX: number; screenY: number }) => void) | null) {
     this._onChartContextMenu = cb;
+  }
+
+  setOnAlertContextMenu(cb: ((info: { alertId: string; screenX: number; screenY: number }) => void) | null) {
+    this._onAlertContextMenu = cb;
   }
 
   getPriceAtCanvasY(canvasY: number): number {
@@ -3703,9 +3708,20 @@ export class ChartEngine {
           screenY: e.clientY,
         });
       }
-    } else if (this._onChartContextMenu) {
-      const price = this.viewport.pixelYToPrice(my);
-      this._onChartContextMenu({ price, screenX: e.clientX, screenY: e.clientY });
+    } else {
+      const hitAlert = this._onAlertContextMenu
+        ? this.chartAlerts.find((a) => {
+            if (a.type !== 'price' || a.status !== 'active') return false;
+            const ay = this.viewport.priceToPixelY(a.price);
+            return Math.abs(my - ay) <= 6;
+          })
+        : null;
+      if (hitAlert && this._onAlertContextMenu) {
+        this._onAlertContextMenu({ alertId: hitAlert.id, screenX: e.clientX, screenY: e.clientY });
+      } else if (this._onChartContextMenu) {
+        const price = this.viewport.pixelYToPrice(my);
+        this._onChartContextMenu({ price, screenX: e.clientX, screenY: e.clientY });
+      }
     }
   };
 

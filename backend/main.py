@@ -3182,7 +3182,7 @@ def create_app() -> FastAPI:
                         get_historical_bars(
                             symbol=symbol,
                             ib=None,
-                            tws_connected=False,
+                            tws_connected=_tws_connected_for_chart(),
                             duration=fetch_duration,
                             bar_size=bar_size,
                             what_to_show=what_to_show,
@@ -3256,7 +3256,7 @@ def create_app() -> FastAPI:
                     get_historical_bars(
                         symbol=symbol,
                         ib=None,
-                        tws_connected=False,
+                        tws_connected=_tws_connected_for_chart(),
                         duration=seed_duration_for_bar_size(bar_size),
                         bar_size=bar_size,
                         what_to_show=what_to_show,
@@ -3342,7 +3342,7 @@ def create_app() -> FastAPI:
                     get_historical_bars(
                         symbol=symbol,
                         ib=None,
-                        tws_connected=False,
+                        tws_connected=_tws_connected_for_chart(),
                         duration=requested_duration,
                         bar_size=bar_size,
                         what_to_show=what_to_show,
