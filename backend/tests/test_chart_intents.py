@@ -136,7 +136,7 @@ class ChartIntentTests(unittest.TestCase):
             ],
         )
 
-    def test_historical_window_prefers_dailyiq_refresh_when_requested_and_tws_disconnected(self) -> None:
+    def test_historical_window_returns_cached_bars_before_live_refresh(self) -> None:
         with db_utils.sync_db_session(self.db_path) as conn:
             historical._init_schema(conn)
             historical._write_bars(
@@ -184,9 +184,9 @@ class ChartIntentTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["source"], "dailyiq")
-        self.assertEqual(payload["count"], 2)
-        self.assertEqual(payload["bars"][-1]["time"], 2_000)
+        self.assertEqual(payload["source"], "cache")
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["bars"][-1]["time"], 1_000)
 
 
 if __name__ == "__main__":

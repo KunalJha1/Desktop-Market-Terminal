@@ -3123,6 +3123,31 @@ def create_app() -> FastAPI:
                 return False
             _historical_live_refresh_last_triggered[refresh_key] = now
             try:
+                if what_to_show.upper() == "TRADES":
+                    from dailyiq_provider import trigger_chart_bar_refresh
+                    loop = asyncio.get_running_loop()
+                    refresh_status = await loop.run_in_executor(
+                        None,
+                        lambda: trigger_chart_bar_refresh(
+                            symbol,
+                            timeframe=db_bar_size,
+                            max_wait_ms=2500,
+                            timeout=5,
+                        ),
+                    )
+                    if refresh_status:
+                        emit_debug_event(
+                            "historical",
+                            "dailyiq_refresh_triggered",
+                            f"Triggered DailyIQ refresh for {symbol} {db_bar_size}",
+                            {
+                                "symbol": symbol,
+                                "barSize": db_bar_size,
+                                "status": refresh_status.get("status"),
+                                "lastBarTsUtc": refresh_status.get("lastBarTsUtc"),
+                            },
+                        )
+
                 bars, _ = await asyncio.wait_for(
                     get_historical_bars(
                         symbol=symbol,
@@ -3215,26 +3240,8 @@ def create_app() -> FastAPI:
                 "ts_max": result["ts_max"],
             }
             if result["count"] > 0:
-                refreshed = await _attempt_live_refresh(requested_duration)
-                if refreshed:
-                    result = await run_db(
-                        read_bars_window,
-                        symbol,
-                        db_bar_size,
-                        what_to_show,
-                        ts_start,
-                        ts_end,
-                        limit,
-                    )
-                    payload = {
-                        "symbol": symbol,
-                        "bars": result["bars"],
-                        "source": "dailyiq",
-                        "count": result["count"],
-                        "whatToShow": what_to_show.upper(),
-                        "ts_min": result["ts_min"],
-                        "ts_max": result["ts_max"],
-                    }
+                if prefer_live_refresh:
+                    asyncio.create_task(_attempt_live_refresh(requested_duration))
                 _spawn_background_revalidate(requested_duration)
                 emit_debug_event(
                     "historical",
@@ -3244,6 +3251,7 @@ def create_app() -> FastAPI:
                 )
                 return payload
 
+            await _attempt_live_refresh(requested_duration)
             await run_db(
                 enqueue_historical_priority,
                 symbol,
@@ -3337,6 +3345,7 @@ def create_app() -> FastAPI:
             )
             bars: list[dict] = []
             source = "none"
+            await _attempt_live_refresh(requested_duration)
             try:
                 bars, source = await asyncio.wait_for(
                     get_historical_bars(

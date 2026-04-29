@@ -345,6 +345,74 @@ def signal_chart_view(symbol: str) -> None:
     threading.Thread(target=_post, daemon=True, name="dailyiq-view-signal").start()
 
 
+def trigger_chart_bar_refresh(
+    symbol: str,
+    timeframe: str = "1m",
+    *,
+    max_wait_ms: int = 2500,
+    timeout: float = 5,
+) -> dict | None:
+    """Ask DailyIQ to force-refresh recent bars for one active fallback chart.
+
+    This is only intended for fallback mode when local TWS/IBKR is unavailable.
+    The DailyIQ API returns quickly with a refresh status; it does not require the
+    sidecar to block until IBKR finishes.
+    """
+    base = _base_url()
+    if not base:
+        emit_debug_event(
+            "dailyiq",
+            "missing_api_key",
+            "DailyIQ refresh skipped: API key missing",
+            {"symbol": symbol, "timeframe": timeframe},
+        )
+        return None
+
+    sym = (symbol or "").strip().upper()
+    tf = (timeframe or "1m").strip().lower()
+    if not sym:
+        return None
+
+    try:
+        emit_debug_event(
+            "dailyiq",
+            "refresh_request",
+            f"POST DailyIQ bar refresh {sym} {tf}",
+            {"symbol": sym, "timeframe": tf, "maxWaitMs": max_wait_ms},
+        )
+        res = requests.post(
+            f"{base}/price-bars/refresh",
+            params={"symbol": sym, "timeframe": tf, "maxWaitMs": int(max_wait_ms)},
+            timeout=timeout,
+        )
+        if res.status_code == 429:
+            logger.warning("DailyIQ refresh rate limited for %s %s", sym, tf)
+            return None
+        if res.status_code != 200:
+            logger.warning("DailyIQ refresh %s %s returned %d", sym, tf, res.status_code)
+            return None
+        data = res.json()
+        emit_debug_event(
+            "dailyiq",
+            "refresh_response",
+            f"DailyIQ bar refresh {sym} {tf}: {data.get('status')}",
+            {"symbol": sym, "timeframe": tf, "status": data.get("status")},
+        )
+        return data
+    except requests.RequestException as exc:
+        logger.debug("DailyIQ refresh failed for %s %s: %s", sym, tf, exc)
+        emit_debug_event(
+            "dailyiq",
+            "refresh_exception",
+            f"DailyIQ refresh exception {sym} {tf}",
+            {"symbol": sym, "timeframe": tf, "error": str(exc)},
+        )
+        return None
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.debug("DailyIQ refresh JSON failed for %s %s: %s", sym, tf, exc)
+        return None
+
+
 # ── Date parsing ─────────────────────────────────────────────────────
 
 def _parse_date_to_ms(date_str: str) -> int | None:

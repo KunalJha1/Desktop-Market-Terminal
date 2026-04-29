@@ -46,6 +46,7 @@ const PAN_FETCH_DEBOUNCE = 200;
 // Polling intervals (ms)
 const INTRADAY_POLL_MS = 3_000;
 const DAILY_POLL_MS = 60_000;
+const DAILY_FALLBACK_POLL_MS = 5_000;
 
 function parseBars(payload: { bars: Array<Record<string, number | boolean>> }): OHLCVBar[] {
   return payload.bars.map(b => ({
@@ -154,6 +155,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
   // Keep a ref to rawBars for async access without stale closures
   const rawBarsRef = useRef<OHLCVBar[]>([]);
   const displayBarsRef = useRef<OHLCVBar[]>([]);
+  const sourceRef = useRef<'tws' | 'dailyiq' | 'yahoo' | 'cache' | 'offline'>('offline');
   // Track the server's full cached extent for the current symbol
   const serverExtentRef = useRef<{ tsMin: number; tsMax: number } | null>(null);
   // Debounce timer for pan fetches
@@ -167,6 +169,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
 
   // Keep ref in sync for async access
   rawBarsRef.current = rawBars;
+  sourceRef.current = source;
 
   const useDaily = isDailyTimeframe(timeframe);
   const requestConfig = useMemo(() => getHistoricalRequestConfig(timeframe), [timeframe]);
@@ -235,6 +238,9 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
         url.searchParams.set('bar_size', requestConfig.barSizeParam);
         url.searchParams.set('duration', requestConfig.duration);
         url.searchParams.set('prefer_live_refresh', '1');
+        if (!useDaily) {
+          url.searchParams.set('limit', String(initialLimit));
+        }
 
         const res = await fetch(url.toString());
         if (!res.ok) return;
@@ -390,12 +396,27 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
       }
     }
 
+    function currentPollMs(): number {
+      if (requestConfig.rawBarSize !== '1d') return INTRADAY_POLL_MS;
+      const src = sourceRef.current;
+      return src === 'dailyiq' || src === 'offline' ? DAILY_FALLBACK_POLL_MS : DAILY_POLL_MS;
+    }
+
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleNextPoll = () => {
+      if (cancelled || requestId !== requestIdRef.current) return;
+      pollTimer = setTimeout(() => {
+        pollTimer = null;
+        pollIncremental().finally(scheduleNextPoll);
+      }, currentPollMs());
+    };
+
     fetchBars();
-    const interval = setInterval(pollIncremental, requestConfig.rawBarSize === '1d' ? DAILY_POLL_MS : INTRADAY_POLL_MS);
+    scheduleNextPoll();
 
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      if (pollTimer) clearTimeout(pollTimer);
       if (panDebounceRef.current) clearTimeout(panDebounceRef.current);
       if (intradayPollRafRef.current != null) {
         cancelAnimationFrame(intradayPollRafRef.current);
@@ -403,7 +424,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
       }
       intradayPollPendingRef.current = null;
     };
-  }, [datasetKey, normalizedSymbol, sidecarPort, timeframe, useDaily, requestConfig]);
+  }, [datasetKey, normalizedSymbol, sidecarPort, timeframe, useDaily, requestConfig, initialLimit]);
 
   // ── Pan-triggered fetch: load older bars when scrolling left ─────────
   const onViewportChange = useCallback((startIdx: number, endIdx: number) => {

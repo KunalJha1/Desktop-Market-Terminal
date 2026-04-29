@@ -1109,12 +1109,10 @@ function OptionsPage() {
                     const midIv = row.call?.impliedVolatility ?? row.put?.impliedVolatility;
 
                     // Analytics highlights
-                    const rowDetails = analytics.details.get(row.strike);
                     const isResistance = analytics.resistance === row.strike;
                     const isSupport = analytics.support === row.strike;
                     const isCoveredCall = analytics.bestCoveredCall === row.strike;
                     const isEquivPut = analytics.equivalentPut === row.strike;
-                    const hasAnalytics = (rowDetails?.length ?? 0) > 0;
                     const rowBorderLeft = isResistance
                       ? ANALYTICS_COLORS.resistance
                       : isSupport
