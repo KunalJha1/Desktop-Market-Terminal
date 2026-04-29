@@ -168,6 +168,13 @@ export default function ChartCanvas({
     return () => ro.disconnect();
   }, [handleResize]);
 
+  // Re-sync canvas DPR/backing store on window resize; Tauri/WebView does not
+  // reliably surface these changes through ResizeObserver alone.
+  useEffect(() => {
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [handleResize]);
+
   // Update data — use incremental path for poll-driven tail updates
   useEffect(() => {
     const engine = engineRef.current;

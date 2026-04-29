@@ -139,6 +139,8 @@ const computeFns: Record<string, (bars: OHLCVBar[], params: Record<string, numbe
   'Structure Breaks': computeStructureBreaks,
   'Liquidity Levels': computeLiquidityLevelLines,
   'Liquidity Sweep Signal': computeLiquiditySweeps,
+  'DailyIQ Liquidity Sweep Table': () => [],
+  'Dailyiq Liquitity Sweep': computeLiquiditySweepIctSmc,
   'Liquidity Sweep (ICT/SMC)': computeLiquiditySweepIctSmc,
   FVG: computeFVG,
   'FVG Momentum': computeFVGMomentum,

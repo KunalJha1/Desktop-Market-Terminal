@@ -51,6 +51,35 @@ function InlineNumericInput({
   );
 }
 
+function InlineCheckbox({
+  checked,
+  onChange,
+  title,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  title?: string;
+}) {
+  return (
+    <label
+      title={title}
+      className="flex h-[18px] w-[18px] items-center justify-center rounded-input border border-border-default bg-hover cursor-pointer"
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={e => onChange(e.target.checked)}
+        className="h-[12px] w-[12px] accent-blue cursor-pointer"
+      />
+    </label>
+  );
+}
+
+function isBooleanParam(label: string | undefined): boolean {
+  if (!label) return false;
+  return label.includes('1/0') || label.includes('(1/0)');
+}
+
 export default function IndicatorSettings({
   indicators,
   onUpdateParams,
@@ -73,16 +102,29 @@ export default function IndicatorSettings({
             <span className="text-[10px] text-text-secondary font-mono">
               {meta.shortName}
             </span>
-            {Object.entries(ind.params).map(([key, value]) => (
-              ind.name === 'Probability Engine' && key === 'detailedStats' ? null : (
+            {Object.entries(meta.defaultParams).map(([key, defaultValue]) => {
+              if (ind.name === 'Probability Engine' && key === 'detailedStats') return null;
+              const value = ind.params[key] ?? defaultValue;
+              const label = meta.paramLabels[key] || key;
+              if (isBooleanParam(label)) {
+                return (
+                  <InlineCheckbox
+                    key={key}
+                    checked={value >= 0.5}
+                    onChange={checked => onUpdateParams(ind.id, { [key]: checked ? 1 : 0 })}
+                    title={label}
+                  />
+                );
+              }
+              return (
                 <InlineNumericInput
                   key={key}
                   value={value}
                   onChange={v => onUpdateParams(ind.id, { [key]: v })}
-                  title={meta.paramLabels[key] || key}
+                  title={label}
                 />
-              )
-            ))}
+              );
+            })}
             <button
               onClick={() => onToggleVisibility(ind.id)}
               className="text-text-muted hover:text-text-secondary p-0.5"

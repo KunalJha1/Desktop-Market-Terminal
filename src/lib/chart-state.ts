@@ -63,6 +63,7 @@ export interface ChartState {
   activeCustomStrategyIds?: string[];
   probEngWidget?: ProbEngWidgetState;
   technicalTableWidget?: TechnicalTableWidgetState;
+  liquidityTableWidget?: TechnicalTableWidgetState;
   tooltipFields?: Record<string, boolean>;
   indicatorPanelOpen?: boolean;
   strategyPanelOpen?: boolean;
@@ -89,6 +90,17 @@ export function createDefaultTechnicalTableWidgetState(): TechnicalTableWidgetSt
     y: 120,
     width: 520,
     height: 286,
+    visible: true,
+    locked: false,
+  };
+}
+
+export function createDefaultLiquidityTableWidgetState(): TechnicalTableWidgetState {
+  return {
+    x: 120,
+    y: 120,
+    width: 560,
+    height: 310,
     visible: true,
     locked: false,
   };
@@ -156,6 +168,9 @@ function parseSubPaneState(value: unknown): SubPaneStateSnapshot | undefined {
     ? value.collapsedPaneIds.filter((item): item is string => typeof item === "string")
     : [];
   const maximizedPaneId = typeof value.maximizedPaneId === "string" ? value.maximizedPaneId : null;
+  const paneOrder = Array.isArray(value.paneOrder)
+    ? value.paneOrder.filter((item): item is string => typeof item === "string")
+    : [];
   return {
     heightOverrides: Object.fromEntries(
       Object.entries(sanitizeNumberRecord(value.heightOverrides))
@@ -164,6 +179,7 @@ function parseSubPaneState(value: unknown): SubPaneStateSnapshot | undefined {
     scaleModes: sanitizeYScaleModeRecord(value.scaleModes),
     collapsedPaneIds,
     maximizedPaneId,
+    paneOrder,
   };
 }
 
@@ -318,6 +334,24 @@ export function loadChartState(tabId: string): ChartState | null {
               : base;
           })()
         : createDefaultTechnicalTableWidgetState(),
+      liquidityTableWidget: isRecord((parsed as { liquidityTableWidget?: unknown }).liquidityTableWidget)
+        ? (() => {
+            const lw = (parsed as { liquidityTableWidget?: unknown }).liquidityTableWidget as Record<string, unknown>;
+            const base = {
+              x: typeof lw.x === "number" ? lw.x : 120,
+              y: typeof lw.y === "number" ? lw.y : 120,
+              width: typeof lw.width === "number" ? Math.max(400, Math.min(680, lw.width)) : 560,
+              height: typeof lw.height === "number" ? Math.max(270, Math.min(520, lw.height)) : 310,
+              visible: typeof lw.visible === "boolean" ? lw.visible : true,
+              locked: typeof lw.locked === "boolean" ? lw.locked : false,
+            };
+            const normX = typeof lw.normX === "number" && Number.isFinite(lw.normX) ? lw.normX : undefined;
+            const normY = typeof lw.normY === "number" && Number.isFinite(lw.normY) ? lw.normY : undefined;
+            return normX !== undefined && normY !== undefined
+              ? { ...base, normX, normY }
+              : base;
+          })()
+        : createDefaultLiquidityTableWidgetState(),
     };
   } catch {
     return null;

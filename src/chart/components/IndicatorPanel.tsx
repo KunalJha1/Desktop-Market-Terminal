@@ -36,7 +36,7 @@ const categories = [
   { key: 'volume' as const, label: 'Volume' },
 ];
 
-const HIDDEN_INDICATOR_KEYS = new Set<string>();
+const HIDDEN_INDICATOR_KEYS = new Set<string>(['Liquidity Sweep (ICT/SMC)']);
 
 const INDICATOR_DESCRIPTIONS: Record<string, string> = {
   SMA: 'Trend-following moving average',
@@ -57,7 +57,9 @@ const INDICATOR_DESCRIPTIONS: Record<string, string> = {
   'MACD Crossover': 'Buy/sell on MACD-signal line crossovers',
   'ADL Crossover': 'Buy/sell when ADL crosses above/below its SMA smoothing line',
   'Structure Breaks': 'Pivot break markers for bullish and bearish structure breaks',
-  'Liquidity Sweep (ICT/SMC)': 'Combined DH/DL and prior-period liquidity lines with ICT/SMC sweep zones and labels',
+  'Dailyiq Liquitity Sweep': 'DailyIQ liquidity sweep zones with simplified labels and action callouts',
+  'Liquidity Sweep (ICT/SMC)': 'DailyIQ liquidity sweep zones with simplified labels and action callouts',
+  'DailyIQ Liquidity Sweep Table': 'Floating liquidity table with DH/DL, prior period levels, sweep state, and ATR targets',
   FVG: 'Standalone fair value gap rectangles with auto-clear when used',
   'FVG Momentum': 'Latest fair value gap boundaries with pullback/rejection markers',
   'Gap Zones': 'Highlights simple gap-up and gap-down price voids on the chart',

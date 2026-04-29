@@ -434,6 +434,9 @@ function parseSubPaneState(value: unknown): SubPaneStateSnapshot | undefined {
     ? value.collapsedPaneIds.filter((item): item is string => typeof item === 'string')
     : [];
   const maximizedPaneId = typeof value.maximizedPaneId === 'string' ? value.maximizedPaneId : null;
+  const paneOrder = Array.isArray(value.paneOrder)
+    ? value.paneOrder.filter((item): item is string => typeof item === 'string')
+    : [];
   return {
     heightOverrides: Object.fromEntries(
       Object.entries(sanitizeNumberRecord(value.heightOverrides))
@@ -442,16 +445,18 @@ function parseSubPaneState(value: unknown): SubPaneStateSnapshot | undefined {
     scaleModes: sanitizeYScaleModeRecord(value.scaleModes),
     collapsedPaneIds,
     maximizedPaneId,
+    paneOrder,
   };
 }
 
 function subPaneStateEqual(a?: SubPaneStateSnapshot, b?: SubPaneStateSnapshot): boolean {
-  const left = a ?? { heightOverrides: {}, scaleModes: {}, collapsedPaneIds: [], maximizedPaneId: null };
-  const right = b ?? { heightOverrides: {}, scaleModes: {}, collapsedPaneIds: [], maximizedPaneId: null };
+  const left = a ?? { heightOverrides: {}, scaleModes: {}, collapsedPaneIds: [], maximizedPaneId: null, paneOrder: [] };
+  const right = b ?? { heightOverrides: {}, scaleModes: {}, collapsedPaneIds: [], maximizedPaneId: null, paneOrder: [] };
   return recordsEqual(left.heightOverrides, right.heightOverrides)
     && recordsEqual(left.scaleModes, right.scaleModes)
     && JSON.stringify([...left.collapsedPaneIds].sort()) === JSON.stringify([...right.collapsedPaneIds].sort())
-    && left.maximizedPaneId === right.maximizedPaneId;
+    && left.maximizedPaneId === right.maximizedPaneId
+    && JSON.stringify(left.paneOrder ?? []) === JSON.stringify(right.paneOrder ?? []);
 }
 
 function probEngWidgetStateEqual(a: ProbEngWidgetState, b: ProbEngWidgetState): boolean {
@@ -533,7 +538,7 @@ function buildIndicatorFingerprint(indicators: PersistedMiniIndicator[]): string
 
 const INDICATOR_SEARCH_ALIASES: Record<string, string[]> = {
   'Probability Engine': ['probability table', 'prob table', 'probability'],
-  'Liquidity Sweep (ICT/SMC)': ['ict liquidity sweep', 'smc liquidity sweep', 'ict sweep'],
+  'Dailyiq Liquitity Sweep': ['dailyiq liquidity sweep', 'dailyiq liquitity sweep', 'ict liquidity sweep', 'smc liquidity sweep', 'ict sweep'],
   FVG: ['fair value gap'],
   'FVG Momentum': ['fair value gap momentum', 'fvg'],
 };

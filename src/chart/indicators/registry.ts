@@ -31,6 +31,32 @@ import macdCrossoverStrategyScript from './scripts/macdCrossoverStrategy.diq?raw
 import fvgScript from './scripts/fvg.diq?raw';
 
 const C = INDICATOR_COLORS;
+const DAILYIQ_LIQUITITY_SWEEP_META: IndicatorMeta = {
+  name: 'Dailyiq Liquitity Sweep',
+  shortName: 'DIQ Sweep',
+  category: 'overlay',
+  legendOmitParamSummary: true,
+  defaultParams: {
+    liqUseCloseConfirm: 1,
+    liqUseExternalOnly: 1,
+    liqShowSweepLabel: 1,
+    liqShowBullSweepText: 1,
+    liqShowRange: 1,
+    liqShowAction: 1,
+  },
+  paramLabels: {
+    liqUseCloseConfirm: 'Close Confirm 1/0',
+    liqUseExternalOnly: 'External Only 1/0',
+    liqShowSweepLabel: 'Show Labels 1/0',
+    liqShowBullSweepText: 'Show Bull Label 1/0',
+    liqShowRange: 'Show Label Details 1/0',
+    liqShowAction: 'Show Action Box 1/0',
+  },
+  outputs: [
+    { key: 'buy', label: 'Bull sweep', color: '#009E48', style: 'markers' },
+    { key: 'sell', label: 'Bear sweep', color: '#DB2958', style: 'markers' },
+  ],
+};
 
 export const indicatorRegistry: Record<string, IndicatorMeta> = {
   SMA: {
@@ -286,52 +312,27 @@ export const indicatorRegistry: Record<string, IndicatorMeta> = {
     ],
   },
 
-  'Liquidity Sweep (ICT/SMC)': {
-    name: 'Liquidity Sweep (ICT/SMC)',
-    shortName: 'ICT Liq',
+  'DailyIQ Liquidity Sweep Table': {
+    name: 'DailyIQ Liquidity Sweep Table',
+    shortName: 'DIQ Liq Tbl',
     category: 'overlay',
-    legendOmitParamSummary: true,
     defaultParams: {
-      liqOn: 1,
-      liqUseCloseConfirm: 1,
-      liqShowTodayHL: 1,
-      liqShowPDH_PDL: 1,
-      liqShowPWH_PWL: 1,
-      liqShowPMH_PML: 1,
-      liqUseExternalOnly: 1,
-      liqPadTicks: 0,
-      liqExtend: 120,
-      liqShowAction: 1,
-      liqShowRange: 1,
-      liqShowSweepLabel: 1,
-      liqLabelXBars: 8,
-      liqLabelYOffsetTicks: 20,
-      liqActionXBars: 2,
-      liqActionYOffsetTicks: 10,
+      atrLen: 14,
+      targetAtrMult: 1,
+      highlightNearLevels: 1,
+      nearLevelPct: 0.5,
     },
     paramLabels: {
-      liqOn: 'Show Liquidity 1/0',
-      liqUseCloseConfirm: 'Close Confirm 1/0',
-      liqShowTodayHL: 'Use DH/DL 1/0',
-      liqShowPDH_PDL: 'Use PDH/PDL 1/0',
-      liqShowPWH_PWL: 'Use PWH/PWL 1/0',
-      liqShowPMH_PML: 'Use PMH/PML 1/0',
-      liqUseExternalOnly: 'External Only 1/0',
-      liqPadTicks: 'Pad Ticks',
-      liqExtend: 'Zone Extend Bars',
-      liqShowAction: 'Show Action Box 1/0',
-      liqShowRange: 'Show Sweep Range 1/0',
-      liqShowSweepLabel: 'Show Sweep Label 1/0',
-      liqLabelXBars: 'Label X Bars',
-      liqLabelYOffsetTicks: 'Label Y Ticks',
-      liqActionXBars: 'Action X Bars',
-      liqActionYOffsetTicks: 'Action Y Ticks',
+      atrLen: 'Daily ATR Length',
+      targetAtrMult: 'Target ATR Mult',
+      highlightNearLevels: 'Highlight Near 1/0',
+      nearLevelPct: 'Near Level %',
     },
-    outputs: [
-      { key: 'buy', label: 'Bull sweep', color: '#009E48', style: 'markers' },
-      { key: 'sell', label: 'Bear sweep', color: '#DB2958', style: 'markers' },
-    ],
+    outputs: [],
   },
+
+  'Dailyiq Liquitity Sweep': DAILYIQ_LIQUITITY_SWEEP_META,
+  'Liquidity Sweep (ICT/SMC)': DAILYIQ_LIQUITITY_SWEEP_META,
 
   FVG: {
     name: 'FVG',

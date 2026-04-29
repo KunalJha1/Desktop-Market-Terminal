@@ -143,6 +143,7 @@ export class ChartEngine {
   private subPaneScaleModes: Map<string, YScaleMode> = new Map();
   private collapsedPanes: Set<string> = new Set();
   private maximizedPaneId: string | null = null;
+  private subPaneOrder: string[] = [];
   private brandingMode: ChartBrandingMode = 'none';
   private brandingImage: HTMLImageElement | null = null;
   private symbolBrandingSymbol = '';
@@ -624,6 +625,9 @@ export class ChartEngine {
       data: [],
     };
     this.activeIndicators.push(indicator);
+    if (paneId !== 'main' && !isProbEngWidgetIndicator(indicator) && !this.subPaneOrder.includes(paneId)) {
+      this.subPaneOrder.push(paneId);
+    }
     this.computeSingleIndicator(indicator);
     this.markDirty();
     return id;
@@ -631,6 +635,7 @@ export class ChartEngine {
 
   removeIndicator(id: string) {
     this.activeIndicators = this.activeIndicators.filter(ind => ind.id !== id);
+    this.normalizeSubPaneOrder();
     this.volumeProfileHitAreas.delete(id);
     if (this.hoveredVolumeProfileId === id) this.hoveredVolumeProfileId = null;
     this.markDirty();
@@ -705,6 +710,10 @@ export class ChartEngine {
     const ind = this.activeIndicators.find(i => i.id === id);
     if (!ind || ind.paneId === paneId) return;
     ind.paneId = paneId;
+    if (paneId !== 'main' && !isProbEngWidgetIndicator(ind) && !this.subPaneOrder.includes(paneId)) {
+      this.subPaneOrder.push(paneId);
+    }
+    this.normalizeSubPaneOrder();
     this.markDirty();
   }
 
@@ -717,11 +726,13 @@ export class ChartEngine {
   }
 
   getSubPaneState(): SubPaneStateSnapshot {
+    this.normalizeSubPaneOrder();
     return {
       heightOverrides: Object.fromEntries(this.subPaneHeightOverrides.entries()),
       scaleModes: Object.fromEntries(this.subPaneScaleModes.entries()),
       collapsedPaneIds: Array.from(this.collapsedPanes.values()),
       maximizedPaneId: this.maximizedPaneId,
+      paneOrder: [...this.subPaneOrder],
     };
   }
 
@@ -730,6 +741,7 @@ export class ChartEngine {
     this.subPaneScaleModes.clear();
     this.collapsedPanes.clear();
     this.maximizedPaneId = null;
+    this.subPaneOrder = [];
 
     if (state) {
       for (const [paneId, value] of Object.entries(state.heightOverrides ?? {})) {
@@ -749,8 +761,12 @@ export class ChartEngine {
       if (typeof state.maximizedPaneId === 'string') {
         this.maximizedPaneId = state.maximizedPaneId;
       }
+      if (Array.isArray(state.paneOrder)) {
+        this.subPaneOrder = state.paneOrder.filter((paneId): paneId is string => typeof paneId === 'string');
+      }
     }
 
+    this.normalizeSubPaneOrder();
     this.markDirty();
   }
 
@@ -770,11 +786,19 @@ export class ChartEngine {
   }
 
   movePane(paneId: string, direction: 'up' | 'down') {
+    this.normalizeSubPaneOrder();
     const panes = this.getAssignedSubPanes();
     const paneIndex = panes.findIndex(p => p.paneId === paneId);
     if (paneIndex === -1) return;
     const targetIndex = direction === 'up' ? paneIndex - 1 : paneIndex + 1;
     if (targetIndex < 0 || targetIndex >= panes.length) return;
+
+    const targetPaneId = panes[targetIndex]?.paneId;
+    const orderIndex = this.subPaneOrder.indexOf(paneId);
+    const targetOrderIndex = targetPaneId ? this.subPaneOrder.indexOf(targetPaneId) : -1;
+    if (orderIndex !== -1 && targetOrderIndex !== -1) {
+      [this.subPaneOrder[orderIndex], this.subPaneOrder[targetOrderIndex]] = [this.subPaneOrder[targetOrderIndex], this.subPaneOrder[orderIndex]];
+    }
 
     // Swap two pane groups in the flat indicators array
     const newPaneOrder = [...panes];
@@ -796,6 +820,7 @@ export class ChartEngine {
     this.collapsedPanes.delete(paneId);
     this.subPaneHeightOverrides.delete(paneId);
     this.subPaneScaleModes.delete(paneId);
+    this.subPaneOrder = this.subPaneOrder.filter((id) => id !== paneId);
     if (this.maximizedPaneId === paneId) this.maximizedPaneId = null;
     this.markDirty();
   }
@@ -961,22 +986,39 @@ export class ChartEngine {
   }
 
   private getAssignedSubPanes(): Array<{ paneId: string; indicatorIds: string[] }> {
-    const paneOrder: string[] = [];
     const paneMap = new Map<string, string[]>();
 
     for (const ind of this.activeIndicators) {
       if (!ind.visible || ind.paneId === 'main' || isProbEngWidgetIndicator(ind)) continue;
       if (!paneMap.has(ind.paneId)) {
         paneMap.set(ind.paneId, []);
-        paneOrder.push(ind.paneId);
       }
       paneMap.get(ind.paneId)!.push(ind.id);
+    }
+
+    this.normalizeSubPaneOrder();
+    const paneOrder = this.subPaneOrder.filter((paneId) => paneMap.has(paneId));
+    for (const paneId of paneMap.keys()) {
+      if (!paneOrder.includes(paneId)) paneOrder.push(paneId);
     }
 
     return paneOrder.map((paneId) => ({
       paneId,
       indicatorIds: paneMap.get(paneId) ?? [],
     }));
+  }
+
+  private normalizeSubPaneOrder() {
+    const paneIds = Array.from(new Set(
+      this.activeIndicators
+        .filter((ind) => ind.paneId !== 'main' && !isProbEngWidgetIndicator(ind))
+        .map((ind) => ind.paneId),
+    ));
+    const nextOrder = this.subPaneOrder.filter((paneId) => paneIds.includes(paneId));
+    for (const paneId of paneIds) {
+      if (!nextOrder.includes(paneId)) nextOrder.push(paneId);
+    }
+    this.subPaneOrder = nextOrder;
   }
 
   private getSubPanePresentation(indicatorIds: string[]): {
@@ -1087,9 +1129,27 @@ export class ChartEngine {
 
   private lastFrameTime = 0;
 
+  private syncBackingStoreToDisplaySize(): void {
+    if (this.destroyed) return;
+    const nextDpr = window.devicePixelRatio || 1;
+    const nextWidth = this.canvas.clientWidth;
+    const nextHeight = this.canvas.clientHeight;
+    if (nextWidth <= 0 || nextHeight <= 0) return;
+    if (
+      nextDpr === this.dpr &&
+      nextWidth === this.width &&
+      nextHeight === this.height
+    ) {
+      return;
+    }
+    this.resize(nextWidth, nextHeight);
+  }
+
   private runRenderFrame() {
     this.renderLoopScheduled = false;
     if (this.destroyed || this.suspended) return;
+
+    this.syncBackingStoreToDisplaySize();
 
     const now = performance.now();
     const dt = this.lastFrameTime > 0 ? Math.min(now - this.lastFrameTime, 64) : 16.667;
@@ -2496,7 +2556,7 @@ export class ChartEngine {
       return;
     }
 
-    if (ind.name === 'Liquidity Sweep (ICT/SMC)') {
+    if (ind.name === 'Dailyiq Liquitity Sweep' || ind.name === 'Liquidity Sweep (ICT/SMC)') {
       this.renderLiquiditySweepIctSmc(ind, toY, clipTop, clipBottom);
       return;
     }
@@ -2876,12 +2936,10 @@ export class ChartEngine {
     const sell = ind.data[9] ?? [];
     const bullTop = ind.data[10] ?? [];
     const bullBottom = ind.data[11] ?? [];
-    const bearTop = ind.data[12] ?? [];
-    const bearBottom = ind.data[13] ?? [];
     const bullSourceCode = ind.data[14] ?? [];
-    const bearSourceCode = ind.data[15] ?? [];
 
     const showSweepLabel = (ind.params.liqShowSweepLabel ?? 1) >= 0.5;
+    const showBullSweepText = (ind.params.liqShowBullSweepText ?? 1) >= 0.5;
     const showAction = (ind.params.liqShowAction ?? 1) >= 0.5;
     const showRange = (ind.params.liqShowRange ?? 1) >= 0.5;
     const extendBars = Math.max(10, Math.round(ind.params.liqExtend ?? 120));
@@ -2898,15 +2956,7 @@ export class ChartEngine {
       }
     }
 
-    let latestBearIndex = -1;
-    for (let i = this.bars.length - 1; i >= currentDayStart; i -= 1) {
-      if (!Number.isNaN(bearTop[i]) && !Number.isNaN(bearBottom[i])) {
-        latestBearIndex = i;
-        break;
-      }
-    }
-
-    const latestIndex = Math.max(latestBullIndex, latestBearIndex);
+    const latestIndex = latestBullIndex;
     if (latestIndex >= 0) {
       const visibleStart = Math.floor(this.viewport.startIndex);
       const visibleEnd = Math.ceil(this.viewport.endIndex);
@@ -2914,12 +2964,10 @@ export class ChartEngine {
         return;
       }
 
-      const isBull = latestIndex === latestBullIndex && latestBullIndex >= latestBearIndex;
-      const top = isBull ? bullTop[latestIndex] : bearTop[latestIndex];
-      const bottom = isBull ? bullBottom[latestIndex] : bearBottom[latestIndex];
-      const baseColor = isBull
-        ? (ind.colors?.buy ?? indicatorRegistry[ind.name].outputs.find((output) => output.key === 'buy')?.color ?? '#009E48')
-        : (ind.colors?.sell ?? indicatorRegistry[ind.name].outputs.find((output) => output.key === 'sell')?.color ?? '#DB2958');
+      const isBull = true;
+      const top = bullTop[latestIndex];
+      const bottom = bullBottom[latestIndex];
+      const baseColor = ind.colors?.buy ?? indicatorRegistry[ind.name].outputs.find((output) => output.key === 'buy')?.color ?? '#009E48';
 
       const leftX = this.viewport.barToPixelX(latestIndex);
       const rightX = this.viewport.barToPixelX(latestIndex + extendBars);
@@ -2935,27 +2983,20 @@ export class ChartEngine {
       }
 
       const sweepRange = top - bottom;
-      const sourceCode = isBull ? bullSourceCode[latestIndex] : bearSourceCode[latestIndex];
+      const sourceCode = bullSourceCode[latestIndex];
       const sourceName = this.liquiditySourceName(sourceCode, isBull);
+      const shouldShowSweepLabel = showSweepLabel && showBullSweepText;
       const labelX = this.viewport.barToPixelX(latestIndex + labelXBars);
       const actionX = this.viewport.barToPixelX(latestIndex + actionXBars);
-      const actionLines = isBull
-        ? [
-          'ACTION: BUY',
-          `Entry: ${formatLiquidityPrice(top)}`,
-          `Stop Loss: ${formatLiquidityPrice(this.bars[latestIndex].low)}`,
-        ]
-        : [
-          'ACTION: SELL',
-          `Entry: ${formatLiquidityPrice(bottom)}`,
-          `Stop Loss: ${formatLiquidityPrice(this.bars[latestIndex].high)}`,
-        ];
-      const actionAnchorY = isBull
-        ? toY(bottom - (tickSize * actionYOffsetTicks))
-        : toY(top + (tickSize * actionYOffsetTicks));
+      const actionLines = [
+        'ACTION: BUY',
+        `Entry: ${formatLiquidityPrice(top)}`,
+        `Stop Loss: ${formatLiquidityPrice(this.bars[latestIndex].low)}`,
+      ];
+      const actionAnchorY = toY(bottom - (tickSize * actionYOffsetTicks));
       let actionRect: { left: number; top: number; right: number; bottom: number } | null = null;
 
-      if (showSweepLabel) {
+      if (shouldShowSweepLabel) {
         const pctBase = isBull ? top : bottom;
         const sweepPct = pctBase !== 0 ? (sweepRange / pctBase) * 100 : NaN;
         const lines = showRange

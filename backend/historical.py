@@ -1516,15 +1516,16 @@ async def get_historical_bars(
         _diq_supported = what_to_show == "TRADES" and db_bar_size in ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
         if _diq_supported and last_ts_ms is None:
             try:
-                from dailyiq_provider import fetch_bars_from_dailyiq_async
+                from dailyiq_provider import fetch_bars_from_dailyiq_async, CACHE_TTL_BARS_LIVE
                 diq_limit = _dailyiq_limit_for_fetch(db_bar_size, lookback_days, None)
+                _diq_ttl = CACHE_TTL_BARS_LIVE if not tws_connected else None
                 emit_debug_event(
                     "historical",
                     "source_attempt",
                     f"Attempt DailyIQ fast-path {symbol} {db_bar_size}",
                     {"symbol": symbol, "source": "dailyiq", "mode": "fast-path", "limit": diq_limit},
                 )
-                diq_bars = await fetch_bars_from_dailyiq_async(symbol, timeframe=db_bar_size, limit=diq_limit)
+                diq_bars = await fetch_bars_from_dailyiq_async(symbol, timeframe=db_bar_size, limit=diq_limit, ttl_s=_diq_ttl)
                 if diq_bars:
                     fetched_bars = diq_bars
                     fetch_source = "dailyiq"
@@ -1608,15 +1609,16 @@ async def get_historical_bars(
         # ── Step 2b: DailyIQ fallback for incremental / non-cold paths ──
         if not fetched_bars and _diq_supported:
             try:
-                from dailyiq_provider import fetch_bars_from_dailyiq_async
+                from dailyiq_provider import fetch_bars_from_dailyiq_async, CACHE_TTL_BARS_LIVE
                 diq_limit = _dailyiq_limit_for_fetch(db_bar_size, lookback_days, last_ts_ms)
+                _diq_ttl = CACHE_TTL_BARS_LIVE if not tws_connected else None
                 emit_debug_event(
                     "historical",
                     "source_attempt",
                     f"Attempt DailyIQ fallback {symbol} {db_bar_size}",
                     {"symbol": symbol, "source": "dailyiq", "mode": "fallback", "limit": diq_limit},
                 )
-                diq_bars = await fetch_bars_from_dailyiq_async(symbol, timeframe=db_bar_size, limit=diq_limit)
+                diq_bars = await fetch_bars_from_dailyiq_async(symbol, timeframe=db_bar_size, limit=diq_limit, ttl_s=_diq_ttl)
                 if diq_bars:
                     fetched_bars = diq_bars
                     fetch_source = "dailyiq"

@@ -3110,6 +3110,10 @@ def create_app() -> FastAPI:
                 return False
             return bool(status.get("connected"))
 
+        if not _tws_connected_for_chart():
+            from dailyiq_provider import signal_chart_view as _signal_view
+            _signal_view(symbol)
+
         async def _attempt_live_refresh(fetch_duration: str) -> bool:
             if not prefer_live_refresh or _tws_connected_for_chart():
                 return False

@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 # ── Cache TTLs (seconds) ─────────────────────────────────────────────
 CACHE_TTL_BARS_INTRADAY = 300       # 5 min
+CACHE_TTL_BARS_LIVE = 90            # 90s — used when TWS is disconnected for near-live fallback
 CACHE_TTL_BARS_DAILY = 21_600       # 6 hr
 CACHE_TTL_SNAPSHOT = 60             # 1 min
 CACHE_TTL_FUNDAMENTALS = 86_400     # 24 hr
@@ -315,6 +316,33 @@ def _dailyiq_post_json(
         finally:
             with _inflight_lock:
                 _inflight_keys.pop(cache_key, None)
+
+
+def signal_chart_view(symbol: str) -> None:
+    """Fire-and-forget POST to DailyIQ signaling this symbol is being actively viewed.
+
+    Called when TWS is disconnected so DailyIQ's 90s live-refresh worker prioritizes
+    this symbol. Runs in a daemon thread — never blocks the caller.
+    """
+    base = _base_url()
+    if not base:
+        return
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return
+
+    def _post() -> None:
+        try:
+            requests.post(
+                f"{base}/price-bars/view",
+                params={"symbol": sym},
+                timeout=3,
+            )
+            logger.debug("signal_chart_view sent for %s", sym)
+        except Exception as exc:
+            logger.debug("signal_chart_view failed for %s: %s", sym, exc)
+
+    threading.Thread(target=_post, daemon=True, name="dailyiq-view-signal").start()
 
 
 # ── Date parsing ─────────────────────────────────────────────────────

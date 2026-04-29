@@ -142,6 +142,7 @@ export interface SubPaneStateSnapshot {
   scaleModes: Record<string, YScaleMode>;
   collapsedPaneIds: string[];
   maximizedPaneId: string | null;
+  paneOrder?: string[];
 }
 
 export interface ScriptPlot {

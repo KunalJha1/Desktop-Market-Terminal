@@ -11,6 +11,7 @@ import IndicatorLegend from '../chart/components/IndicatorLegend';
 import ScriptEditor from '../chart/components/ScriptEditor';
 import { interpretScript } from '../chart/scripting/interpreter';
 import {
+  createDefaultLiquidityTableWidgetState,
   createDefaultPersistedChartIndicators,
   createDefaultProbEngWidgetState,
   createDefaultTechnicalTableWidgetState,
@@ -73,6 +74,8 @@ const TECH_TABLE_MIN_WIDTH = 360;
 const TECH_TABLE_MAX_WIDTH = 680;
 const TECH_TABLE_MIN_HEIGHT = 250;
 const TECH_TABLE_MAX_HEIGHT = 520;
+const LIQ_TABLE_MIN_WIDTH = 400;
+const LIQ_TABLE_MIN_HEIGHT = 270;
 const INDICATOR_DRAG_HANDLE_WIDTH = 30;
 const INDICATOR_DRAG_HANDLE_HEIGHT = 20;
 const DIQ_TABLE_FETCH_LIMITS = {
@@ -257,6 +260,93 @@ function getDefaultTechnicalTableWidgetPosition(
 
 function technicalTableHasNorm(widget: TechnicalTableWidgetState): boolean {
   return Number.isFinite(widget.normX) && Number.isFinite(widget.normY);
+}
+
+function clampLiquidityTableWidgetPosition(
+  widget: TechnicalTableWidgetState,
+  chartLayout: ChartLayout | null,
+  hostWidth: number,
+  hostHeight: number,
+  chartToolRailWidth: number,
+): TechnicalTableWidgetState {
+  if (!chartLayout) return widget;
+  const width = Math.max(LIQ_TABLE_MIN_WIDTH, Math.min(TECH_TABLE_MAX_WIDTH, widget.width));
+  const height = Math.max(LIQ_TABLE_MIN_HEIGHT, Math.min(TECH_TABLE_MAX_HEIGHT, widget.height));
+  const b = getTechnicalTableDragBounds({ ...widget, width, height }, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+  return {
+    ...widget,
+    width,
+    height,
+    x: Math.round(Math.min(Math.max(widget.x, b.minX), b.maxX)),
+    y: Math.round(Math.min(Math.max(widget.y, b.minY), b.maxY)),
+  };
+}
+
+function chartLiquidityTableClampWithNorm(
+  widget: TechnicalTableWidgetState,
+  chartLayout: ChartLayout,
+  hostWidth: number,
+  hostHeight: number,
+  chartToolRailWidth: number,
+): TechnicalTableWidgetState {
+  const next = clampLiquidityTableWidgetPosition(widget, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+  const b = getTechnicalTableDragBounds(next, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+  const { normX, normY } = probEngNormFromPixel(next.x, next.y, b.minX, b.maxX, b.minY, b.maxY);
+  return { ...next, normX, normY };
+}
+
+function resizeLiquidityTableWidget(
+  widget: TechnicalTableWidgetState,
+  corner: TechnicalTableResizeCorner,
+  deltaX: number,
+  deltaY: number,
+  chartLayout: ChartLayout,
+  hostWidth: number,
+  hostHeight: number,
+  chartToolRailWidth: number,
+): TechnicalTableWidgetState {
+  const leftLimit = chartToolRailWidth + TECH_TABLE_EDGE_PADDING;
+  const topLimit = chartLayout.mainTop + TECH_TABLE_EDGE_PADDING;
+  const rightLimit = hostWidth - chartLayout.priceAxisWidth - TECH_TABLE_EDGE_PADDING;
+  const bottomLimit = hostHeight - chartLayout.timeAxisHeight - TECH_TABLE_EDGE_PADDING;
+
+  const startRight = widget.x + widget.width;
+  const startBottom = widget.y + widget.height;
+  const resizeLeft = corner === 'top-left' || corner === 'bottom-left';
+  const resizeTop = corner === 'top-left' || corner === 'top-right';
+  const aspectRatio = widget.width / widget.height;
+  const widthDelta = resizeLeft ? -deltaX : deltaX;
+  const heightDelta = resizeTop ? -deltaY : deltaY;
+  const widthScale = (widget.width + widthDelta) / widget.width;
+  const heightScale = (widget.height + heightDelta) / widget.height;
+  const requestedScale = Math.min(widthScale, heightScale);
+
+  const maxWidthFromBounds = resizeLeft ? startRight - leftLimit : rightLimit - widget.x;
+  const maxHeightFromBounds = resizeTop ? startBottom - topLimit : bottomLimit - widget.y;
+  const maxScale = Math.min(
+    TECH_TABLE_MAX_WIDTH / widget.width,
+    TECH_TABLE_MAX_HEIGHT / widget.height,
+    maxWidthFromBounds / widget.width,
+    maxHeightFromBounds / widget.height,
+  );
+  const minScale = Math.max(
+    LIQ_TABLE_MIN_WIDTH / widget.width,
+    LIQ_TABLE_MIN_HEIGHT / widget.height,
+  );
+  const safeScale = Math.min(maxScale, Math.max(minScale, requestedScale));
+
+  const width = Math.round(widget.width * safeScale);
+  const height = Math.round(width / aspectRatio);
+  const x = resizeLeft ? startRight - width : widget.x;
+  const y = resizeTop ? startBottom - height : widget.y;
+
+  return chartLiquidityTableClampWithNorm(
+    { ...widget, x, y, width, height },
+    chartLayout,
+    hostWidth,
+    hostHeight,
+    chartToolRailWidth,
+  );
 }
 
 function getProbEngSourceLabel(source: number): string {
@@ -476,8 +566,11 @@ function diqTrendText(value: number): string {
   return 'Neutral';
 }
 
+const DIQ_TABLE_BULL_GREEN = '#166534';
+const DIQ_TABLE_BULL_GREEN_ALT = '#15803D';
+
 function diqTrendColor(value: number): string {
-  if (value === 1) return '#00C853';
+  if (value === 1) return DIQ_TABLE_BULL_GREEN;
   if (value === -1) return '#FF3D71';
   return '#6B7280';
 }
@@ -491,7 +584,7 @@ function diqStrengthText(score: number): string {
 
 function diqStrengthColor(score: number): string {
   if (!Number.isFinite(score)) return '#6B7280';
-  if (score >= 0.6) return '#00C853';
+  if (score >= 0.6) return DIQ_TABLE_BULL_GREEN;
   if (score >= 0.25) return '#F59E0B';
   return '#FB923C';
 }
@@ -546,10 +639,10 @@ function diqRsiText(now: number, prev: number): string {
 function diqRsiColor(now: number, prev: number): string {
   if (!Number.isFinite(now)) return '#6B7280';
   const diff = Number.isFinite(prev) ? now - prev : 0;
-  if (diff > 0.25 && now >= 55) return '#00C853';
+  if (diff > 0.25 && now >= 55) return DIQ_TABLE_BULL_GREEN;
   if (diff < -0.25 && now <= 45) return '#FF3D71';
   if (Math.abs(diff) <= 0.25) return '#6B7280';
-  if (now > 60) return '#22C55E';
+  if (now > 60) return DIQ_TABLE_BULL_GREEN_ALT;
   if (now < 40) return '#991B1B';
   return '#F59E0B';
 }
@@ -571,9 +664,9 @@ function diqMacdColor(macdNow: number, signalNow: number, macdPrev: number, sign
   if (!Number.isFinite(macdNow) || !Number.isFinite(signalNow)) return '#6B7280';
   const bullCross = Number.isFinite(macdPrev) && Number.isFinite(signalPrev) && macdPrev <= signalPrev && macdNow > signalNow;
   const bearCross = Number.isFinite(macdPrev) && Number.isFinite(signalPrev) && macdPrev >= signalPrev && macdNow < signalNow;
-  if (bullCross) return '#00C853';
+  if (bullCross) return DIQ_TABLE_BULL_GREEN;
   if (bearCross) return '#FF3D71';
-  if (macdNow > signalNow) return '#22C55E';
+  if (macdNow > signalNow) return DIQ_TABLE_BULL_GREEN;
   if (macdNow < signalNow) return '#FB923C';
   return '#6B7280';
 }
@@ -598,6 +691,26 @@ interface TechnicalTableSnapshot {
   overallChop: number;
   overallRsi: number;
   overallMacdState: number;
+}
+
+interface LiquidityTableRowSnapshot {
+  highLabel: string;
+  highPrice: number;
+  highSwept: boolean;
+  highTarget: number;
+  lowLabel: string;
+  lowPrice: number;
+  lowSwept: boolean;
+  lowTarget: number;
+}
+
+interface LiquidityTableSnapshot {
+  rows: LiquidityTableRowSnapshot[];
+  close: number;
+  nearPct: number;
+  highlightNearLevels: boolean;
+  atrDaily: number;
+  targetAtrMult: number;
 }
 
 function yieldTechnicalTableWork(): Promise<void> {
@@ -770,6 +883,264 @@ function tableChopAngle(ema34: number, ema34Prev: number, avg: number, highestHi
   const c = Math.sqrt(1 + (y2 * y2));
   const angle1 = Math.round((180 * Math.acos(1 / c)) / Math.PI);
   return y2 > 0 ? -angle1 : angle1;
+}
+
+function liquidityDayKey(time: number): string {
+  const d = new Date(time);
+  return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+}
+
+function liquidityWeekKey(time: number): string {
+  const d = new Date(time);
+  const utc = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const day = new Date(utc).getUTCDay() || 7;
+  const monday = new Date(utc - ((day - 1) * 86_400_000));
+  return `${monday.getUTCFullYear()}-${monday.getUTCMonth()}-${monday.getUTCDate()}`;
+}
+
+function liquidityMonthKey(time: number): string {
+  const d = new Date(time);
+  return `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+}
+
+function computeLiquidityPeriodSeries(
+  bars: Array<{ time: number; high: number; low: number }>,
+  getKey: (time: number) => string,
+) {
+  const currentHigh = new Array<number>(bars.length).fill(NaN);
+  const currentLow = new Array<number>(bars.length).fill(NaN);
+  const previousHigh = new Array<number>(bars.length).fill(NaN);
+  const previousLow = new Array<number>(bars.length).fill(NaN);
+
+  let activeKey = '';
+  let periodHigh = NaN;
+  let periodLow = NaN;
+  let lastHigh = NaN;
+  let lastLow = NaN;
+
+  for (let i = 0; i < bars.length; i += 1) {
+    const key = getKey(bars[i].time);
+    if (key !== activeKey) {
+      activeKey = key;
+      if (Number.isFinite(periodHigh) && Number.isFinite(periodLow)) {
+        lastHigh = periodHigh;
+        lastLow = periodLow;
+      }
+      periodHigh = bars[i].high;
+      periodLow = bars[i].low;
+    } else {
+      periodHigh = Math.max(periodHigh, bars[i].high);
+      periodLow = Math.min(periodLow, bars[i].low);
+    }
+
+    currentHigh[i] = periodHigh;
+    currentLow[i] = periodLow;
+    previousHigh[i] = lastHigh;
+    previousLow[i] = lastLow;
+  }
+
+  return { currentHigh, currentLow, previousHigh, previousLow };
+}
+
+function alignLiquiditySeries(
+  chartBars: Array<{ time: number }>,
+  sourceBars: Array<{ time: number }>,
+  sourceSeries: number[],
+): number[] {
+  const aligned = new Array<number>(chartBars.length).fill(NaN);
+  if (sourceBars.length === 0) return aligned;
+  let sourceIndex = 0;
+  for (let i = 0; i < chartBars.length; i += 1) {
+    const t = chartBars[i].time;
+    while (sourceIndex + 1 < sourceBars.length && sourceBars[sourceIndex + 1].time <= t) {
+      sourceIndex += 1;
+    }
+    aligned[i] = sourceSeries[sourceIndex] ?? NaN;
+  }
+  return aligned;
+}
+
+function previousFiniteValue(series: number[], startIndex: number): number {
+  for (let i = Math.min(startIndex, series.length - 1); i >= 0; i -= 1) {
+    if (Number.isFinite(series[i])) return series[i];
+  }
+  return NaN;
+}
+
+function computeLiquidityTableSnapshot(
+  intradayBars: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number; synthetic?: boolean }>,
+  dailyBars: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number; synthetic?: boolean }>,
+  atrLen: number,
+  targetAtrMult: number,
+  nearPctInput: number,
+  highlightNearLevels: boolean,
+): LiquidityTableSnapshot | null {
+  if (intradayBars.length === 0) return null;
+
+  const day = computeLiquidityPeriodSeries(intradayBars, liquidityDayKey);
+  const week = computeLiquidityPeriodSeries(intradayBars, liquidityWeekKey);
+  const month = computeLiquidityPeriodSeries(intradayBars, liquidityMonthKey);
+  const weeklyBars = dailyBars.length > 0 ? tableResampleBars(dailyBars, '1W') : [];
+  const weeklyHighs = weeklyBars.map((bar) => bar.high);
+  const weeklyLows = weeklyBars.map((bar) => bar.low);
+  const current52WeekHigh = tableRollingHighest(weeklyHighs, 52);
+  const current52WeekLow = tableRollingLowest(weeklyLows, 52);
+  const prev52WeekHigh = current52WeekHigh.map((_, i) => i > 0 ? current52WeekHigh[i - 1] : NaN);
+  const prev52WeekLow = current52WeekLow.map((_, i) => i > 0 ? current52WeekLow[i - 1] : NaN);
+  const aligned52WeekHigh = alignLiquiditySeries(intradayBars, weeklyBars, current52WeekHigh);
+  const aligned52WeekLow = alignLiquiditySeries(intradayBars, weeklyBars, current52WeekLow);
+  const aligned52WeekHighRef = alignLiquiditySeries(intradayBars, weeklyBars, prev52WeekHigh);
+  const aligned52WeekLowRef = alignLiquiditySeries(intradayBars, weeklyBars, prev52WeekLow);
+  const dailyAtr = tableAtr(dailyBars, atrLen);
+
+  const lastIndex = intradayBars.length - 1;
+  const currentDayKey = liquidityDayKey(intradayBars[lastIndex].time);
+  let sessionStart = lastIndex;
+  while (sessionStart > 0 && liquidityDayKey(intradayBars[sessionStart - 1].time) === currentDayKey) {
+    sessionStart -= 1;
+  }
+
+  let dhSwept = false;
+  let dlSwept = false;
+  let pdhSwept = false;
+  let pdlSwept = false;
+  let whSwept = false;
+  let wlSwept = false;
+  let mhSwept = false;
+  let mlSwept = false;
+  let yhSwept = false;
+  let ylSwept = false;
+
+  let dhSweepPrice = NaN;
+  let dlSweepPrice = NaN;
+  let pdhSweepPrice = NaN;
+  let pdlSweepPrice = NaN;
+  let whSweepPrice = NaN;
+  let wlSweepPrice = NaN;
+  let mhSweepPrice = NaN;
+  let mlSweepPrice = NaN;
+  let yhSweepPrice = NaN;
+  let ylSweepPrice = NaN;
+
+  for (let i = sessionStart; i < intradayBars.length; i += 1) {
+    if (i === 0) continue;
+    const bar = intradayBars[i];
+    const dhRef = day.currentHigh[i - 1];
+    const dlRef = day.currentLow[i - 1];
+    const pdhRef = day.previousHigh[i];
+    const pdlRef = day.previousLow[i];
+    const whRef = week.currentHigh[i - 1];
+    const wlRef = week.currentLow[i - 1];
+    const mhRef = month.currentHigh[i - 1];
+    const mlRef = month.currentLow[i - 1];
+    const yhRef = aligned52WeekHighRef[i];
+    const ylRef = aligned52WeekLowRef[i];
+
+    if (Number.isFinite(dhRef) && bar.high > dhRef) {
+      dhSwept = true;
+      if (!Number.isFinite(dhSweepPrice)) dhSweepPrice = bar.high;
+    }
+    if (Number.isFinite(dlRef) && bar.low < dlRef) {
+      dlSwept = true;
+      if (!Number.isFinite(dlSweepPrice)) dlSweepPrice = bar.low;
+    }
+    if (Number.isFinite(pdhRef) && bar.high > pdhRef) {
+      pdhSwept = true;
+      if (!Number.isFinite(pdhSweepPrice)) pdhSweepPrice = bar.high;
+    }
+    if (Number.isFinite(pdlRef) && bar.low < pdlRef) {
+      pdlSwept = true;
+      if (!Number.isFinite(pdlSweepPrice)) pdlSweepPrice = bar.low;
+    }
+    if (Number.isFinite(whRef) && bar.high > whRef) {
+      whSwept = true;
+      if (!Number.isFinite(whSweepPrice)) whSweepPrice = bar.high;
+    }
+    if (Number.isFinite(wlRef) && bar.low < wlRef) {
+      wlSwept = true;
+      if (!Number.isFinite(wlSweepPrice)) wlSweepPrice = bar.low;
+    }
+    if (Number.isFinite(mhRef) && bar.high > mhRef) {
+      mhSwept = true;
+      if (!Number.isFinite(mhSweepPrice)) mhSweepPrice = bar.high;
+    }
+    if (Number.isFinite(mlRef) && bar.low < mlRef) {
+      mlSwept = true;
+      if (!Number.isFinite(mlSweepPrice)) mlSweepPrice = bar.low;
+    }
+    if (Number.isFinite(yhRef) && bar.high > yhRef) {
+      yhSwept = true;
+      if (!Number.isFinite(yhSweepPrice)) yhSweepPrice = bar.high;
+    }
+    if (Number.isFinite(ylRef) && bar.low < ylRef) {
+      ylSwept = true;
+      if (!Number.isFinite(ylSweepPrice)) ylSweepPrice = bar.low;
+    }
+  }
+
+  const atrDaily = previousFiniteValue(dailyAtr, dailyAtr.length - 2);
+  const targetOffset = Number.isFinite(atrDaily) ? atrDaily * targetAtrMult : NaN;
+  const rows: LiquidityTableRowSnapshot[] = [
+    {
+      highLabel: 'DH',
+      highPrice: day.currentHigh[lastIndex],
+      highSwept: dhSwept,
+      highTarget: Number.isFinite(dhSweepPrice) && Number.isFinite(targetOffset) ? dhSweepPrice - targetOffset : NaN,
+      lowLabel: 'DL',
+      lowPrice: day.currentLow[lastIndex],
+      lowSwept: dlSwept,
+      lowTarget: Number.isFinite(dlSweepPrice) && Number.isFinite(targetOffset) ? dlSweepPrice + targetOffset : NaN,
+    },
+    {
+      highLabel: 'PDH',
+      highPrice: day.previousHigh[lastIndex],
+      highSwept: pdhSwept,
+      highTarget: Number.isFinite(pdhSweepPrice) && Number.isFinite(targetOffset) ? pdhSweepPrice - targetOffset : NaN,
+      lowLabel: 'PDL',
+      lowPrice: day.previousLow[lastIndex],
+      lowSwept: pdlSwept,
+      lowTarget: Number.isFinite(pdlSweepPrice) && Number.isFinite(targetOffset) ? pdlSweepPrice + targetOffset : NaN,
+    },
+    {
+      highLabel: 'WH',
+      highPrice: week.currentHigh[lastIndex],
+      highSwept: whSwept,
+      highTarget: Number.isFinite(whSweepPrice) && Number.isFinite(targetOffset) ? whSweepPrice - targetOffset : NaN,
+      lowLabel: 'WL',
+      lowPrice: week.currentLow[lastIndex],
+      lowSwept: wlSwept,
+      lowTarget: Number.isFinite(wlSweepPrice) && Number.isFinite(targetOffset) ? wlSweepPrice + targetOffset : NaN,
+    },
+    {
+      highLabel: 'MH',
+      highPrice: month.currentHigh[lastIndex],
+      highSwept: mhSwept,
+      highTarget: Number.isFinite(mhSweepPrice) && Number.isFinite(targetOffset) ? mhSweepPrice - targetOffset : NaN,
+      lowLabel: 'ML',
+      lowPrice: month.currentLow[lastIndex],
+      lowSwept: mlSwept,
+      lowTarget: Number.isFinite(mlSweepPrice) && Number.isFinite(targetOffset) ? mlSweepPrice + targetOffset : NaN,
+    },
+    {
+      highLabel: '52WH',
+      highPrice: aligned52WeekHigh[lastIndex],
+      highSwept: yhSwept,
+      highTarget: Number.isFinite(yhSweepPrice) && Number.isFinite(targetOffset) ? yhSweepPrice - targetOffset : NaN,
+      lowLabel: '52WL',
+      lowPrice: aligned52WeekLow[lastIndex],
+      lowSwept: ylSwept,
+      lowTarget: Number.isFinite(ylSweepPrice) && Number.isFinite(targetOffset) ? ylSweepPrice + targetOffset : NaN,
+    },
+  ];
+
+  return {
+    rows,
+    close: intradayBars[lastIndex].close,
+    nearPct: Math.max(0.001, nearPctInput) / 100,
+    highlightNearLevels,
+    atrDaily,
+    targetAtrMult,
+  };
 }
 
 function computeTechnicalTableRowFromBars(
@@ -998,7 +1369,7 @@ function DailyIQTechnicalTableOverlay({
   const overallRsi = snapshot?.overallRsi ?? NaN;
   const overallMacdState = snapshot?.overallMacdState ?? NaN;
   const overallMacdText = overallMacdState === 1 ? 'Bull' : overallMacdState === -1 ? 'Bear' : 'Flat';
-  const overallMacdColor = overallMacdState === 1 ? '#00C853' : overallMacdState === -1 ? '#FF3D71' : '#6B7280';
+  const overallMacdColor = overallMacdState === 1 ? DIQ_TABLE_BULL_GREEN : overallMacdState === -1 ? '#FF3D71' : '#6B7280';
   const showHeader = !widget.locked || headerHovered;
   const widthScale = (widget.width - TECH_TABLE_MIN_WIDTH) / (TECH_TABLE_MAX_WIDTH - TECH_TABLE_MIN_WIDTH);
   const heightScale = (widget.height - TECH_TABLE_MIN_HEIGHT) / (TECH_TABLE_MAX_HEIGHT - TECH_TABLE_MIN_HEIGHT);
@@ -1256,6 +1627,381 @@ function DailyIQTechnicalTableOverlay({
   );
 }
 
+function DailyIQLiquidityTableOverlay({
+  snapshot,
+  widget,
+  dragging,
+  resizing,
+  onHeaderPointerDown,
+  onHeaderPointerMove,
+  onHeaderPointerUp,
+  onHeaderPointerCancel,
+  onResizePointerDown,
+  onResizePointerMove,
+  onResizePointerUp,
+  onResizePointerCancel,
+  onToggleLock,
+}: {
+  snapshot: LiquidityTableSnapshot | null;
+  widget: TechnicalTableWidgetState;
+  dragging: boolean;
+  resizing: boolean;
+  onHeaderPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onHeaderPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onHeaderPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onHeaderPointerCancel: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onResizePointerDown: (corner: TechnicalTableResizeCorner, event: ReactPointerEvent<HTMLDivElement>) => void;
+  onResizePointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onResizePointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onResizePointerCancel: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onToggleLock: () => void;
+}) {
+  const [headerHovered, setHeaderHovered] = useState(false);
+  const rows = snapshot?.rows ?? [
+    { highLabel: 'DH', highPrice: NaN, highSwept: false, highTarget: NaN, lowLabel: 'DL', lowPrice: NaN, lowSwept: false, lowTarget: NaN },
+    { highLabel: 'PDH', highPrice: NaN, highSwept: false, highTarget: NaN, lowLabel: 'PDL', lowPrice: NaN, lowSwept: false, lowTarget: NaN },
+    { highLabel: 'WH', highPrice: NaN, highSwept: false, highTarget: NaN, lowLabel: 'WL', lowPrice: NaN, lowSwept: false, lowTarget: NaN },
+    { highLabel: 'MH', highPrice: NaN, highSwept: false, highTarget: NaN, lowLabel: 'ML', lowPrice: NaN, lowSwept: false, lowTarget: NaN },
+    { highLabel: '52WH', highPrice: NaN, highSwept: false, highTarget: NaN, lowLabel: '52WL', lowPrice: NaN, lowSwept: false, lowTarget: NaN },
+  ];
+  const showHeader = !widget.locked || headerHovered;
+  const widthScale = (widget.width - TECH_TABLE_MIN_WIDTH) / (TECH_TABLE_MAX_WIDTH - TECH_TABLE_MIN_WIDTH);
+  const heightScale = (widget.height - TECH_TABLE_MIN_HEIGHT) / (TECH_TABLE_MAX_HEIGHT - TECH_TABLE_MIN_HEIGHT);
+  const tableScale = Math.max(0, Math.min(1, (widthScale + heightScale) / 2));
+  const titleFontSize = 9 + (tableScale * 3);
+  const topHeaderFontSize = 9 + (tableScale * 2);
+  const columnHeaderFontSize = 8 + (tableScale * 3);
+  const bodyFontSize = 9 + (tableScale * 3);
+  const headerPadY = 4 + (tableScale * 3);
+  const headerPadX = 6 + (tableScale * 4);
+  const bodyPadY = 3 + (tableScale * 3);
+  const bodyPadX = 5 + (tableScale * 4);
+  const headerCellPadding = `${headerPadY}px ${headerPadX}px`;
+  const bodyCellPadding = `${bodyPadY}px ${bodyPadX}px`;
+  const lockButtonSize = 16 + (tableScale * 8);
+  const gripSize = 12 + (tableScale * 6);
+  const handleSize = 14 + (tableScale * 8);
+  const resizeHandleInset = 3 + (tableScale * 2);
+  const closePrice = snapshot?.close ?? NaN;
+  const nearPct = snapshot?.nearPct ?? 0.005;
+  const highlightNearLevels = snapshot?.highlightNearLevels ?? true;
+  const atrDaily = snapshot?.atrDaily ?? NaN;
+  const targetAtrMult = snapshot?.targetAtrMult ?? 1;
+  const cornerHandles: Array<{ corner: TechnicalTableResizeCorner; cursor: string; style: { left?: number; right?: number; top?: number; bottom?: number } }> = [
+    { corner: 'top-left', cursor: 'nwse-resize', style: { left: 0, top: 0 } },
+    { corner: 'top-right', cursor: 'nesw-resize', style: { right: 0, top: 0 } },
+    { corner: 'bottom-left', cursor: 'nesw-resize', style: { left: 0, bottom: 0 } },
+    { corner: 'bottom-right', cursor: 'nwse-resize', style: { right: 0, bottom: 0 } },
+  ];
+
+  const isNear = (level: number) => (
+    highlightNearLevels
+    && Number.isFinite(level)
+    && level !== 0
+    && Number.isFinite(closePrice)
+    && Math.abs(closePrice - level) / Math.abs(level) <= nearPct
+  );
+  const priceText = (value: number) => Number.isFinite(value) ? value.toFixed(2) : '--';
+  const atrText = Number.isFinite(atrDaily) ? atrDaily.toFixed(2) : '--';
+  const targetAtrText = `${targetAtrMult.toFixed(2)} ATR`;
+  const sweepText = (didSweep: boolean, bullSide: boolean) => didSweep ? (bullSide ? 'Swept ↑' : 'Swept ↓') : 'Not Swept';
+  const sweepBg = (didSweep: boolean, bullSide: boolean) => !didSweep ? '#2D2D3C' : bullSide ? '#00C853' : '#FF3D71';
+  const targetBg = (didSweep: boolean, bullSide: boolean) => !didSweep ? '#2D2D3C' : bullSide ? '#00C853' : '#FF3D71';
+  const sweepTextColor = (didSweep: boolean, bullSide: boolean) => didSweep && bullSide ? '#000000' : '#FFFFFF';
+  const levelBg = (near: boolean) => near ? '#FF8C00' : '#141821';
+  const priceBg = (near: boolean) => near ? '#FFB43C' : '#232332';
+  const cellTextColor = (near: boolean) => near ? '#000000' : '#FFFFFF';
+
+  return (
+    <div
+      onPointerEnter={() => setHeaderHovered(true)}
+      onPointerLeave={() => setHeaderHovered(false)}
+      style={{
+        position: 'absolute',
+        left: widget.x,
+        top: widget.y,
+        zIndex: 18,
+        pointerEvents: 'auto',
+        border: '1px solid rgba(255,255,255,0.12)',
+        backgroundColor: 'rgba(0,0,0,0.92)',
+        borderRadius: 8,
+        overflow: 'hidden',
+        boxShadow: dragging || resizing ? '0 16px 36px rgba(0,0,0,0.52)' : '0 10px 24px rgba(0,0,0,0.42)',
+        width: widget.width,
+        height: widget.height,
+        display: 'flex',
+        flexDirection: 'column',
+        transition: dragging || resizing ? 'none' : 'box-shadow 120ms ease-out',
+      }}
+    >
+      <div
+        onPointerDown={widget.locked ? undefined : onHeaderPointerDown}
+        onPointerMove={widget.locked ? undefined : onHeaderPointerMove}
+        onPointerUp={widget.locked ? undefined : onHeaderPointerUp}
+        onPointerCancel={widget.locked ? undefined : onHeaderPointerCancel}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: TECH_TABLE_HEADER_HEIGHT,
+          zIndex: 2,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0 8px 0 6px',
+          borderBottom: '1px solid rgba(255,255,255,0.12)',
+          fontSize: titleFontSize,
+          fontFamily: '"JetBrains Mono", monospace',
+          color: '#E6EDF3',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+          background: widget.locked
+            ? '#000000'
+            : dragging
+              ? 'linear-gradient(180deg, rgba(39,56,82,0.98) 0%, rgba(19,28,43,0.98) 100%)'
+              : 'linear-gradient(180deg, rgba(28,33,40,0.98) 0%, rgba(15,23,32,0.98) 100%)',
+          cursor: widget.locked ? 'default' : dragging ? 'grabbing' : 'grab',
+          touchAction: widget.locked ? undefined : 'none',
+          opacity: showHeader ? 1 : 0,
+          pointerEvents: showHeader ? 'auto' : 'none',
+          transform: showHeader ? 'translateY(0)' : 'translateY(-100%)',
+          transition: 'opacity 120ms ease-out, transform 120ms ease-out',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          {!widget.locked && (
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: gripSize,
+                height: gripSize,
+                borderRadius: 4,
+                color: dragging ? '#C7D2FE' : '#8B949E',
+                background: dragging ? 'rgba(140,180,255,0.16)' : 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                flexShrink: 0,
+              }}
+            >
+              <GripHorizontal size={Math.max(8, gripSize - 6)} strokeWidth={1.7} />
+            </span>
+          )}
+          <span style={{ color: '#8B949E' }}>Liquidity Sweep Table</span>
+        </div>
+        <button
+          type="button"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleLock();
+          }}
+          style={{
+            border: '1px solid rgba(255,255,255,0.12)',
+            borderRadius: 4,
+            background: 'transparent',
+            color: '#E6EDF3',
+            width: lockButtonSize,
+            height: lockButtonSize,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            lineHeight: 1,
+            fontSize: 11 + tableScale,
+            fontFamily: '"JetBrains Mono", monospace',
+            padding: 0,
+            cursor: 'pointer',
+          }}
+          title={widget.locked ? 'Unlock placement' : 'Lock placement'}
+          aria-label={widget.locked ? 'Unlock placement' : 'Lock placement'}
+        >
+          {widget.locked ? <Lock size={12} strokeWidth={1.5} /> : <Unlock size={12} strokeWidth={1.5} />}
+        </button>
+      </div>
+
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: 'hidden',
+          position: 'relative',
+          backgroundColor: '#1E2232',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+        }}
+      >
+        <table
+          style={{
+            width: '100%',
+            height: '100%',
+            borderCollapse: 'separate',
+            borderSpacing: 0,
+            tableLayout: 'fixed',
+            fontSize: bodyFontSize,
+            fontFamily: '"JetBrains Mono", monospace',
+            color: '#E6EDF3',
+            backgroundColor: '#1E2232',
+          }}
+        >
+          <colgroup>
+            <col style={{ width: '15%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '11%' }} />
+            <col style={{ width: '15%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '11%' }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th
+                style={{
+                  padding: headerCellPadding,
+                  borderBottom: '1px solid rgba(255,255,255,0.14)',
+                  backgroundColor: '#3A3F52',
+                  color: '#FFFFFF',
+                  textAlign: 'center',
+                  fontWeight: 600,
+                  fontSize: topHeaderFontSize,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                ATR
+              </th>
+              <th
+                style={{
+                  padding: headerCellPadding,
+                  borderBottom: '1px solid rgba(255,255,255,0.14)',
+                  backgroundColor: '#FACC15',
+                  color: '#000000',
+                  textAlign: 'center',
+                  fontWeight: 600,
+                  fontSize: topHeaderFontSize,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {atrText}
+              </th>
+              <th style={{ padding: headerCellPadding, borderBottom: '1px solid rgba(255,255,255,0.14)', backgroundColor: 'transparent' }} />
+              <th
+                style={{
+                  padding: headerCellPadding,
+                  borderBottom: '1px solid rgba(255,255,255,0.14)',
+                  backgroundColor: 'transparent',
+                }}
+              />
+              <th
+                style={{
+                  padding: headerCellPadding,
+                  borderBottom: '1px solid rgba(255,255,255,0.14)',
+                  backgroundColor: '#3A3F52',
+                  color: '#FFFFFF',
+                  textAlign: 'center',
+                  fontWeight: 600,
+                  fontSize: topHeaderFontSize,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                ATR
+              </th>
+              <th
+                style={{
+                  padding: headerCellPadding,
+                  borderBottom: '1px solid rgba(255,255,255,0.14)',
+                  backgroundColor: '#FACC15',
+                  color: '#000000',
+                  textAlign: 'center',
+                  fontWeight: 600,
+                  fontSize: topHeaderFontSize,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {atrText}
+              </th>
+              <th style={{ padding: headerCellPadding, borderBottom: '1px solid rgba(255,255,255,0.14)', backgroundColor: 'transparent' }} />
+              <th style={{ padding: headerCellPadding, borderBottom: '1px solid rgba(255,255,255,0.14)', backgroundColor: 'transparent' }} />
+            </tr>
+            <tr>
+              {['LEVEL (H)', 'PRICE', 'SWEEP?', 'TP', 'LEVEL (L)', 'PRICE', 'SWEEP?', 'TP'].map((head) => (
+                <th
+                  key={head}
+                  style={{
+                    padding: headerCellPadding,
+                    borderBottom: '1px solid rgba(255,255,255,0.14)',
+                    backgroundColor: '#1E2232',
+                    color: '#FFFFFF',
+                    textAlign: 'center',
+                    fontWeight: 600,
+                    fontSize: columnHeaderFontSize,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {head}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const highNear = isNear(row.highPrice);
+              const lowNear = isNear(row.lowPrice);
+                  return (
+                <tr key={`${row.highLabel}-${row.lowLabel}`}>
+                  <td style={{ padding: bodyCellPadding, backgroundColor: levelBg(highNear), color: cellTextColor(highNear), textAlign: 'center', whiteSpace: 'nowrap' }}>{row.highLabel}</td>
+                  <td style={{ padding: bodyCellPadding, backgroundColor: priceBg(highNear), color: cellTextColor(highNear), textAlign: 'center', whiteSpace: 'nowrap' }}>{priceText(row.highPrice)}</td>
+                  <td style={{ padding: bodyCellPadding, backgroundColor: sweepBg(row.highSwept, false), color: sweepTextColor(row.highSwept, false), textAlign: 'center', whiteSpace: 'nowrap' }}>{sweepText(row.highSwept, false)}</td>
+                  <td style={{ padding: bodyCellPadding, backgroundColor: targetBg(row.highSwept, false), color: '#FFFFFF', textAlign: 'center', whiteSpace: 'pre-line', lineHeight: 1.15 }}>{`${priceText(row.highTarget)}\n${targetAtrText}`}</td>
+                  <td style={{ padding: bodyCellPadding, backgroundColor: levelBg(lowNear), color: cellTextColor(lowNear), textAlign: 'center', whiteSpace: 'nowrap' }}>{row.lowLabel}</td>
+                  <td style={{ padding: bodyCellPadding, backgroundColor: priceBg(lowNear), color: cellTextColor(lowNear), textAlign: 'center', whiteSpace: 'nowrap' }}>{priceText(row.lowPrice)}</td>
+                  <td style={{ padding: bodyCellPadding, backgroundColor: sweepBg(row.lowSwept, true), color: sweepTextColor(row.lowSwept, true), textAlign: 'center', whiteSpace: 'nowrap' }}>{sweepText(row.lowSwept, true)}</td>
+                  <td style={{ padding: bodyCellPadding, backgroundColor: targetBg(row.lowSwept, true), color: row.lowSwept ? '#000000' : '#FFFFFF', textAlign: 'center', whiteSpace: 'pre-line', lineHeight: 1.15 }}>{`${priceText(row.lowTarget)}\n${targetAtrText}`}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {!widget.locked && (
+        <>
+          {cornerHandles.map(({ corner, cursor, style }) => (
+            <div
+              key={corner}
+              onPointerDown={(event) => onResizePointerDown(corner, event)}
+              onPointerMove={onResizePointerMove}
+              onPointerUp={onResizePointerUp}
+              onPointerCancel={onResizePointerCancel}
+              title={`Resize table from ${corner}`}
+              style={{
+                position: 'absolute',
+                width: handleSize,
+                height: handleSize,
+                cursor,
+                touchAction: 'none',
+                ...style,
+              }}
+            >
+              <div
+                style={{
+                  position: 'absolute',
+                  inset: 4,
+                  insetInline: resizeHandleInset,
+                  insetBlock: resizeHandleInset,
+                  borderRadius: 4,
+                  border: '1px solid rgba(255,255,255,0.18)',
+                  background: 'rgba(255,255,255,0.08)',
+                }}
+              />
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 const LAYOUT_OPTIONS: { id: SplitLayout; label: string; cols: number; rows: number }[] = [
   { id: '1',  label: 'Single', cols: 1, rows: 1 },
   { id: '2h', label: '1 × 2',  cols: 2, rows: 1 },
@@ -1358,6 +2104,7 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
     activeCustomStrategyIds: [],
     probEngWidget: createDefaultProbEngWidgetState(),
     technicalTableWidget: createDefaultTechnicalTableWidgetState(),
+    liquidityTableWidget: createDefaultLiquidityTableWidgetState(),
     tooltipFields: { O: true, H: true, L: true, C: true, V: true, Δ: true },
     splitLayout: '1',
   };
@@ -1407,6 +2154,10 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
     initialState.technicalTableWidget ?? createDefaultTechnicalTableWidgetState(),
   );
   const [technicalTableSnapshot, setTechnicalTableSnapshot] = useState<TechnicalTableSnapshot | null>(null);
+  const [liquidityTableWidget, setLiquidityTableWidget] = useState<TechnicalTableWidgetState>(
+    initialState.liquidityTableWidget ?? createDefaultLiquidityTableWidgetState(),
+  );
+  const [liquidityTableSnapshot, setLiquidityTableSnapshot] = useState<LiquidityTableSnapshot | null>(null);
   const [chartNotice, setChartNotice] = useState<string | null>(null);
   const [chartLayout, setChartLayout] = useState<ChartLayout | null>(null);
   const [splitLayout, setSplitLayout] = useState<SplitLayout>(initialState.splitLayout ?? '1');
@@ -1417,6 +2168,8 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
   const [probEngDragging, setProbEngDragging] = useState(false);
   const [technicalTableDragging, setTechnicalTableDragging] = useState(false);
   const [technicalTableResizing, setTechnicalTableResizing] = useState(false);
+  const [liquidityTableDragging, setLiquidityTableDragging] = useState(false);
+  const [liquidityTableResizing, setLiquidityTableResizing] = useState(false);
   const restoredIndicatorsRef = useRef(false);
   const userRemovedIndicatorIds = useRef<Set<string>>(new Set());
   const paneDividerDragRef = useRef<{ paneId: string; startY: number; startHeight: number } | null>(null);
@@ -1450,9 +2203,31 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
     corner: TechnicalTableResizeCorner;
     moved: boolean;
   } | null>(null);
+  const liquidityTableDragRef = useRef<{
+    pointerId: number;
+    target: HTMLDivElement;
+    offsetX: number;
+    offsetY: number;
+    startClientX: number;
+    startClientY: number;
+    moved: boolean;
+  } | null>(null);
+  const liquidityTableResizeRef = useRef<{
+    pointerId: number;
+    target: HTMLDivElement;
+    startClientX: number;
+    startClientY: number;
+    startX: number;
+    startY: number;
+    startWidth: number;
+    startHeight: number;
+    corner: TechnicalTableResizeCorner;
+    moved: boolean;
+  } | null>(null);
 
   const engineRef = useRef<ChartEngine | null>(null);
   const technicalTableSnapshotCacheRef = useRef<{ key: string; snapshot: TechnicalTableSnapshot } | null>(null);
+  const liquidityTableSnapshotCacheRef = useRef<{ key: string; snapshot: LiquidityTableSnapshot } | null>(null);
   const [engineVersion, setEngineVersion] = useState(0);
 
   useEffect(() => {
@@ -1726,7 +2501,9 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
     setActiveCustomStrategyIds(nextState.activeCustomStrategyIds ?? []);
     setProbEngWidget(nextState.probEngWidget ?? createDefaultProbEngWidgetState());
     setTechnicalTableWidget(nextState.technicalTableWidget ?? createDefaultTechnicalTableWidgetState());
+    setLiquidityTableWidget(nextState.liquidityTableWidget ?? createDefaultLiquidityTableWidgetState());
     setTechnicalTableSnapshot(null);
+    setLiquidityTableSnapshot(null);
     setIndicatorPanelOpen(nextState.indicatorPanelOpen ?? false);
     setStrategyPanelOpen(nextState.strategyPanelOpen ?? false);
     setLegendCollapsed(nextState.legendCollapsed ?? false);
@@ -1738,6 +2515,8 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
     setProbEngDragging(false);
     setTechnicalTableDragging(false);
     setTechnicalTableResizing(false);
+    setLiquidityTableDragging(false);
+    setLiquidityTableResizing(false);
     restoredIndicatorsRef.current = false;
 
     const engine = engineRef.current;
@@ -1793,6 +2572,7 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
       activeCustomStrategyIds,
       probEngWidget,
       technicalTableWidget,
+      liquidityTableWidget,
       tooltipFields,
       indicatorPanelOpen,
       strategyPanelOpen,
@@ -1800,7 +2580,7 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
       subPaneState,
       splitLayout,
     });
-  }, [tabId, symbol, timeframe, chartType, yScaleMode, linkChannel, activeIndicators, stopperPx, indicatorColorDefaults, activeScriptSources, activeScriptIds, customStrategies, activeCustomStrategyIds, probEngWidget, technicalTableWidget, tooltipFields, indicatorPanelOpen, strategyPanelOpen, legendCollapsed, splitLayout, serializeIndicators, getEngineSubPaneState, persisted?.subPaneState, chartSubPaneLayoutKey]);
+  }, [tabId, symbol, timeframe, chartType, yScaleMode, linkChannel, activeIndicators, stopperPx, indicatorColorDefaults, activeScriptSources, activeScriptIds, customStrategies, activeCustomStrategyIds, probEngWidget, technicalTableWidget, liquidityTableWidget, tooltipFields, indicatorPanelOpen, strategyPanelOpen, legendCollapsed, splitLayout, serializeIndicators, getEngineSubPaneState, persisted?.subPaneState, chartSubPaneLayoutKey]);
 
   const getCurrentChartState = useCallback((closePanels = false): ChartState => {
     const engineIndicators = engineRef.current?.getActiveIndicators();
@@ -1823,6 +2603,7 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
       activeCustomStrategyIds,
       probEngWidget,
       technicalTableWidget,
+      liquidityTableWidget,
       tooltipFields,
       indicatorPanelOpen: closePanels ? false : indicatorPanelOpen,
       strategyPanelOpen: closePanels ? false : strategyPanelOpen,
@@ -1850,6 +2631,7 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
     splitLayout,
     symbol,
     technicalTableWidget,
+    liquidityTableWidget,
     timeframe,
     tooltipFields,
     yScaleMode,
@@ -1891,6 +2673,7 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
         setActiveCustomStrategyIds(nextState.activeCustomStrategyIds ?? []);
         setProbEngWidget(nextState.probEngWidget ?? createDefaultProbEngWidgetState());
         setTechnicalTableWidget(nextState.technicalTableWidget ?? createDefaultTechnicalTableWidgetState());
+        setLiquidityTableWidget(nextState.liquidityTableWidget ?? createDefaultLiquidityTableWidgetState());
         setIndicatorPanelOpen(false);
         setStrategyPanelOpen(false);
         setLegendCollapsed(nextState.legendCollapsed ?? false);
@@ -1957,9 +2740,19 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
   const activeTechnicalTableIndicator = activeIndicators.find(
     (indicator) => indicator.name === 'DailyIQ Technical Table' && indicator.visible,
   );
+  const activeLiquiditySweepIndicator = activeIndicators.find(
+    (indicator) => (
+      indicator.name === 'DailyIQ Liquidity Sweep Table'
+      || indicator.name === 'Liquidity Sweep Signal'
+    ) && indicator.visible,
+  );
   const technicalTableFastLen = Math.max(1, Math.round(activeTechnicalTableIndicator?.params.fastLen ?? 5));
   const technicalTableSlowLen = Math.max(technicalTableFastLen + 1, Math.round(activeTechnicalTableIndicator?.params.slowLen ?? 20));
   const technicalTableTrendLen = Math.max(1, Math.round(activeTechnicalTableIndicator?.params.trendLen ?? 50));
+  const liquidityTableAtrLen = Math.max(1, Math.round(activeLiquiditySweepIndicator?.params.atrLen ?? 14));
+  const liquidityTableTargetAtr = Math.max(0.1, activeLiquiditySweepIndicator?.params.targetAtrMult ?? 1);
+  const liquidityTableNearPct = Math.max(0.1, activeLiquiditySweepIndicator?.params.nearLevelPct ?? 0.5);
+  const liquidityTableHighlightNearLevels = (activeLiquiditySweepIndicator?.params.highlightNearLevels ?? 1) >= 0.5;
 
   useEffect(() => {
     if (!activeProbEngIndicator) return;
@@ -2105,6 +2898,76 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
   ]);
 
   useEffect(() => {
+    if (!sidecarPort || !symbol.trim()) {
+      setLiquidityTableSnapshot(null);
+      liquidityTableSnapshotCacheRef.current = null;
+      return;
+    }
+    if (!activeLiquiditySweepIndicator) return;
+
+    let cancelled = false;
+
+    const pullSnapshot = async () => {
+      try {
+        const normalizedSymbol = symbol.trim().toUpperCase();
+        const [bars15m, bars1d] = await Promise.all([
+          fetchTableBars(sidecarPort, normalizedSymbol, '15 mins', '270 D', DIQ_TABLE_FETCH_LIMITS.fifteenMin),
+          fetchTableBars(sidecarPort, normalizedSymbol, '1 day', '5 Y', DIQ_TABLE_FETCH_LIMITS.daily),
+        ]);
+        if (cancelled) return;
+
+        const latestTime = (items: Array<{ time: number }>) => items.length > 0 ? items[items.length - 1].time : 0;
+        const snapshotKey = [
+          normalizedSymbol,
+          liquidityTableAtrLen,
+          liquidityTableTargetAtr,
+          liquidityTableNearPct,
+          liquidityTableHighlightNearLevels ? 1 : 0,
+          bars15m.length,
+          latestTime(bars15m),
+          bars1d.length,
+          latestTime(bars1d),
+        ].join('|');
+        const cachedSnapshot = liquidityTableSnapshotCacheRef.current;
+        if (cachedSnapshot?.key === snapshotKey) {
+          setLiquidityTableSnapshot(cachedSnapshot.snapshot);
+          return;
+        }
+
+        const snapshot = computeLiquidityTableSnapshot(
+          bars15m,
+          bars1d,
+          liquidityTableAtrLen,
+          liquidityTableTargetAtr,
+          liquidityTableNearPct,
+          liquidityTableHighlightNearLevels,
+        );
+        if (!cancelled) {
+          liquidityTableSnapshotCacheRef.current = snapshot ? { key: snapshotKey, snapshot } : null;
+          setLiquidityTableSnapshot(snapshot);
+        }
+      } catch {
+        if (!cancelled) setLiquidityTableSnapshot(null);
+      }
+    };
+
+    pullSnapshot();
+    const interval = window.setInterval(pullSnapshot, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [
+    activeLiquiditySweepIndicator?.id,
+    sidecarPort,
+    symbol,
+    liquidityTableAtrLen,
+    liquidityTableTargetAtr,
+    liquidityTableNearPct,
+    liquidityTableHighlightNearLevels,
+  ]);
+
+  useEffect(() => {
     if (!chartLayout || probEngDragRef.current) return;
     const overlay = chartOverlayRef.current;
     const hostWidth = overlay ? overlay.offsetWidth : chartLayout.width;
@@ -2144,6 +3007,11 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
   }, [activeTechnicalTableIndicator]);
 
   useEffect(() => {
+    if (!activeLiquiditySweepIndicator) return;
+    setLiquidityTableWidget((prev) => (prev.visible ? prev : { ...prev, visible: true }));
+  }, [activeLiquiditySweepIndicator]);
+
+  useEffect(() => {
     if (!chartLayout || technicalTableDragRef.current || technicalTableResizeRef.current) return;
     const overlay = chartOverlayRef.current;
     const hostWidth = overlay ? overlay.offsetWidth : chartLayout.width;
@@ -2155,7 +3023,7 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
         if (x === prev.x && y === prev.y) return prev;
         return { ...prev, x, y };
       }
-      const next = clampTechnicalTableWidgetPosition(prev, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+      const next = clampLiquidityTableWidgetPosition(prev, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
       const { normX, normY } = probEngNormFromPixel(next.x, next.y, b.minX, b.maxX, b.minY, b.maxY);
       if (next.x === prev.x && next.y === prev.y && prev.normX === normX && prev.normY === normY) return prev;
       return { ...next, normX, normY };
@@ -2178,6 +3046,42 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
       return { ...prev, x, y, normX, normY, visible: true };
     });
   }, [chartLayout, activeTechnicalTableIndicator, chartToolRailWidth]);
+
+  useEffect(() => {
+    if (!chartLayout || liquidityTableDragRef.current || liquidityTableResizeRef.current) return;
+    const overlay = chartOverlayRef.current;
+    const hostWidth = overlay ? overlay.offsetWidth : chartLayout.width;
+    const hostHeight = overlay ? overlay.offsetHeight : chartLayout.height;
+    setLiquidityTableWidget((prev) => {
+      const b = getTechnicalTableDragBounds(prev, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+      if (technicalTableHasNorm(prev)) {
+        const { x, y } = probEngPixelFromNorm(prev.normX!, prev.normY!, b.minX, b.maxX, b.minY, b.maxY);
+        if (x === prev.x && y === prev.y) return prev;
+        return { ...prev, x, y };
+      }
+      const next = clampTechnicalTableWidgetPosition(prev, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+      const { normX, normY } = probEngNormFromPixel(next.x, next.y, b.minX, b.maxX, b.minY, b.maxY);
+      if (next.x === prev.x && next.y === prev.y && prev.normX === normX && prev.normY === normY) return prev;
+      return { ...next, normX, normY };
+    });
+  }, [chartLayout, chartToolRailWidth, activeLiquiditySweepIndicator]);
+
+  useEffect(() => {
+    if (!chartLayout || !activeLiquiditySweepIndicator || liquidityTableDragRef.current || liquidityTableResizeRef.current) return;
+    const overlay = chartOverlayRef.current;
+    const hostWidth = overlay ? overlay.offsetWidth : chartLayout.width;
+    const hostHeight = overlay ? overlay.offsetHeight : chartLayout.height;
+    setLiquidityTableWidget((prev) => {
+      const defaultLike = (prev.x === 120 && prev.y === 120) || (prev.x === 0 && prev.y === 0);
+      if (!defaultLike) return prev;
+      const pos = getDefaultTechnicalTableWidgetPosition(chartLayout, hostWidth, hostHeight, chartToolRailWidth, prev.width);
+      const x = Math.round(pos.x);
+      const y = Math.round(pos.y);
+      const b = getTechnicalTableDragBounds(prev, chartLayout, hostWidth, hostHeight, chartToolRailWidth);
+      const { normX, normY } = probEngNormFromPixel(x, y, b.minX, b.maxX, b.minY, b.maxY);
+      return { ...prev, x, y, normX, normY, visible: true };
+    });
+  }, [chartLayout, activeLiquiditySweepIndicator, chartToolRailWidth]);
 
   const handleSymbolChange = useCallback((newSymbol: string) => {
     setSymbol(newSymbol);
@@ -2874,10 +3778,202 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
     };
   }, [clearTechnicalTableDrag, clearTechnicalTableResize]);
 
+  const clearLiquidityTableDrag = useCallback((target?: HTMLDivElement | null) => {
+    const drag = liquidityTableDragRef.current;
+    const captureTarget = target ?? drag?.target;
+    if (drag && captureTarget?.hasPointerCapture?.(drag.pointerId)) {
+      captureTarget.releasePointerCapture(drag.pointerId);
+    }
+    liquidityTableDragRef.current = null;
+    setLiquidityTableDragging(false);
+    if (!liquidityTableResizeRef.current) {
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    }
+  }, []);
+
+  const clearLiquidityTableResize = useCallback((target?: HTMLDivElement | null) => {
+    const resize = liquidityTableResizeRef.current;
+    const captureTarget = target ?? resize?.target;
+    if (resize && captureTarget?.hasPointerCapture?.(resize.pointerId)) {
+      captureTarget.releasePointerCapture(resize.pointerId);
+    }
+    liquidityTableResizeRef.current = null;
+    setLiquidityTableResizing(false);
+    if (!liquidityTableDragRef.current) {
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    }
+  }, []);
+
+  const handleLiquidityTableHeaderPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (liquidityTableWidget.locked || event.button !== 0) return;
+    const host = chartOverlayRef.current;
+    const widgetEl = event.currentTarget.parentElement as HTMLDivElement | null;
+    if (!host || !widgetEl || !chartLayout) return;
+    const hostRect = host.getBoundingClientRect();
+    const widgetRect = widgetEl.getBoundingClientRect();
+    liquidityTableDragRef.current = {
+      pointerId: event.pointerId,
+      target: event.currentTarget,
+      offsetX: event.clientX - widgetRect.left,
+      offsetY: event.clientY - widgetRect.top,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'grab';
+    const unclamped = {
+      ...liquidityTableWidget,
+      x: widgetRect.left - hostRect.left,
+      y: widgetRect.top - hostRect.top,
+    };
+    setLiquidityTableWidget(chartLiquidityTableClampWithNorm(unclamped, chartLayout, hostRect.width, hostRect.height, chartToolRailWidth));
+  }, [liquidityTableWidget, chartLayout, chartToolRailWidth]);
+
+  const handleLiquidityTableHeaderPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = liquidityTableDragRef.current;
+    const host = chartOverlayRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !host || !chartLayout) return;
+    const moveDistance = Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY);
+    if (!drag.moved && moveDistance < TECH_TABLE_DRAG_THRESHOLD) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      setLiquidityTableDragging(true);
+      document.body.style.cursor = 'grabbing';
+    }
+    const rect = host.getBoundingClientRect();
+    const unclamped = {
+      ...liquidityTableWidget,
+      x: event.clientX - rect.left - drag.offsetX,
+      y: event.clientY - rect.top - drag.offsetY,
+    };
+    setLiquidityTableWidget(chartLiquidityTableClampWithNorm(unclamped, chartLayout, rect.width, rect.height, chartToolRailWidth));
+  }, [liquidityTableWidget, chartLayout, chartToolRailWidth]);
+
+  const handleLiquidityTableHeaderPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = liquidityTableDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    clearLiquidityTableDrag(event.currentTarget);
+  }, [clearLiquidityTableDrag]);
+
+  const handleLiquidityTableHeaderPointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = liquidityTableDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    clearLiquidityTableDrag(event.currentTarget);
+  }, [clearLiquidityTableDrag]);
+
+  const handleLiquidityTableResizePointerDown = useCallback((corner: TechnicalTableResizeCorner, event: ReactPointerEvent<HTMLDivElement>) => {
+    if (liquidityTableWidget.locked || event.button !== 0) return;
+    const host = chartOverlayRef.current;
+    const widgetEl = event.currentTarget.parentElement as HTMLDivElement | null;
+    if (!host || !widgetEl || !chartLayout) return;
+    const hostRect = host.getBoundingClientRect();
+    const widgetRect = widgetEl.getBoundingClientRect();
+    liquidityTableResizeRef.current = {
+      pointerId: event.pointerId,
+      target: event.currentTarget,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: widgetRect.left - hostRect.left,
+      startY: widgetRect.top - hostRect.top,
+      startWidth: widgetRect.width,
+      startHeight: widgetRect.height,
+      corner,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.stopPropagation();
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = corner === 'top-right' || corner === 'bottom-left' ? 'nesw-resize' : 'nwse-resize';
+    const unclamped = {
+      ...liquidityTableWidget,
+      x: widgetRect.left - hostRect.left,
+      y: widgetRect.top - hostRect.top,
+      width: widgetRect.width,
+      height: widgetRect.height,
+    };
+    setLiquidityTableWidget(chartLiquidityTableClampWithNorm(unclamped, chartLayout, hostRect.width, hostRect.height, chartToolRailWidth));
+  }, [liquidityTableWidget, chartLayout, chartToolRailWidth]);
+
+  const handleLiquidityTableResizePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = liquidityTableResizeRef.current;
+    const host = chartOverlayRef.current;
+    if (!resize || resize.pointerId !== event.pointerId || !host || !chartLayout) return;
+    const deltaX = event.clientX - resize.startClientX;
+    const deltaY = event.clientY - resize.startClientY;
+    if (!resize.moved && Math.max(Math.abs(deltaX), Math.abs(deltaY)) < TECH_TABLE_RESIZE_THRESHOLD) return;
+    if (!resize.moved) {
+      resize.moved = true;
+      setLiquidityTableResizing(true);
+      document.body.style.cursor = resize.corner === 'top-right' || resize.corner === 'bottom-left' ? 'nesw-resize' : 'nwse-resize';
+    }
+    const rect = host.getBoundingClientRect();
+    setLiquidityTableWidget(
+      resizeLiquidityTableWidget(
+        {
+          ...liquidityTableWidget,
+          x: resize.startX,
+          y: resize.startY,
+          width: resize.startWidth,
+          height: resize.startHeight,
+        },
+        resize.corner,
+        deltaX,
+        deltaY,
+        chartLayout,
+        rect.width,
+        rect.height,
+        chartToolRailWidth,
+      ),
+    );
+  }, [liquidityTableWidget, chartLayout, chartToolRailWidth]);
+
+  const handleLiquidityTableResizePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = liquidityTableResizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    clearLiquidityTableResize(event.currentTarget);
+  }, [clearLiquidityTableResize]);
+
+  const handleLiquidityTableResizePointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = liquidityTableResizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    clearLiquidityTableResize(event.currentTarget);
+  }, [clearLiquidityTableResize]);
+
+  useEffect(() => {
+    const handlePointerEnd = (event: PointerEvent) => {
+      if (liquidityTableDragRef.current?.pointerId === event.pointerId) {
+        clearLiquidityTableDrag();
+      }
+      if (liquidityTableResizeRef.current?.pointerId === event.pointerId) {
+        clearLiquidityTableResize();
+      }
+    };
+
+    const handleBlur = () => {
+      clearLiquidityTableDrag();
+      clearLiquidityTableResize();
+    };
+
+    window.addEventListener('pointerup', handlePointerEnd, true);
+    window.addEventListener('pointercancel', handlePointerEnd, true);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('pointerup', handlePointerEnd, true);
+      window.removeEventListener('pointercancel', handlePointerEnd, true);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, [clearLiquidityTableDrag, clearLiquidityTableResize]);
+
   useEffect(() => () => {
     probEngDragRef.current = null;
     technicalTableDragRef.current = null;
     technicalTableResizeRef.current = null;
+    liquidityTableDragRef.current = null;
+    liquidityTableResizeRef.current = null;
     document.body.style.userSelect = '';
     document.body.style.cursor = '';
   }, []);
@@ -2888,15 +3984,6 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
           (indicator) => pane.indicatorIds.includes(indicator.id) && indicator.name === 'Volume',
         );
         return volumeIndicator ? [{ pane, indicatorId: volumeIndicator.id }] : [];
-      })
-    : [];
-
-  const draggableMACDPanes = chartLayout
-    ? chartLayout.subPanes.flatMap((pane) => {
-        const macdIndicator = activeIndicators.find(
-          (indicator) => pane.indicatorIds.includes(indicator.id) && indicator.name === 'MACD',
-        );
-        return macdIndicator ? [{ pane, indicatorId: macdIndicator.id }] : [];
       })
     : [];
 
@@ -3064,20 +4151,6 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
               }}
               title="Drag volume onto chart"
               left={chartToolRailWidth + 8}
-              top={pane.top + 8}
-              zIndex={6}
-              disabled={Boolean(dragState)}
-            />
-          ))}
-          {draggableMACDPanes.map(({ pane, indicatorId }) => (
-            <IndicatorDragHandle
-              key={`${pane.paneId}-macd-drag`}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                beginIndicatorDrag(indicatorId, pane.paneId, e.clientX, e.clientY);
-              }}
-              title="Drag MACD onto chart"
-              left={chartToolRailWidth + 44}
               top={pane.top + 8}
               zIndex={6}
               disabled={Boolean(dragState)}
@@ -3264,6 +4337,26 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
             onResizePointerCancel={handleTechnicalTableResizePointerCancel}
             onToggleLock={() => {
               setTechnicalTableWidget((prev) => ({ ...prev, locked: !prev.locked }));
+            }}
+          />
+        )}
+
+        {chartLayout && activeLiquiditySweepIndicator && liquidityTableWidget.visible && (
+          <DailyIQLiquidityTableOverlay
+            snapshot={liquidityTableSnapshot}
+            widget={liquidityTableWidget}
+            dragging={liquidityTableDragging}
+            resizing={liquidityTableResizing}
+            onHeaderPointerDown={handleLiquidityTableHeaderPointerDown}
+            onHeaderPointerMove={handleLiquidityTableHeaderPointerMove}
+            onHeaderPointerUp={handleLiquidityTableHeaderPointerUp}
+            onHeaderPointerCancel={handleLiquidityTableHeaderPointerCancel}
+            onResizePointerDown={handleLiquidityTableResizePointerDown}
+            onResizePointerMove={handleLiquidityTableResizePointerMove}
+            onResizePointerUp={handleLiquidityTableResizePointerUp}
+            onResizePointerCancel={handleLiquidityTableResizePointerCancel}
+            onToggleLock={() => {
+              setLiquidityTableWidget((prev) => ({ ...prev, locked: !prev.locked }));
             }}
           />
         )}
