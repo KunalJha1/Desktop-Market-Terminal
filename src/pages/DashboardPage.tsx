@@ -177,13 +177,7 @@ function DashboardPageComponent(_props: { tabId?: string }) {
       m.set(c.id, mergePersistedMiniChartConfig(activeTabId, c.id, c.config));
     }
     return m;
-  }, [
-    activeTabId,
-    miniChartMergeEpoch,
-    ...layout.components
-      .filter((c): c is LayoutComponent & { type: "minichart" } => c.type === "minichart")
-      .flatMap((c) => [c.id, c.config] as const),
-  ]);
+  }, [activeTabId, miniChartMergeEpoch, layout.components]);
 
   const updateMiniChartConfig = useCallback((componentId: string, nextConfig: Record<string, unknown>) => {
     const tid = activeTabIdRef.current;

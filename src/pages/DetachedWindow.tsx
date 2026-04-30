@@ -1,7 +1,7 @@
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
-import { isTauriRuntime } from "../lib/platform";
+import { isTauriRuntime, usePlatform } from "../lib/platform";
 import {
   getDetachedLabel,
   readDetachedTabInfo,
@@ -78,9 +78,11 @@ export default function DetachedWindow() {
   const label = getDetachedLabel()!;
   const [info, setInfo] = useState<DetachedTabInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [contentVisible, setContentVisible] = useState(false);
   const closingRef = useRef(false);
   const allowNativeCloseRef = useRef(false);
   const lastDragRegionClickTimeRef = useRef(0);
+  const { isMac } = usePlatform();
 
   useEffect(() => {
     let cancelled = false;
@@ -200,6 +202,12 @@ export default function DetachedWindow() {
     };
   }, [info, label]);
 
+  // Fade in after a brief delay to hide the maximize-animation jitter
+  useEffect(() => {
+    const t = setTimeout(() => setContentVisible(true), 60);
+    return () => clearTimeout(t);
+  }, []);
+
   const closeDetachedWindow = async () => {
     if (closingRef.current) return;
     closingRef.current = true;
@@ -273,7 +281,7 @@ export default function DetachedWindow() {
           className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.06] bg-base"
           onMouseDown={handleDragRegionMouseDown}
         >
-          <span className="px-3 font-mono text-[11px] text-white/30">DailyIQ</span>
+          <span className={`${isMac ? 'pl-[72px] pr-3' : 'px-3'} font-mono text-[11px] text-white/30`}>DailyIQ</span>
           <WindowControls
             onMinimize={handleMinimize}
             onMaximizeToggle={handleMaximizeToggle}
@@ -302,7 +310,7 @@ export default function DetachedWindow() {
           className="flex h-8 shrink-0 items-center justify-between border-b border-white/[0.06] bg-base"
           onMouseDown={handleDragRegionMouseDown}
         >
-          <span className="px-3 font-mono text-[11px] text-white/30">DailyIQ</span>
+          <span className={`${isMac ? 'pl-[72px] pr-3' : 'px-3'} font-mono text-[11px] text-white/30`}>DailyIQ</span>
           <WindowControls
             onMinimize={handleMinimize}
             onMaximizeToggle={handleMaximizeToggle}
@@ -332,7 +340,7 @@ export default function DetachedWindow() {
         className="flex h-8 shrink-0 cursor-default select-none items-center justify-between border-b border-white/[0.06] bg-base"
         onMouseDown={handleDragRegionMouseDown}
       >
-        <span className="px-3 font-mono text-[11px] text-white/45">{info.title}</span>
+        <span className={`${isMac ? 'pl-[72px] pr-3' : 'px-3'} font-mono text-[11px] text-white/45`}>{info.title}</span>
         <WindowControls
           onMinimize={handleMinimize}
           onMaximizeToggle={handleMaximizeToggle}
@@ -341,7 +349,7 @@ export default function DetachedWindow() {
       </div>
 
       {/* Page content */}
-      <main className="relative flex min-h-0 flex-1 overflow-hidden">
+      <main className={`relative flex min-h-0 flex-1 overflow-hidden transition-opacity duration-[120ms] ${contentVisible ? 'opacity-100' : 'opacity-0'}`}>
         <Suspense fallback={<PageFallback />}>
           <div className="flex h-full w-full flex-col overflow-hidden">
             <PageComponent tabId={info.tabId} />

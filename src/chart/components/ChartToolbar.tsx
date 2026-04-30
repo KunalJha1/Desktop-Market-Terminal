@@ -55,6 +55,7 @@ interface ChartToolbarProps {
   activeIndicators?: ActiveIndicator[];
   dataSource?: 'tws' | 'dailyiq' | 'yahoo' | 'cache' | 'offline';
   loading?: boolean;
+  isStale?: boolean;
   linkChannel?: number | null;
   onLinkChannelChange?: (ch: number | null) => void;
   stopperPx?: number;
@@ -102,6 +103,7 @@ export default function ChartToolbar({
   activeIndicators = [],
   dataSource = 'offline',
   loading = false,
+  isStale = false,
   linkChannel = null,
   onLinkChannelChange,
   stopperPx: _stopperPx = 0,
@@ -353,6 +355,9 @@ export default function ChartToolbar({
       <div className="flex items-center gap-1.5 mr-1">
         {loading && (
           <div className="w-2 h-2 rounded-full bg-amber animate-pulse" />
+        )}
+        {isStale && !loading && (
+          <div className="w-2 h-2 rounded-full bg-amber opacity-40" title="Refreshing data…" />
         )}
         <span className={`text-[9px] font-mono ${
           dataSource === 'tws' ? 'text-green'

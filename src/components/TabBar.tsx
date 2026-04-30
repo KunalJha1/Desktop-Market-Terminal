@@ -409,24 +409,6 @@ export default function TabBar() {
     setShowAdd(false);
   }, [activeTabId, duplicateTab]);
 
-  const handleOpenTestWindow = useCallback(async () => {
-    setShowAdd(false);
-    if (!isTauriRuntime()) return;
-
-    try {
-      await invoke("spawn_test_window", {
-        label: `test-window-${Date.now()}`,
-        title: "DailyIQ Test Window",
-        x: 180,
-        y: 140,
-        width: 720,
-        height: 520,
-      });
-    } catch (err) {
-      console.error("spawn_test_window failed", err);
-    }
-  }, []);
-
   const handleCloseTab = useCallback((tab: Tab) => {
     if (isTauriRuntime() && !isDetachedWindow() && tab.type === "dashboard") {
       void invoke("shutdown_app").catch(async () => {
@@ -602,13 +584,6 @@ export default function TabBar() {
               </button>
             );
           })}
-          <div className="mx-2 my-1 h-px bg-white/[0.06]" />
-          <button
-            onClick={() => { void handleOpenTestWindow(); }}
-            className="block w-full px-3 py-1.5 text-left text-[11px] text-blue transition-colors duration-75 hover:bg-white/[0.06] hover:text-white/85"
-          >
-            Test Window
-          </button>
         </div>
       )}
 

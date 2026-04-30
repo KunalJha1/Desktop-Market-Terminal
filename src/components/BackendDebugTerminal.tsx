@@ -1,12 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
-type BackendState =
-  | "starting"
-  | "healthy"
-  | "unhealthy"
-  | "restarting"
-  | "stopped"
-  | "failed";
+import { useTws } from "../lib/tws";
 
 interface DebugEvent {
   id: number;
@@ -20,11 +13,6 @@ interface DebugEvent {
 interface DebugEventsResponse {
   events: DebugEvent[];
   next_id: number;
-}
-
-interface BackendDebugTerminalProps {
-  sidecarPort: number | null;
-  backendState: BackendState;
 }
 
 const POLL_MS = 1200;
@@ -50,10 +38,8 @@ function formatEvent(evt: DebugEvent): string {
   return prefix;
 }
 
-export default function BackendDebugTerminal({
-  sidecarPort,
-  backendState,
-}: BackendDebugTerminalProps) {
+export default function BackendDebugTerminal() {
+  const { sidecarPort, backendState } = useTws();
   const [events, setEvents] = useState<DebugEvent[]>([]);
   const [nextId, setNextId] = useState(0);
   const [loading, setLoading] = useState(false);

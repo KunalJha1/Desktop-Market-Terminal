@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SimChart } from "../chart/components/SimChart";
 import { SimulationEngine } from "../lib/simulation-engine";
 import type { SimState, SessionFilter } from "../lib/simulation-engine";
@@ -12,9 +12,19 @@ import SymbolSearchModal from "../components/SymbolSearchModal";
 import ScrollArea from "../components/ScrollArea";
 import CustomSelect from "../components/CustomSelect";
 import { SEARCHABLE_SYMBOLS } from "../lib/market-data";
+import { getTimeframeMs } from "../chart/constants";
 import SimScriptPanel from "../chart/components/SimScriptPanel";
+import {
+  displayBarsForTimeframe,
+  getMaxSimHistoricalFetchConfig,
+  getSimHistoricalFetchConfig,
+  normalizeHistoricalBarTimeMs,
+  type RawBarSize,
+} from "../lib/historical-request";
 
-const SIM_COUNT_PRESETS = [4, 9, 16, 25, 36] as const;
+const SIM_COUNT_PRESETS = [1, 4, 9, 16, 25, 36] as const;
+/** Quick day counts — use “Max” for the longest IBKR-aligned range supported for the selected timeframe (e.g. 30 years of daily bars). */
+const DAY_PRESETS = [5, 22, 63, 252] as const;
 const SPEEDS = [1, 2, 5, 10] as const;
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1H", "4H", "1D"];
 const SPEED_INTERVAL: Record<number, number> = { 1: 250, 2: 125, 5: 50, 10: 25 };
@@ -27,14 +37,6 @@ function buildCombinedStrategy(selected: CustomStrategyDefinition[]): CustomStra
     sellThreshold: Math.round(selected.reduce((a, s) => a + s.sellThreshold, 0) / selected.length),
     conditions: selected.flatMap((s) => s.conditions),
   };
-}
-
-function buildFetchParams(timeframe: string, days: number): { barSize: string; duration: string } {
-  if (timeframe === "1D") return { barSize: "1+day", duration: `${days} D` };
-  if (timeframe === "4H") return { barSize: "4+hours", duration: `${days} D` };
-  if (timeframe === "1H") return { barSize: "1+hour", duration: `${days} D` };
-  // Intraday: no extra buffer needed — we'll split bars into non-overlapping segments
-  return { barSize: "1+min", duration: `${days} D` };
 }
 
 function pickUniqueRandom(arr: typeof SEARCHABLE_SYMBOLS, count: number): string[] {
@@ -52,6 +54,21 @@ function fmtNum(v: number | "∞"): string {
   if (v === "∞") return "∞";
   return v.toFixed(2);
 }
+
+function parsePositiveIntOr(value: string, fallback: number): number {
+  const n = Number.parseInt(String(value).trim(), 10);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return n;
+}
+
+function parsePositiveFloatOr(value: string, fallback: number): number {
+  const n = Number.parseFloat(String(value).trim().replace(/,/g, ""));
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+}
+
+const noSpinnerInputClass =
+  "h-6 px-2 text-[11px] font-mono text-left bg-[#161B22] border border-white/[0.08] rounded text-white/70 outline-none focus:border-white/20 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [appearance:textfield]";
 
 function aggregateMetrics(states: SimState[]) {
   const allClosed = states.flatMap((s) => s.trades);
@@ -89,22 +106,119 @@ function CtrlBtn({
   );
 }
 
+const HOVER_TOOLTIP_DELAY_MS = 850;
+
+/** Shows `content` after a long hover/focus dwell (not on quick pointer moves). Portaled below anchor; center X for layout. */
+function DelayedHoverTip({
+  content,
+  delayMs = HOVER_TOOLTIP_DELAY_MS,
+  children,
+}: {
+  content: string;
+  delayMs?: number;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [tipPos, setTipPos] = useState<{ left: number; top: number } | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const anchorRef = useRef<HTMLSpanElement>(null);
+
+  const updatePos = useCallback(() => {
+    const el = anchorRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setTipPos({
+      left: r.left + r.width / 2,
+      top: r.bottom + 8,
+    });
+  }, []);
+
+  const schedule = () => {
+    timerRef.current = window.setTimeout(() => {
+      updatePos();
+      setOpen(true);
+    }, delayMs);
+  };
+  const clear = () => {
+    if (timerRef.current != null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setOpen(false);
+    setTipPos(null);
+  };
+
+  useEffect(() => () => clear(), []);
+  useEffect(() => {
+    if (!open) return;
+    const onScrollOrResize = () => updatePos();
+    window.addEventListener("scroll", onScrollOrResize, true);
+    window.addEventListener("resize", onScrollOrResize);
+    return () => {
+      window.removeEventListener("scroll", onScrollOrResize, true);
+      window.removeEventListener("resize", onScrollOrResize);
+    };
+  }, [open, updatePos]);
+
+  const tip =
+    open && tipPos != null
+      ? createPortal(
+          <span
+            role="tooltip"
+            style={{
+              position: "fixed",
+              left: tipPos.left,
+              top: tipPos.top,
+              transform: "translateX(-50%)",
+              zIndex: 99999,
+              maxWidth: "min(calc(100vw - 32px), 22rem)",
+            }}
+            className="pointer-events-none rounded border border-white/[0.12] bg-[#161B22] px-2.5 py-2 text-left text-[10px] font-mono leading-relaxed text-white/85 shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
+          >
+            {content}
+          </span>,
+          document.body,
+        )
+      : null;
+
+  return (
+    <>
+      <span
+        ref={anchorRef}
+        className="inline-flex"
+        onPointerEnter={schedule}
+        onPointerLeave={clear}
+        onFocus={schedule}
+        onBlur={clear}
+      >
+        {children}
+      </span>
+      {tip}
+    </>
+  );
+}
+
 function SimulationsPage() {
   const port = useSidecarPort();
 
   const [strategies, setStrategies] = useState<CustomStrategyDefinition[]>([]);
   const [strategy, setStrategy] = useState<CustomStrategyDefinition | null>(null);
   const [timeframe, setTimeframe] = useState("5m");
-  const [sessions, setSessions] = useState(5);
+  const [sessionsInput, setSessionsInput] = useState("5");
+  /** When true, ignore “Days” and request the widest supported `/historical` span for this timeframe (daily = 30 Y, intraday = tier max — see historical-request). */
+  const [historyRangeFull, setHistoryRangeFull] = useState(false);
   const [hours, setHours] = useState<SessionFilter>("regular");
   const [rollDays, setRollDays] = useState(false);
   // Single symbol (when symbolPool is empty) or pool of symbols (multi-symbol mode)
   const [symbol, setSymbol] = useState("SPY");
   const [symbolPool, setSymbolPool] = useState<string[]>([]);
   const [simCount, setSimCount] = useState(4);
-  const [simCountInput, setSimCountInput] = useState("4");
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1);
-  const [positionSize, setPositionSize] = useState(1);
+  const [positionMode, setPositionMode] = useState<"qty" | "capital">("qty");
+  const [qtyInput, setQtyInput] = useState("1");
+  const [capitalInput, setCapitalInput] = useState("10000");
+  const [fractionalShares, setFractionalShares] = useState(true);
+  const [reinvest, setReinvest] = useState(true);
   const [isRunning, setIsRunning] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -183,16 +297,22 @@ function SimulationsPage() {
 
     try {
       const isMulti = symbolPool.length > 0;
+      const sessions = Math.min(2000, Math.max(1, parsePositiveIntOr(sessionsInput, 5)));
 
-      // For single-symbol mode: fetch sessions × simCount days so we have enough data to
-      // give each sim a completely non-overlapping time window. Cap at 2000 to be reasonable.
-      // For multi-symbol mode: each symbol is typically used once, so sessions days is enough.
-      const totalDays = isMulti
-        ? sessions
-        : Math.min(sessions * simCount, 2000);
-
-      const { barSize, duration } = buildFetchParams(timeframe, totalDays);
+      // Full-range mode: widest IBKR-aligned duration per bar tier (daily = decades of 1‑day candles).
+      // Custom days: capped lookback derived below for fetch sizing only when not full-range.
+      const fetchCfg = historyRangeFull
+        ? getMaxSimHistoricalFetchConfig(timeframe)
+        : getSimHistoricalFetchConfig(
+          timeframe,
+          isMulti
+            ? sessions
+            : Math.min(sessions * simCount, 2000),
+        );
       const baseUrl = `http://127.0.0.1:${port}/historical`;
+
+      const qtyParsed = parsePositiveFloatOr(qtyInput, 1);
+      const startingCapitalParsed = parsePositiveFloatOr(capitalInput, 10_000);
 
       // Determine symbol per sim
       const symList: string[] = isMulti
@@ -204,13 +324,25 @@ function SimulationsPage() {
       const barsBySymbol = new Map<string, OHLCVBar[]>();
 
       await Promise.all(uniqueSyms.map(async (sym) => {
-        const url = `${baseUrl}?symbol=${encodeURIComponent(sym)}&bar_size=${barSize}&duration=${encodeURIComponent(duration)}&what_to_show=TRADES`;
-        const res = await fetch(url);
+        const url = new URL(baseUrl);
+        url.searchParams.set("symbol", sym);
+        url.searchParams.set("bar_size", fetchCfg.barSizeParam);
+        url.searchParams.set("duration", fetchCfg.duration);
+        url.searchParams.set("what_to_show", "TRADES");
+        const res = await fetch(url.toString());
         if (!res.ok) throw new Error(`HTTP ${res.status} for ${sym}`);
-        const json = await res.json() as { bars: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }> };
-        barsBySymbol.set(sym, (json.bars ?? []).map((b) => ({
-          time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume,
-        })));
+        const json = await res.json() as {
+          bars: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>;
+        };
+        const raw = (json.bars ?? []).map((b) => ({
+          time: normalizeHistoricalBarTimeMs(Number(b.time)),
+          open: b.open,
+          high: b.high,
+          low: b.low,
+          close: b.close,
+          volume: b.volume,
+        })).filter((b) => Number.isFinite(b.time));
+        barsBySymbol.set(sym, displayBarsForTimeframe(raw, fetchCfg.rawBarSize as RawBarSize, timeframe));
       }));
 
       // Group sim indices by symbol so we can split each symbol's data into
@@ -245,7 +377,11 @@ function SimulationsPage() {
             startBarIndex: 0,
             sessionFilter: hours,
             rollDays,
-            positionSize,
+            positionMode,
+            positionQty: qtyParsed,
+            startingCapital: startingCapitalParsed,
+            fractionalShares,
+            reinvest: positionMode === "capital" ? reinvest : false,
             scriptSource: activeScript || undefined,
           });
           resolvedSymbols[simIdx] = sym;
@@ -261,7 +397,24 @@ function SimulationsPage() {
       setError(String(err));
       setIsLoading(false);
     }
-  }, [port, strategy, sessions, symbol, symbolPool, simCount, timeframe, hours, rollDays, positionSize, scriptSource]);
+  }, [
+    port,
+    strategy,
+    sessionsInput,
+    historyRangeFull,
+    symbol,
+    symbolPool,
+    simCount,
+    timeframe,
+    hours,
+    rollDays,
+    scriptSource,
+    positionMode,
+    qtyInput,
+    capitalInput,
+    fractionalShares,
+    reinvest,
+  ]);
 
   const handleRunCombined = useCallback(() => {
     const selected = strategies.filter((s) => combineSelected.has(s.id));
@@ -283,31 +436,57 @@ function SimulationsPage() {
     setIsRunning((r) => !r);
   }, []);
 
-  // Playback interval
+  // Playback loop — rAF-based for 60fps alignment; timestamp throttling enforces speed intervals
   useEffect(() => {
     if (!isRunning) return;
     const engines = enginesRef.current;
     const interval = SPEED_INTERVAL[speed] ?? 250;
-    const id = setInterval(() => {
-      let anyRunning = false;
-      engines.forEach((e) => {
-        if (!e.isDone()) {
-          const steps = speed >= 10 ? 8 : speed >= 5 ? 4 : speed >= 2 ? 2 : 1;
-          for (let s = 0; s < steps && !e.isDone(); s++) e.step();
-          anyRunning = true;
-        }
-      });
-      setSimStates(engines.map((e) => e.getState()));
-      if (!anyRunning) setIsRunning(false);
-    }, interval);
-    return () => clearInterval(id);
+    let lastStepTime = 0;
+    let rafId: number;
+    const tick = (now: number) => {
+      if (now - lastStepTime >= interval) {
+        lastStepTime = now;
+        let anyRunning = false;
+        engines.forEach((e) => {
+          if (!e.isDone()) {
+            const steps = speed >= 10 ? 8 : speed >= 5 ? 4 : speed >= 2 ? 2 : 1;
+            for (let s = 0; s < steps && !e.isDone(); s++) e.step();
+            anyRunning = true;
+          }
+        });
+        setSimStates(engines.map((e) => e.getState()));
+        if (!anyRunning) { setIsRunning(false); return; }
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
   }, [isRunning, speed]);
 
   const cols = Math.ceil(Math.sqrt(simCount));
   const rows = Math.ceil(simCount / cols);
-  const agg = simStates.length > 0 ? aggregateMetrics(simStates) : null;
-  const runningCount = simStates.filter((s) => !s.done).length;
+  const agg = useMemo(
+    () => (simStates.length > 0 ? aggregateMetrics(simStates) : null),
+    [simStates],
+  );
+  const runningCount = useMemo(
+    () => simStates.filter((s) => !s.done).length,
+    [simStates],
+  );
   const isMultiSymbol = symbolPool.length > 0;
+  const isDailyTf = getTimeframeMs(timeframe) >= 86_400_000;
+
+  const strategyOptions = useMemo(() => {
+    const presets = strategies.filter((s) => s.id.startsWith("preset_"));
+    const userStrats = strategies.filter((s) => !s.id.startsWith("preset_") && !s.id.startsWith("combined_"));
+    return [
+      ...(strategy?.id.startsWith("combined_")
+        ? [{ value: strategy.id, label: strategy.name, description: "Combined" }]
+        : []),
+      ...presets.map((s) => ({ value: s.id, label: s.name, description: "Built-in" })),
+      ...userStrats.map((s) => ({ value: s.id, label: s.name, description: "My Strategies" })),
+    ];
+  }, [strategies, strategy]);
 
   // Combine popover content (rendered via portal)
   const combinePopover = combineOpen && combinePos && createPortal(
@@ -380,28 +559,15 @@ function SimulationsPage() {
       {/* Top control bar */}
       <div className="flex items-center gap-1 h-10 px-3 border-b border-white/[0.06] shrink-0 overflow-x-auto">
         {/* Strategy */}
-        {(() => {
-          const presets = strategies.filter((s) => s.id.startsWith("preset_"));
-          const userStrats = strategies.filter((s) => !s.id.startsWith("preset_") && !s.id.startsWith("combined_"));
-          const strategyOptions = [
-            ...(strategy?.id.startsWith("combined_")
-              ? [{ value: strategy.id, label: strategy.name, description: "Combined" }]
-              : []),
-            ...presets.map((s) => ({ value: s.id, label: s.name, description: "Built-in" })),
-            ...userStrats.map((s) => ({ value: s.id, label: s.name, description: "My Strategies" })),
-          ];
-          return (
-            <CustomSelect
-              value={strategy?.id ?? ""}
-              onChange={(next) => setStrategy(strategies.find((s) => s.id === next) ?? null)}
-              options={strategyOptions}
-              size="sm"
-              className="w-48 shrink-0"
-              triggerClassName="bg-[#161B22] border-white/[0.08] font-mono text-white/70 focus:border-white/20"
-              panelWidth={260}
-            />
-          );
-        })()}
+        <CustomSelect
+          value={strategy?.id ?? ""}
+          onChange={(next) => setStrategy(strategies.find((s) => s.id === next) ?? null)}
+          options={strategyOptions}
+          size="sm"
+          className="w-48 shrink-0"
+          triggerClassName="bg-[#161B22] border-white/[0.08] font-mono text-white/70 focus:border-white/20"
+          panelWidth={260}
+        />
         <CtrlBtn onClick={refreshStrategies} title="Refresh strategy list from Chart tab">↻</CtrlBtn>
 
         {/* Combine strategies — portal-based popover to escape overflow clipping */}
@@ -439,19 +605,70 @@ function SimulationsPage() {
           triggerClassName="bg-[#161B22] border-white/[0.08] font-mono text-white/70 focus:border-white/20"
         />
 
-        {/* Days — no hard cap */}
-        <div className="flex items-center gap-1">
-          <span className="text-[10px] text-white/30 font-mono">Days</span>
+        {/* Lookback: custom days vs widest supported span for this timeframe */}
+        <div className="flex items-center gap-1 shrink-0">
+          <span className="text-[10px] text-white/30 font-mono whitespace-nowrap">
+            {historyRangeFull ? "Hist" : "Days"}
+          </span>
+          <div className="flex items-center rounded border border-white/[0.06] overflow-hidden h-6">
+            {DAY_PRESETS.map((d) => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => {
+                  setHistoryRangeFull(false);
+                  setSessionsInput(String(d));
+                }}
+                disabled={historyRangeFull}
+                className={`px-1.5 text-[10px] font-mono h-full transition-colors disabled:opacity-35 ${
+                  !historyRangeFull && parsePositiveIntOr(sessionsInput, 5) === d
+                    ? "bg-white/[0.10] text-white/90"
+                    : "text-white/40 hover:text-white/60"
+                }`}
+              >
+                {d}
+              </button>
+            ))}
+            <button
+              type="button"
+              title="Fetch the widest historical range supported for the selected timeframe (e.g. 30 years of daily candles for symbols like SPY where the feed allows it)."
+              onClick={() => setHistoryRangeFull(true)}
+              className={`px-1.5 text-[10px] font-mono h-full transition-colors border-l border-white/[0.06] ${
+                historyRangeFull ? "bg-white/[0.10] text-white/90" : "text-amber-300/80 hover:bg-white/[0.06]"
+              }`}
+            >
+              Max
+            </button>
+          </div>
           <input
-            type="number"
-            min={1}
-            value={sessions}
-            onChange={(e) => setSessions(Math.max(1, Number(e.target.value) || 1))}
-            className="w-16 h-6 px-1.5 text-[11px] font-mono text-center bg-[#161B22] border border-white/[0.08] rounded text-white/70 outline-none focus:border-white/20"
+            type="text"
+            inputMode="numeric"
+            spellCheck={false}
+            autoComplete="off"
+            value={historyRangeFull ? "" : sessionsInput}
+            placeholder={historyRangeFull ? "∞" : undefined}
+            readOnly={historyRangeFull}
+            aria-readonly={historyRangeFull}
+            onChange={(e) => {
+              setHistoryRangeFull(false);
+              setSessionsInput(e.target.value);
+            }}
+            onBlur={(e) => {
+              if (historyRangeFull) return;
+              setSessionsInput(
+                String(Math.min(2000, Math.max(1, parsePositiveIntOr(e.target.value, 5)))),
+              );
+            }}
+            title={
+              historyRangeFull
+                ? "Using max available history — pick a Days preset or type days to leave full-range mode"
+                : "Custom lookback length in calendar days for the fetch window (max 2000)"
+            }
+            className={`w-[52px] ${noSpinnerInputClass} read-only:text-white/40 read-only:pointer-events-none`}
           />
         </div>
 
-        {/* Hours */}
+        {/* Hours — applies to intraday bars only */}
         <CustomSelect
           value={hours}
           onChange={(next) => setHours(next as SessionFilter)}
@@ -462,24 +679,46 @@ function SimulationsPage() {
           ]}
           size="sm"
           className="w-28 shrink-0"
-          triggerClassName="bg-[#161B22] border-white/[0.08] font-mono text-white/70 focus:border-white/20"
+          disabled={isDailyTf}
+          triggerClassName={`bg-[#161B22] border-white/[0.08] font-mono focus:border-white/20 ${isDailyTf ? "opacity-45 pointer-events-none" : "text-white/70"}`}
         />
+        {isDailyTf && (
+          <span className="text-[9px] font-mono text-white/25 whitespace-nowrap" title="Session filter applies to intraday data only">
+            intraday&nbsp;hours
+          </span>
+        )}
 
-        {/* Day handling */}
-        <div className="flex items-center rounded border border-white/[0.08] overflow-hidden h-6">
-          <button
-            onClick={() => setRollDays(false)}
-            className={`px-2 text-[10px] font-mono h-full transition-colors ${!rollDays ? "bg-white/[0.10] text-white/90" : "text-white/40 hover:text-white/60"}`}
-          >
-            Cutoff
-          </button>
-          <button
-            onClick={() => setRollDays(true)}
-            className={`px-2 text-[10px] font-mono h-full transition-colors ${rollDays ? "bg-white/[0.10] text-white/90" : "text-white/40 hover:text-white/60"}`}
-          >
-            Roll
-          </button>
-        </div>
+        {/* Day handling — intraday */}
+        {!isDailyTf && (
+          <div className="flex items-center rounded border border-white/[0.08] overflow-hidden h-6">
+            <DelayedHoverTip
+              content={
+                "Cutoff — Session clip: each bar is kept only if its clock time (US/Eastern) falls inside the Sessions choice (Regular RTH, Extended pre/post, or All). Bars outside that window are dropped before replay and aggregation."
+              }
+            >
+              <button
+                type="button"
+                onClick={() => setRollDays(false)}
+                className={`px-2 text-[10px] font-mono h-full transition-colors ${!rollDays ? "bg-white/[0.10] text-white/90" : "text-white/40 hover:text-white/60"}`}
+              >
+                Cutoff
+              </button>
+            </DelayedHoverTip>
+            <DelayedHoverTip
+              content={
+                "Roll — With Sessions set to All hours, replay uses the downloaded series as-is (no ET session mask). With Regular or Extended, the same US/Eastern session window is applied as for Cutoff."
+              }
+            >
+              <button
+                type="button"
+                onClick={() => setRollDays(true)}
+                className={`px-2 text-[10px] font-mono h-full transition-colors ${rollDays ? "bg-white/[0.10] text-white/90" : "text-white/40 hover:text-white/60"}`}
+              >
+                Roll
+              </button>
+            </DelayedHoverTip>
+          </div>
+        )}
 
         <BarSeparator />
 
@@ -531,33 +770,22 @@ function SimulationsPage() {
 
         <BarSeparator />
 
-        {/* Sim count — presets + custom input */}
-        <div className="flex items-center gap-1">
+        {/* Parallel sim count — preset grid sizes only */}
+        <div className="flex items-center gap-1 shrink-0">
+          <span className="text-[10px] text-white/25 font-mono whitespace-nowrap">Grid</span>
           <div className="flex items-center rounded border border-white/[0.08] overflow-hidden h-6">
             {SIM_COUNT_PRESETS.map((n) => (
               <button
                 key={n}
-                onClick={() => { setSimCount(n); setSimCountInput(String(n)); }}
-                className={`px-2 text-[10px] font-mono h-full transition-colors ${simCount === n ? "bg-white/[0.10] text-white/90" : "text-white/40 hover:text-white/60"}`}
+                type="button"
+                onClick={() => setSimCount(n)}
+                title={`${n} simultaneous simulations`}
+                className={`px-1.5 text-[10px] font-mono h-full transition-colors min-w-[1.75rem] ${simCount === n ? "bg-white/[0.10] text-white/90" : "text-white/40 hover:text-white/60"}`}
               >
                 {n}
               </button>
             ))}
           </div>
-          <input
-            type="number"
-            min={1}
-            max={64}
-            value={simCountInput}
-            onChange={(e) => {
-              setSimCountInput(e.target.value);
-              const n = Math.max(1, Math.min(64, Number(e.target.value) || 1));
-              if (Number(e.target.value) >= 1) setSimCount(n);
-            }}
-            onBlur={() => setSimCountInput(String(simCount))}
-            title="Custom simulation count (max 64)"
-            className="w-10 h-6 px-1.5 text-[11px] font-mono text-center bg-[#161B22] border border-white/[0.08] rounded text-white/70 outline-none focus:border-white/20"
-          />
         </div>
 
         <BarSeparator />
@@ -586,17 +814,93 @@ function SimulationsPage() {
 
         <BarSeparator />
 
-        {/* Position size */}
-        <div className="flex items-center gap-1">
-          <span className="text-[10px] text-white/30 font-mono">Qty</span>
-          <input
-            type="number"
-            min={1}
-            max={10000}
-            value={positionSize}
-            onChange={(e) => setPositionSize(Math.max(1, Math.min(10000, Number(e.target.value))))}
-            className="w-14 h-6 px-1.5 text-[11px] font-mono text-center bg-[#161B22] border border-white/[0.08] rounded text-white/70 outline-none focus:border-white/20"
-          />
+        {/* Position sizing — qty vs capital */}
+        <div className="flex items-center gap-1 shrink-0 flex-wrap">
+          <div className="flex items-center rounded border border-white/[0.08] overflow-hidden h-6">
+            <button
+              type="button"
+              title="Trade a fixed share count each entry"
+              onClick={() => setPositionMode("qty")}
+              className={`px-1.5 text-[10px] font-mono h-full transition-colors ${positionMode === "qty" ? "bg-white/[0.10] text-white/90" : "text-white/40 hover:text-white/60"}`}
+            >
+              Qty
+            </button>
+            <button
+              type="button"
+              title="Size each entry from USD capital (deploy all cash on BUY)"
+              onClick={() => setPositionMode("capital")}
+              className={`px-1.5 text-[10px] font-mono h-full transition-colors ${positionMode === "capital" ? "bg-white/[0.10] text-white/90" : "text-white/40 hover:text-white/60"}`}
+            >
+              $
+            </button>
+          </div>
+          {positionMode === "qty" ? (
+            <input
+              type="text"
+              inputMode="decimal"
+              spellCheck={false}
+              autoComplete="off"
+              value={qtyInput}
+              onChange={(e) => setQtyInput(e.target.value)}
+              onBlur={() =>
+                setQtyInput(String(parsePositiveFloatOr(qtyInput, 1)))
+              }
+              title="Shares per entry"
+              className={`w-[68px] ${noSpinnerInputClass}`}
+            />
+          ) : (
+            <input
+              type="text"
+              inputMode="decimal"
+              spellCheck={false}
+              autoComplete="off"
+              value={capitalInput}
+              onChange={(e) => setCapitalInput(e.target.value)}
+              onBlur={() =>
+                setCapitalInput(String(parsePositiveFloatOr(capitalInput, 10000)))
+              }
+              title="Starting USD allocated per BUY (capital mode)"
+              className={`w-[72px] ${noSpinnerInputClass}`}
+            />
+          )}
+          <div className="flex items-center rounded border border-white/[0.08] overflow-hidden h-6">
+            <button
+              type="button"
+              title="Whole shares only"
+              onClick={() => setFractionalShares(false)}
+              className={`px-1.5 text-[10px] font-mono h-full transition-colors ${!fractionalShares ? "bg-white/[0.10] text-white/90" : "text-white/40 hover:text-white/60"}`}
+            >
+              Int
+            </button>
+            <button
+              type="button"
+              title="Fractional share quantities"
+              onClick={() => setFractionalShares(true)}
+              className={`px-1.5 text-[10px] font-mono h-full transition-colors ${fractionalShares ? "bg-white/[0.10] text-white/90" : "text-white/40 hover:text-white/60"}`}
+            >
+              Frac
+            </button>
+          </div>
+          {positionMode === "capital" && (
+            <div className="flex items-center rounded border border-white/[0.08] overflow-hidden h-6">
+              <button
+                type="button"
+                title="After each exit, reuse starting capital only (no compounding)"
+                onClick={() => setReinvest(false)}
+                className={`px-1.5 text-[10px] font-mono h-full transition-colors ${!reinvest ? "bg-white/[0.10] text-white/90" : "text-white/40 hover:text-white/60"}`}
+              >
+                Flat
+              </button>
+              <button
+                type="button"
+                title="Compound: deploy full proceeds on the next BUY"
+                onClick={() => setReinvest(true)}
+                className={`px-1.5 text-[10px] font-mono h-full transition-colors ${reinvest ? "bg-white/[0.10] text-white/90" : "text-white/40 hover:text-white/60"}`}
+              >
+                Reinvest
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Script toggle */}

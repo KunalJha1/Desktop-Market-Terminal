@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Plus, Lock, Unlock, Link2, FolderOpen, Save, ZoomIn, ZoomOut } from "lucide-react";
 import { LINK_CHANNELS } from "../lib/link-channels";
 
@@ -219,13 +219,15 @@ export default function DashboardToolbar({
   });
 
   const session = getMarketSession();
-  const SESSION_CONFIG: Record<MarketSession, { label: string; color: string; countdownLabel: string; target: Date }> = {
-    premarket:  { label: "Pre-Market",    color: "#F59E0B", countdownLabel: "Time Till Open",        target: getNextMarketOpen() },
-    open:       { label: "Market Open",   color: "#00C853", countdownLabel: "Time Till Close",       target: getNextMarketClose() },
-    afterhours: { label: "After-Hours",   color: "#F59E0B", countdownLabel: "Time Till Close",       target: getNextAfterHoursClose() },
-    closed:     { label: "Market Closed", color: "#ffffff55", countdownLabel: "Time Till Pre-Market", target: getNextPreMarketOpen() },
-  };
-  const sessionInfo = SESSION_CONFIG[session];
+  const sessionInfo = useMemo(() => {
+    const SESSION_CONFIG: Record<MarketSession, { label: string; color: string; countdownLabel: string; target: Date }> = {
+      premarket:  { label: "Pre-Market",    color: "#F59E0B", countdownLabel: "Time Till Open",         target: getNextMarketOpen() },
+      open:       { label: "Market Open",   color: "#00C853", countdownLabel: "Time Till Close",        target: getNextMarketClose() },
+      afterhours: { label: "After-Hours",   color: "#F59E0B", countdownLabel: "Time Till Close",        target: getNextAfterHoursClose() },
+      closed:     { label: "Market Closed", color: "#ffffff55", countdownLabel: "Time Till Pre-Market", target: getNextPreMarketOpen() },
+    };
+    return SESSION_CONFIG[session];
+  }, [session]);
 
   const activeChannel = LINK_CHANNELS.find((c) => c.id === linkChannel);
 

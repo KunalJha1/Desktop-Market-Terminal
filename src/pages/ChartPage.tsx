@@ -2222,7 +2222,7 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
 
   // TWS data hook
   const sidecarPort = useSidecarPort();
-  const { bars, loading, source, datasetKey, onViewportChange, pendingViewportShift, onViewportShiftApplied, updateMode, tailChangeOffset } = useChartData({
+  const { bars, loading, isStale, source, datasetKey, onViewportChange, pendingViewportShift, onViewportShiftApplied, updateMode, tailChangeOffset } = useChartData({
     symbol,
     timeframe,
     sidecarPort,
@@ -4027,6 +4027,7 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
         activeIndicators={activeIndicators}
         dataSource={source}
         loading={loading}
+        isStale={isStale}
         linkChannel={linkChannel}
         onLinkChannelChange={handleLinkChannelChange}
         stopperPx={stopperPx}

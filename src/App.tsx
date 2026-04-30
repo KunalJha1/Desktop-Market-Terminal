@@ -175,11 +175,13 @@ function App() {
   if (windowMode === "detached") {
     return (
       <ErrorBoundary>
-        <WatchlistProvider>
-          <TwsProvider>
-            <DetachedWindow />
-          </TwsProvider>
-        </WatchlistProvider>
+        <AlertProvider>
+          <WatchlistProvider>
+            <TwsProvider>
+              <DetachedWindow />
+            </TwsProvider>
+          </WatchlistProvider>
+        </AlertProvider>
       </ErrorBoundary>
     );
   }

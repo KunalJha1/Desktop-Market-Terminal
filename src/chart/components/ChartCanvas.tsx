@@ -173,9 +173,21 @@ export default function ChartCanvas({
 
   // Re-sync canvas DPR/backing store on window resize; Tauri/WebView does not
   // reliably surface these changes through ResizeObserver alone.
+  // Debounce via rAF to coalesce rapid events during window maximize animation.
   useEffect(() => {
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    let raf: number | null = null;
+    const onWindowResize = () => {
+      if (raf !== null) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        handleResize();
+      });
+    };
+    window.addEventListener('resize', onWindowResize);
+    return () => {
+      window.removeEventListener('resize', onWindowResize);
+      if (raf !== null) cancelAnimationFrame(raf);
+    };
   }, [handleResize]);
 
   // Update data — use incremental path for poll-driven tail updates
@@ -542,13 +554,13 @@ export default function ChartCanvas({
         </button>
       </div>
 
-      <div ref={containerRef} className="flex-1 relative overflow-hidden">
+      <div ref={containerRef} className="flex-1 relative overflow-hidden" style={{ touchAction: 'none' }}>
         <canvas
           ref={canvasRef}
           className="absolute inset-0"
           onMouseMove={handleCanvasPointerMove}
           onMouseLeave={handleCanvasPointerLeave}
-          style={{ cursor: yAxisHovered ? 'ns-resize' : xAxisHovered ? 'ew-resize' : activeTool !== 'none' ? 'copy' : drawingHovered ? 'move' : 'crosshair' }}
+          style={{ cursor: yAxisHovered ? 'ns-resize' : xAxisHovered ? 'ew-resize' : activeTool !== 'none' ? 'copy' : drawingHovered ? 'move' : 'crosshair', willChange: 'transform' }}
         />
         {/* A / L scale mode buttons pinned to bottom of price section y-axis */}
         <div

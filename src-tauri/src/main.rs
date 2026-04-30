@@ -483,6 +483,20 @@ async fn spawn_tab_window(
 
     let url = tauri::WindowUrl::App(query.into());
     let should_maximize = maximized.unwrap_or(true);
+
+    #[cfg(target_os = "macos")]
+    let builder = tauri::WindowBuilder::new(&app_handle, &label, url)
+        .title(&title)
+        .inner_size(width, height)
+        .min_inner_size(800.0, 600.0)
+        .position(x, y)
+        .maximized(should_maximize)
+        .focused(true)
+        .visible(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+
+    #[cfg(not(target_os = "macos"))]
     let builder = tauri::WindowBuilder::new(&app_handle, &label, url)
         .title(&title)
         .inner_size(width, height)
@@ -492,9 +506,6 @@ async fn spawn_tab_window(
         .focused(true)
         .visible(true)
         .decorations(false);
-
-    #[cfg(target_os = "macos")]
-    let builder = builder.title_bar_style(tauri::TitleBarStyle::Visible);
 
     builder.build().map_err(|e| {
         state.detached_tabs.lock().unwrap().remove(&label);

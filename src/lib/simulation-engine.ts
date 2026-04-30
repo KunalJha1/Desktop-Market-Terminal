@@ -3,6 +3,8 @@ import type { ScriptResult } from "../chart/types";
 import { evaluateCustomStrategy } from "../chart/customStrategies";
 import type { CustomStrategyDefinition } from "../chart/customStrategies";
 import { getTimeframeMs } from "../chart/constants";
+
+const DAY_MS = 86_400_000;
 import { interpretScript } from "../chart/scripting/interpreter";
 
 export type SessionFilter = "regular" | "extended" | "all";
@@ -15,13 +17,21 @@ export interface SimConfig {
   startBarIndex: number;
   sessionFilter: SessionFilter;
   rollDays: boolean;
+  /** Deprecated: prefer `positionQty` in qty mode */
   positionSize?: number;
+  positionMode?: "qty" | "capital";
+  positionQty?: number;
+  startingCapital?: number;
+  fractionalShares?: boolean;
+  /** Capital mode only — compound exits into the next BUY */
+  reinvest?: boolean;
   scriptSource?: string;
 }
 
 export interface SimTrade {
   entryTime: number;
   entryPrice: number;
+  shares: number;
   exitTime: number | null;
   exitPrice: number | null;
   side: "long";
@@ -195,7 +205,16 @@ export class SimulationEngine {
   private filteredBars: OHLCVBar[];
   private tfMs: number;
   private strategy: CustomStrategyDefinition | undefined;
-  private positionSize: number;
+
+  private positionMode: "qty" | "capital";
+  /** Whole or fractional shares per BUY in qty mode */
+  private positionQty: number;
+  /** USD pool for sizing in capital mode */
+  private cash: number;
+  private readonly startingCapital: number;
+  private fractionalShares: boolean;
+  /** Capital mode: after each exit, reuse full proceeds (`true`) or reset to starting capital (`false`) */
+  private reinvest: boolean;
 
   private currentIndex = 0;
   private tfBars: OHLCVBar[] = [];
@@ -214,14 +233,33 @@ export class SimulationEngine {
   constructor(config: SimConfig) {
     this.strategy = config.strategy;
     this.tfMs = getTimeframeMs(config.timeframe);
-    this.positionSize = config.positionSize ?? 1;
+    this.positionMode = config.positionMode ?? "qty";
+    this.fractionalShares = config.fractionalShares ?? true;
+    this.startingCapital =
+      typeof config.startingCapital === "number"
+      && Number.isFinite(config.startingCapital)
+      && config.startingCapital > 0
+        ? config.startingCapital
+        : 10_000;
+    const fallbackQty =
+      config.positionQty ?? config.positionSize ?? 1;
+    this.positionQty = Number.isFinite(fallbackQty) && (fallbackQty as number) > 0 ? (fallbackQty as number) : 1;
+    this.reinvest = config.positionMode === "capital" ? Boolean(config.reinvest) : false;
+    this.cash = this.startingCapital;
 
     // Slice from startBarIndex and filter by session
     const sliced = config.rawBars.slice(config.startBarIndex);
-    if (config.sessionFilter === "all" && config.rollDays) {
+    const isDailyTf =
+      getTimeframeMs(config.timeframe) >= DAY_MS;
+    // Intraday session clock does not align with daily bar timestamps — use full series for ≥1D TFs.
+    if (isDailyTf) {
+      this.filteredBars = sliced;
+    } else if (config.sessionFilter === "all" && config.rollDays) {
       this.filteredBars = sliced;
     } else {
-      this.filteredBars = sliced.filter((bar) => isInSession(bar.time, config.sessionFilter));
+      this.filteredBars = sliced.filter((bar) =>
+        isInSession(bar.time, config.sessionFilter)
+      );
     }
 
     // Precompute script signals if scriptSource provided
@@ -236,6 +274,12 @@ export class SimulationEngine {
         this.scriptSignals = [];
       }
     }
+  }
+
+  private roundShares(raw: number): number {
+    if (!Number.isFinite(raw) || raw <= 0) return 0;
+    if (this.fractionalShares) return Math.round(raw * 1e6) / 1e6;
+    return Math.floor(raw);
   }
 
   isDone(): boolean {
@@ -296,22 +340,50 @@ export class SimulationEngine {
     }
 
     if (latestState === "BUY" && this.openPosition === null) {
-      // Enter long
+      const price = lastBar.close;
+      if (!(price > 0)) return;
+
+      let shares: number;
+      if (this.positionMode === "capital") {
+        const budget =
+          Math.min(this.cash, this.reinvest ? this.cash : this.startingCapital);
+        if (!(budget > 0)) return;
+        shares = this.roundShares(budget / price);
+      } else {
+        shares = this.roundShares(this.positionQty);
+      }
+      if (!(shares > 0)) return;
+
+      const entrySpend = shares * price;
       this.openPosition = {
         entryTime: lastBar.time,
-        entryPrice: lastBar.close,
+        entryPrice: price,
+        shares,
         exitTime: null,
         exitPrice: null,
         side: "long",
         pnl: null,
       };
+      if (this.positionMode === "capital") {
+        this.cash -= entrySpend;
+      }
     } else if (latestState === "SELL" && this.openPosition !== null) {
-      // Close long
-      const pnl = (lastBar.close - this.openPosition.entryPrice) * this.positionSize;
+      const { entryPrice } = this.openPosition;
+      const shares = this.openPosition.shares;
+      const exitPx = lastBar.close;
+      const pnl = (exitPx - entryPrice) * shares;
+
+      if (this.positionMode === "capital") {
+        const proceeds = shares * exitPx;
+        this.cash = this.reinvest
+          ? this.cash + proceeds
+          : this.startingCapital;
+      }
+
       const closed: SimTrade = {
         ...this.openPosition,
         exitTime: lastBar.time,
-        exitPrice: lastBar.close,
+        exitPrice: exitPx,
         pnl,
       };
       this.closedTrades.push(closed);
