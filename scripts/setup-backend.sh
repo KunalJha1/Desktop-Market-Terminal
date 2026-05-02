@@ -6,8 +6,9 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BACKEND_DIR="$PROJECT_ROOT/backend"
 VENV_DIR="$BACKEND_DIR/.venv"
 
-# Fast path: venv already exists
+# Fast path: venv already exists — sync requirements in case they changed
 if [ -f "$VENV_DIR/pyvenv.cfg" ]; then
+    uv pip install -q -r "$BACKEND_DIR/requirements.txt" 2>/dev/null || true
     exit 0
 fi
 

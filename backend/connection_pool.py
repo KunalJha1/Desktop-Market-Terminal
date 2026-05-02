@@ -111,7 +111,7 @@ class ConnectionPool:
                 except Exception:
                     pass
 
-    async def get_or_create(self, role: str) -> IB:
+    async def get_or_create(self, role: str, *, reconnecting: bool = False) -> IB:
         if self._host is None or self._port is None:
             raise RuntimeError(
                 "TWS address not configured — call set_tws_address() before connecting"
@@ -176,7 +176,10 @@ class ConnectionPool:
 
                     meta = self._meta_for_role(role)
                     meta["last_error"] = str(e)
-                    logger.error(f"Client {try_id} connection failed for role {role}: {e}")
+                    if reconnecting:
+                        logger.warning(f"Reconnect attempt failed for role {role}: {e}")
+                    else:
+                        logger.error(f"Client {try_id} connection failed for role {role}: {e}")
                     raise
 
             logger.error(f"Unable to allocate a TWS client ID for role {role}")
@@ -206,6 +209,14 @@ class ConnectionPool:
     async def _reconnect_loop(self, role: str):
         delay = 1.0
         max_delay = 30.0
+        _ib_client_logger = logging.getLogger("ib_insync.client")
+
+        class _SuppressApiConnFailed(logging.Filter):
+            def filter(self, record):
+                return "API connection failed" not in record.getMessage()
+
+        _suppress_filter = _SuppressApiConnFailed()
+
         try:
             while role in self._role_to_client_id:
                 meta = self._meta_for_role(role)
@@ -229,8 +240,14 @@ class ConnectionPool:
                         delay = min(delay * 2, max_delay)
                         continue
                 try:
-                    logger.info(f"Reconnecting role {role} (delay={delay}s)")
-                    await self.get_or_create(role)
+                    logger.info(f"Reconnecting role {role} (attempt {meta['reconnect_attempts']}, delay={delay}s)")
+                    # Suppress ib_insync's ERROR-level "API connection failed" during reconnect —
+                    # these are expected and logged at our level below.
+                    _ib_client_logger.addFilter(_suppress_filter)
+                    try:
+                        await self.get_or_create(role, reconnecting=True)
+                    finally:
+                        _ib_client_logger.removeFilter(_suppress_filter)
                     return
                 except Exception as exc:
                     meta["last_error"] = str(exc)

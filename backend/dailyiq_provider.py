@@ -51,6 +51,10 @@ _inflight_keys: dict[str, threading.Lock] = {}
 _sentiment_refresh_lock = threading.Lock()
 _sentiment_refresh_inflight: set[str] = set()
 
+# In-flight dedup for signal_chart_view: if a POST is already running for a symbol, skip.
+_view_signal_inflight: set[str] = set()
+_view_signal_inflight_lock = threading.Lock()
+
 
 # ── API key ──────────────────────────────────────────────────────────
 
@@ -324,6 +328,10 @@ def signal_chart_view(symbol: str) -> None:
 
     Called when TWS is disconnected so DailyIQ's 90s live-refresh worker prioritizes
     this symbol. Runs in a daemon thread — never blocks the caller.
+
+    In-flight dedup: if a signal for this symbol is already in-flight, the call is
+    a no-op. This prevents N concurrent /historical requests (e.g. 4 chart panes)
+    from spawning N identical POST threads.
     """
     base = _base_url()
     if not base:
@@ -331,6 +339,11 @@ def signal_chart_view(symbol: str) -> None:
     sym = (symbol or "").strip().upper()
     if not sym:
         return
+
+    with _view_signal_inflight_lock:
+        if sym in _view_signal_inflight:
+            return
+        _view_signal_inflight.add(sym)
 
     def _post() -> None:
         try:
@@ -342,6 +355,9 @@ def signal_chart_view(symbol: str) -> None:
             logger.debug("signal_chart_view sent for %s", sym)
         except Exception as exc:
             logger.debug("signal_chart_view failed for %s: %s", sym, exc)
+        finally:
+            with _view_signal_inflight_lock:
+                _view_signal_inflight.discard(sym)
 
     threading.Thread(target=_post, daemon=True, name="dailyiq-view-signal").start()
 

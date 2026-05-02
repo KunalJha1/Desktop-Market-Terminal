@@ -1271,7 +1271,7 @@ export class ChartEngine {
 
     if (this.liveMode && this.stopperPx > 0 && this.bars.length > 0) {
       const lastIndex = this.bars.length - 1;
-      const stopperX = this.viewport.barToPixelX(lastIndex);
+      const stopperX = this.viewport.barToPixelX(lastIndex) + this.viewport.barWidth / 2;
       const bottom = this.height - TIME_AXIS_HEIGHT;
       this.renderer.line(stopperX, 0, stopperX, bottom, COLORS.border);
     }

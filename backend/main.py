@@ -1485,19 +1485,34 @@ def create_app() -> FastAPI:
         # stdin EOF watchdog — catches the case where the parent process dies without
         # DAILYIQ_PARENT_PID being set (e.g. launched from a terminal that then closes).
         # Only activates when stdin is a pipe, not a TTY, so interactive dev runs are safe.
+        # Skipped when stdin is already at EOF at startup (e.g. /dev/null inherited from a
+        # macOS GUI app) — in that case the PID watchdog handles parent-death detection.
         if not _sys.stdin.isatty():
             import threading as _threading
 
-            def _stdin_watchdog() -> None:
-                try:
-                    while _sys.stdin.read(256):
-                        pass
-                except Exception:
-                    pass
-                logger.info("stdin EOF — parent gone, sidecar shutting down")
-                os._exit(0)
+            _stdin_is_live = False
+            try:
+                import select as _select
+                _r, _, _ = _select.select([_sys.stdin], [], [], 0)
+                # Empty result means stdin would block → it's a real pipe → safe to watch
+                _stdin_is_live = not _r
+            except Exception:
+                # select unavailable (e.g. Windows) — assume stdin is live
+                _stdin_is_live = True
 
-            _threading.Thread(target=_stdin_watchdog, daemon=True, name="stdin-watchdog").start()
+            if _stdin_is_live:
+                def _stdin_watchdog() -> None:
+                    try:
+                        while _sys.stdin.read(256):
+                            pass
+                    except Exception:
+                        pass
+                    logger.info("stdin EOF — parent gone, sidecar shutting down")
+                    os._exit(0)
+
+                _threading.Thread(target=_stdin_watchdog, daemon=True, name="stdin-watchdog").start()
+            else:
+                logger.info("stdin is not a live pipe (GUI launch) — stdin watchdog skipped")
 
         # Pre-warm persistent IB connection for portfolio reads
         port = await probe_tws_port(DEFAULT_TWS_HOST, DEFAULT_TWS_PORTS)

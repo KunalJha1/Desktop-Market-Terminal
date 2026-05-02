@@ -6,6 +6,14 @@ import {
   getHistoricalRequestConfig,
   displayBarsForTimeframe,
 } from '../../lib/historical-request';
+import {
+  brokerKey,
+  dedupFetch,
+  pollSubscribe,
+  pollUpdateState,
+  type PollResult,
+  type PollConfig,
+} from './chartDataBroker';
 
 interface UseChartDataOptions {
   symbol: string;
@@ -47,10 +55,6 @@ const BUFFER_MULTIPLIER = 3;
 const MAX_INTRADAY_RAW_BARS = 200_000;
 // Debounce pan-triggered fetches (ms)
 const PAN_FETCH_DEBOUNCE = 200;
-// Polling intervals (ms)
-const INTRADAY_POLL_MS = 3_000;
-const DAILY_POLL_MS = 60_000;
-const DAILY_FALLBACK_POLL_MS = 5_000;
 
 // ── Module-level raw bar cache ────────────────────────────────────────────────
 // Survives timeframe switches within a session. Keyed by symbol::rawBarSize.
@@ -95,6 +99,13 @@ function getRawCache(symbol: string, rawBarSize: RawBarSize): RawBarCacheEntry |
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+interface FetchPayload {
+  bars: Array<Record<string, number | boolean>>;
+  source?: string;
+  ts_min?: number;
+  ts_max?: number;
+}
 
 function parseBars(payload: { bars: Array<Record<string, number | boolean>> }): OHLCVBar[] {
   return payload.bars.map(b => ({
@@ -251,7 +262,8 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
 
     const requestId = ++requestIdRef.current;
     let cancelled = false;
-    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const bKey = brokerKey(normalizedSymbol, requestConfig.rawBarSize, sidecarPort);
 
     // ── Define all async helpers first so they can be referenced below ──
 
@@ -267,10 +279,12 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
           url.searchParams.set('limit', String(initialLimitRef.current));
         }
 
-        const res = await fetch(url.toString());
-        if (!res.ok) return;
-        const payload = await res.json();
-        if (cancelled || requestId !== requestIdRef.current) return;
+        const payload = await dedupFetch<FetchPayload>(bKey, async () => {
+          const res = await fetch(url.toString());
+          if (!res.ok) return null;
+          return res.json() as Promise<FetchPayload>;
+        });
+        if (payload === null || cancelled || requestId !== requestIdRef.current) return;
 
         if (payload.ts_min != null && payload.ts_max != null) {
           serverExtentRef.current = { tsMin: payload.ts_min, tsMax: payload.ts_max };
@@ -288,6 +302,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
           if (payload.ts_min != null && payload.ts_max != null) {
             setRawCache(normalizedSymbol, cfg.rawBarSize, trimmed, payload.ts_min, payload.ts_max);
           }
+          pollUpdateState(bKey, trimmed[trimmed.length - 1]?.time ?? 0, payload.ts_min ?? null, payload.ts_max ?? null);
         } else {
           setRawBars([]);
           setSource('offline');
@@ -322,10 +337,12 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
           url.searchParams.set('limit', String(initialLimitRef.current));
         }
 
-        const res = await fetch(url.toString());
-        if (!res.ok) return;
-        const payload = await res.json();
-        if (cancelled || requestId !== requestIdRef.current) return;
+        const payload = await dedupFetch<FetchPayload>(bKey, async () => {
+          const res = await fetch(url.toString());
+          if (!res.ok) return null;
+          return res.json() as Promise<FetchPayload>;
+        });
+        if (payload === null || cancelled || requestId !== requestIdRef.current) return;
 
         if (payload.ts_min != null && payload.ts_max != null) {
           serverExtentRef.current = { tsMin: payload.ts_min, tsMax: payload.ts_max };
@@ -337,12 +354,14 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
           // Merge with any bars appended by the poll during background fetch
           const next = mergeBarsByTime(rawBarsRef.current, trimmed);
           const nextTrimmed = useDaily ? next : trimIntradayTail(next);
+          setUpdateMode('full');
           setRawBars(nextTrimmed);
           setRawBarSize(cfg.rawBarSize);
           setSource((payload.source as 'tws' | 'dailyiq' | 'yahoo' | 'cache') || 'yahoo');
           if (payload.ts_min != null && payload.ts_max != null) {
             setRawCache(normalizedSymbol, cfg.rawBarSize, nextTrimmed, payload.ts_min, payload.ts_max);
           }
+          pollUpdateState(bKey, nextTrimmed[nextTrimmed.length - 1]?.time ?? 0, payload.ts_min ?? null, payload.ts_max ?? null);
         }
         setIsStale(false);
         loadedSymbolRef.current = normalizedSymbol;
@@ -352,84 +371,78 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
       }
     }
 
-    // Incremental poll: for intraday, only fetch new bars since last cached bar
-    async function pollIncremental() {
+    // ── Broker poll callback (replaces per-instance pollIncremental) ──
+    function handlePollResult(result: PollResult) {
       if (cancelled || requestId !== requestIdRef.current) return;
       if (panFetchingRef.current) return;
-      try {
-        const cfg = requestConfigRef.current;
-        const url = new URL(`http://127.0.0.1:${sidecarPort}/historical`);
-        url.searchParams.set('symbol', normalizedSymbol);
-        url.searchParams.set('bar_size', cfg.barSizeParam);
-        url.searchParams.set('prefer_live_refresh', '1');
-        const currentBars = rawBarsRef.current;
-        if (currentBars.length > 0) {
-          const lastTs = currentBars[currentBars.length - 1].time;
-          url.searchParams.set('ts_start', String(Math.max(0, lastTs - cfg.stepMs)));
-        } else {
-          url.searchParams.set('duration', cfg.duration);
+
+      // Sync broker with our potentially-newer local bars (e.g. after panning)
+      const currentBars = rawBarsRef.current;
+      if (currentBars.length > 0) {
+        pollUpdateState(
+          bKey,
+          currentBars[currentBars.length - 1].time,
+          serverExtentRef.current?.tsMin ?? null,
+          serverExtentRef.current?.tsMax ?? null,
+        );
+      }
+
+      if (result.tsMin !== null && result.tsMax !== null) {
+        serverExtentRef.current = { tsMin: result.tsMin, tsMax: result.tsMax };
+      }
+
+      // Proactive backfill detection
+      if (!useDaily) {
+        const extent = serverExtentRef.current;
+        const localBars = rawBarsRef.current;
+        if (extent && localBars.length > 0 && extent.tsMin < localBars[0].time) {
+          fetchOlderBars(localBars[0].time - 1).catch(() => {});
         }
+      }
 
-        const res = await fetch(url.toString());
-        if (!res.ok) return;
-        const payload = await res.json();
-        if (cancelled || requestId !== requestIdRef.current) return;
+      if (result.bars.length === 0) return;
 
-        if (payload.ts_min != null && payload.ts_max != null) {
-          serverExtentRef.current = { tsMin: payload.ts_min, tsMax: payload.ts_max };
-        }
-
-        // Proactive backfill detection: if the server's oldest bar is earlier than
-        // what we have locally, the background worker has populated older history.
-        // Trigger a prepend fetch so the chart grows left automatically.
-        if (!useDaily) {
-          const extent = serverExtentRef.current;
-          const localBars = rawBarsRef.current;
-          if (extent && localBars.length > 0 && extent.tsMin < localBars[0].time) {
-            fetchOlderBars(localBars[0].time - 1).catch(() => {});
+      intradayPollPendingRef.current = { bars: result.bars, source: result.source };
+      if (intradayPollRafRef.current == null) {
+        intradayPollRafRef.current = requestAnimationFrame(() => {
+          intradayPollRafRef.current = null;
+          if (cancelled || requestId !== requestIdRef.current) {
+            intradayPollPendingRef.current = null;
+            return;
           }
-        }
-
-        const newBars = parseBars(payload);
-
-        if (newBars.length > 0) {
-          intradayPollPendingRef.current = {
-            bars: newBars,
-            source: (payload.source as 'tws' | 'dailyiq' | 'yahoo' | 'cache') || 'yahoo',
-          };
-          if (intradayPollRafRef.current == null) {
-            intradayPollRafRef.current = requestAnimationFrame(() => {
-              intradayPollRafRef.current = null;
-              if (cancelled || requestId !== requestIdRef.current) {
-                intradayPollPendingRef.current = null;
-                return;
-              }
-              const pack = intradayPollPendingRef.current;
-              intradayPollPendingRef.current = null;
-              if (!pack?.bars.length) return;
-              const incoming = pack.bars;
-              const prevBars = rawBarsRef.current;
-              const firstNewTs = incoming[0].time;
-              const changeIdx = prevBars.length > 0
-                ? prevBars.findIndex(b => b.time >= firstNewTs)
-                : 0;
-              const merged = mergeBarsByTime(prevBars, incoming);
-              const cfg = requestConfigRef.current;
-              const nextBars = cfg.rawBarSize === '1d' ? merged : trimIntradayTail(merged);
-              const offset = Math.max(0, changeIdx === -1 ? prevBars.length : changeIdx);
-              const canTail = canUseTailUpdate(prevBars, nextBars, offset);
-              setRawBars(nextBars);
-              setTailChangeOffset(canTail ? offset : 0);
-              setUpdateMode(canTail ? 'tail' : 'full');
-              setRawBarSize(cfg.rawBarSize);
-              setSource(pack.source);
-            });
-          }
-        }
-      } catch {
-        // Swallow poll errors — next poll will retry
+          const pack = intradayPollPendingRef.current;
+          intradayPollPendingRef.current = null;
+          if (!pack?.bars.length) return;
+          const incoming = pack.bars;
+          const prevBars = rawBarsRef.current;
+          const firstNewTs = incoming[0].time;
+          const changeIdx = prevBars.length > 0
+            ? prevBars.findIndex(b => b.time >= firstNewTs)
+            : 0;
+          const merged = mergeBarsByTime(prevBars, incoming);
+          const cfg = requestConfigRef.current;
+          const nextBars = cfg.rawBarSize === '1d' ? merged : trimIntradayTail(merged);
+          const offset = Math.max(0, changeIdx === -1 ? prevBars.length : changeIdx);
+          const canTail = canUseTailUpdate(prevBars, nextBars, offset);
+          setRawBars(nextBars);
+          setTailChangeOffset(canTail ? offset : 0);
+          setUpdateMode(canTail ? 'tail' : 'full');
+          setRawBarSize(cfg.rawBarSize);
+          setSource(pack.source);
+          const newLastBar = nextBars[nextBars.length - 1];
+          if (newLastBar) pollUpdateState(bKey, newLastBar.time, null, null);
+        });
       }
     }
+
+    const pollCfg: PollConfig = {
+      sidecarPort,
+      barSizeParam: requestConfig.barSizeParam,
+      rawBarSize: requestConfig.rawBarSize,
+      stepMs: requestConfig.stepMs,
+      useDaily,
+    };
+    const unsubPoll = pollSubscribe(bKey, pollCfg, handlePollResult);
 
     // ── Shared: fetch and prepend older bars up to tsEnd ─────────────
     async function fetchOlderBars(tsEnd: number) {
@@ -476,28 +489,13 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
       }
     }
 
-    function currentPollMs(): number {
-      if (requestConfigRef.current.rawBarSize !== '1d') return INTRADAY_POLL_MS;
-      const src = sourceRef.current;
-      return src === 'dailyiq' || src === 'offline' ? DAILY_FALLBACK_POLL_MS : DAILY_POLL_MS;
-    }
-
-    const scheduleNextPoll = () => {
-      if (cancelled || requestId !== requestIdRef.current) return;
-      pollTimer = setTimeout(() => {
-        pollTimer = null;
-        pollIncremental().finally(scheduleNextPoll);
-      }, currentPollMs());
-    };
-
     // ── Fast path: same symbol, same raw bar tier, same port ──────────
     // Raw bars are already valid. Only the display resample changes, which
-    // the bars memo handles client-side. Just restart the poll.
+    // the bars memo handles client-side. Poll subscription already registered above.
     if (isFastPath) {
-      scheduleNextPoll();
       return () => {
         cancelled = true;
-        if (pollTimer) clearTimeout(pollTimer);
+        unsubPoll();
       };
     }
 
@@ -537,11 +535,9 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
       }, 150);
     }
 
-    scheduleNextPoll();
-
     return () => {
       cancelled = true;
-      if (pollTimer) clearTimeout(pollTimer);
+      unsubPoll();
       if (fetchDebounceRef.current) {
         clearTimeout(fetchDebounceRef.current);
         fetchDebounceRef.current = null;
@@ -582,6 +578,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
 
       if (panDebounceRef.current) clearTimeout(panDebounceRef.current);
       panDebounceRef.current = setTimeout(async () => {
+        const capturedId = requestIdRef.current;
         if (panFetchingRef.current) return;
         panFetchingRef.current = true;
         try {
@@ -605,6 +602,7 @@ export function useChartData({ symbol, timeframe, sidecarPort }: UseChartDataOpt
           }
 
           const olderBars = parseBars(payload);
+          if (requestIdRef.current !== capturedId) return;
           if (olderBars.length > 0) {
             const anchor = viewportAnchorRef.current;
             const currentRawBars = rawBarsRef.current;
