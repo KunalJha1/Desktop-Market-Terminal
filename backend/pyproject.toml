@@ -12,6 +12,7 @@ dependencies = [
     "pandas",
     "numpy",
     "scipy",
+    "llama-cpp-python",
 ]
 
 [tool.uv]

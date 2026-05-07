@@ -32,7 +32,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from db_utils import run_db, sync_db_session
+from db_utils import execute_many_with_retry, run_db, sync_db_session
 from historical import (
     CACHE_TTL,
     CACHE_TTL_DAILY,
@@ -69,6 +69,7 @@ import worker_watchlist  # noqa: F401
 import worker_valuations  # noqa: F401
 import worker_options  # noqa: F401
 import prefetch  # noqa: F401
+import gap_scanner  # noqa: F401
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1263,9 +1264,9 @@ def read_options_chain(symbol: str, expiration: int | None = None) -> dict:
 _refresh_last_triggered: dict[str, float] = {}
 _REFRESH_THROTTLE_SECONDS = 12.0
 _historical_revalidate_last_triggered: dict[str, float] = {}
-_HISTORICAL_REVALIDATE_THROTTLE_S = 8.0
+_HISTORICAL_REVALIDATE_THROTTLE_S = 4.0
 _historical_live_refresh_last_triggered: dict[str, float] = {}
-_HISTORICAL_LIVE_REFRESH_THROTTLE_S = 2.5
+_HISTORICAL_LIVE_REFRESH_THROTTLE_S = 3.0
 _DEBUG_EVENTS_MAX = 2000
 _debug_events: deque[dict] = deque(maxlen=_DEBUG_EVENTS_MAX)
 _debug_events_lock = threading.Lock()
@@ -1750,9 +1751,13 @@ def create_app() -> FastAPI:
         asyncio.create_task(_dailyiq_universe_scores_refresh_loop())
         asyncio.create_task(_dailyiq_live_refresh_loop())
 
+        _gap_scanner = gap_scanner.GapScanner()
+        _gap_scanner.start()
+
         try:
             yield
         finally:
+            _gap_scanner.stop()
             await pool.disconnect_all()
             scorer.stop()
             options_worker.stop()
@@ -3175,13 +3180,42 @@ def create_app() -> FastAPI:
             _signal_view(symbol)
 
         async def _attempt_live_refresh(fetch_duration: str) -> bool:
-            if not prefer_live_refresh or _tws_connected_for_chart():
+            if not prefer_live_refresh:
                 return False
             now = time.time()
             last = _historical_live_refresh_last_triggered.get(refresh_key, 0.0)
             if (now - last) < _HISTORICAL_LIVE_REFRESH_THROTTLE_S:
                 return False
             _historical_live_refresh_last_triggered[refresh_key] = now
+
+            if _tws_connected_for_chart():
+                # TWS is live — fire a targeted short-window fetch in the background
+                # so the SQLite cache is updated without blocking the response.
+                async def _tws_bg_refresh() -> None:
+                    try:
+                        pool_ib = await pool.get_or_create(PORTFOLIO_ROLE)
+                        await asyncio.wait_for(
+                            get_historical_bars(
+                                symbol=symbol,
+                                ib=pool_ib,
+                                tws_connected=True,
+                                duration="1800 S",
+                                bar_size=bar_size,
+                                what_to_show=what_to_show,
+                            ),
+                            timeout=URGENT_HISTORICAL_WAIT_S,
+                        )
+                        emit_debug_event(
+                            "historical",
+                            "tws_live_refresh",
+                            f"TWS live refresh for {symbol} {db_bar_size}",
+                            {"symbol": symbol, "barSize": db_bar_size},
+                        )
+                    except Exception:
+                        pass
+                asyncio.create_task(_tws_bg_refresh())
+                return True
+
             try:
                 if what_to_show.upper() == "TRADES":
                     from dailyiq_provider import trigger_chart_bar_refresh
@@ -3448,6 +3482,103 @@ def create_app() -> FastAPI:
             "ts_min": cached.get("ts_min") if isinstance(cached, dict) else None,
             "ts_max": cached.get("ts_max") if isinstance(cached, dict) else None,
         }
+
+    # ── Playbook analysis endpoints ──────────────────────────────────────────
+    from playbook_analyzer import get_analyzer
+
+    @app.get("/playbook/model/status")
+    async def playbook_model_status():
+        return get_analyzer().get_status()
+
+    @app.post("/playbook/model/download")
+    async def playbook_model_download():
+        started = get_analyzer().start_download()
+        return {"started": started, **get_analyzer().get_status()}
+
+    @app.get("/playbook/analyze")
+    async def playbook_analyze(request: Request):
+        analyzer = get_analyzer()
+        status = analyzer.get_status()
+        if status["status"] != "ready":
+            return {"ok": False, "model_status": status, "analysis": None}
+
+        settings = _load_settings_payload()
+        rules = (settings.get("playbookMemory") or "").strip()
+        if not rules:
+            return {"ok": False, "model_status": status, "analysis": None, "error": "no_rules"}
+
+        # Gather market context
+        pool: ConnectionPool = request.app.state.pool
+
+        # VIX via yahooquery
+        vix_price: float | None = None
+        try:
+            from yahooquery import Ticker as _YTicker
+            vix_data = _YTicker("^VIX").price.get("^VIX")
+            if isinstance(vix_data, dict):
+                vix_price = float(vix_data.get("regularMarketPrice") or 0) or None
+        except Exception:
+            pass
+
+        # Portfolio snapshot
+        try:
+            portfolio = await build_unified_portfolio_snapshot_async(pool)
+        except Exception:
+            portfolio = {}
+
+        # Watchlist quotes + tech scores from DB
+        watchlist_quotes: list[dict] = []
+        tech_scores: dict[str, int | None] = {}
+        try:
+            wl_symbols = await run_db(read_watchlist_symbols)
+
+            def _fetch_watchlist_context(conn):
+                if not wl_symbols:
+                    return [], {}
+                placeholders = ", ".join("?" * len(wl_symbols))
+                rows = conn.execute(
+                    f"""
+                    SELECT symbol, last, change_pct
+                    FROM watchlist_quotes
+                    WHERE symbol IN ({placeholders})
+                    """,
+                    wl_symbols,
+                ).fetchall()
+                quotes = [
+                    {"symbol": r[0], "last": r[1], "changePercent": r[2]}
+                    for r in rows
+                ]
+                score_rows = conn.execute(
+                    f"""
+                    SELECT symbol, score_1d
+                    FROM technical_scores
+                    WHERE symbol IN ({placeholders})
+                    """,
+                    wl_symbols,
+                ).fetchall()
+                scores = {r[0]: r[1] for r in score_rows}
+                return quotes, scores
+
+            watchlist_quotes, tech_scores = await run_db(_fetch_watchlist_context)
+        except Exception:
+            pass
+
+        market_context = {
+            "vix": vix_price,
+            "portfolio": portfolio,
+            "watchlist_quotes": watchlist_quotes,
+            "tech_scores": tech_scores,
+        }
+
+        try:
+            loop = asyncio.get_running_loop()
+            analysis = await loop.run_in_executor(
+                None, analyzer.analyze, rules, market_context
+            )
+        except Exception as exc:
+            return {"ok": False, "model_status": status, "analysis": None, "error": str(exc)}
+
+        return {"ok": True, "model_status": status, "analysis": analysis}
 
     return app
 

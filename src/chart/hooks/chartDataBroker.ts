@@ -29,6 +29,7 @@ interface PollEntry {
   tsMax: number | null;
   config: PollConfig;
   fetching: boolean;
+  hitAgainFast: boolean;
 }
 
 // ── Module-level state ────────────────────────────────────────────────────────
@@ -36,7 +37,7 @@ interface PollEntry {
 const IN_FLIGHT = new Map<string, Promise<unknown>>();
 const POLL_ENTRIES = new Map<string, PollEntry>();
 
-const BROKER_INTRADAY_POLL_MS = 10_000;
+const BROKER_INTRADAY_POLL_MS = 3_000;
 const BROKER_DAILY_POLL_MS = 60_000;
 const BROKER_CLOSED_SESSION_POLL_MS = 90_000;
 
@@ -122,6 +123,7 @@ export function pollSubscribe(
       tsMax: null,
       config: cfg,
       fetching: false,
+      hitAgainFast: false,
     };
     POLL_ENTRIES.set(key, entry);
   }
@@ -173,10 +175,16 @@ function _scheduleNextPoll(key: string): void {
   const entry = POLL_ENTRIES.get(key);
   if (!entry || entry.callbacks.size === 0) return;
 
+  let delay = _pollIntervalMs(entry);
+  if (entry.hitAgainFast) {
+    entry.hitAgainFast = false;
+    delay = Math.floor(delay / 2);
+  }
+
   entry.timer = setTimeout(() => {
     entry.timer = null;
     _runPoll(key);
-  }, _pollIntervalMs(entry));
+  }, delay);
 }
 
 async function _runPoll(key: string): Promise<void> {
@@ -233,6 +241,8 @@ async function _runPoll(key: string): Promise<void> {
     }
 
     if (newBars.length > 0) {
+      const liveEntry2 = POLL_ENTRIES.get(key);
+      if (liveEntry2) liveEntry2.hitAgainFast = true;
       _dispatchPollResult(key, {
         bars: newBars,
         source: (payload.source as PollResult['source']) ?? 'yahoo',

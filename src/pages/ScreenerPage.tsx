@@ -468,6 +468,13 @@ function ScreenerPage() {
   const [visibleTfs, setVisibleTfs] = useState<TaScoreTimeframe[]>(loadStoredVisibleTimeframes);
   const [sortKey, setSortKey] = useState<SortKey>("verdict");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  // sentimentWeight: 0 = 100% technical, 100 = 100% sentiment
+  const [sentimentWeight, setSentimentWeight] = useState<number>(() => {
+    try {
+      const v = localStorage.getItem("screener_sentiment_weight");
+      return v !== null ? Math.max(0, Math.min(100, Number(v))) : 20;
+    } catch { return 20; }
+  });
 
   const [customSymbols] = useState<string[]>(loadStoredCustomSymbols);
 
@@ -607,19 +614,27 @@ function ScreenerPage() {
     [technicals],
   );
 
-  // ── Compute verdict score: average of all visible TF scores ──────
+  // ── Compute verdict score: weighted blend of tech avg + sentiment ─
 
   const getVerdictScore = useCallback(
     (row: ScreenerRow): number | null => {
-      const scores: number[] = [];
+      const techScores: number[] = [];
       for (const tf of visibleTfs) {
         const s = getTechScoreForTf(row, tf);
-        if (s !== null) scores.push(s);
+        if (s !== null) techScores.push(s);
       }
-      if (scores.length === 0) return null;
-      return scores.reduce((a, b) => a + b, 0) / scores.length;
+      const techAvg = techScores.length > 0
+        ? techScores.reduce((a, b) => a + b, 0) / techScores.length
+        : null;
+      const senti = row.sentimentScore;
+      const sw = sentimentWeight / 100;
+      const tw = 1 - sw;
+      if (techAvg !== null && senti !== null) return tw * techAvg + sw * senti;
+      if (techAvg !== null) return techAvg;
+      if (senti !== null && sentimentWeight === 100) return senti;
+      return null;
     },
-    [visibleTfs, getTechScoreForTf],
+    [visibleTfs, getTechScoreForTf, sentimentWeight],
   );
 
   // ── Merge tiles into ScreenerRows ────────────────────────────────
@@ -764,6 +779,10 @@ function ScreenerPage() {
     }
   }, [visibleTfs]);
 
+  useEffect(() => {
+    try { localStorage.setItem("screener_sentiment_weight", String(sentimentWeight)); } catch { /* ignore */ }
+  }, [sentimentWeight]);
+
   // Reset visible count when filter/sort changes
   useEffect(() => {
     setVisibleCount(VISIBLE_BATCH);
@@ -841,6 +860,25 @@ function ScreenerPage() {
                 </button>
               );
             })}
+          </div>
+
+          <div className="mx-2 h-3 w-px bg-white/[0.08]" />
+
+          {/* Verdict weight split */}
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] uppercase tracking-[0.14em] text-white/50">Verdict</span>
+            <span className="font-mono text-[11px] text-blue/90">{100 - sentimentWeight}% TA</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={sentimentWeight}
+              onChange={(e) => setSentimentWeight(Number(e.target.value))}
+              className="h-1 w-24 cursor-pointer accent-blue"
+              title={`Sentiment weight: ${sentimentWeight}%`}
+            />
+            <span className="font-mono text-[11px] text-purple-400/90">{sentimentWeight}% Senti</span>
           </div>
           </div>
 

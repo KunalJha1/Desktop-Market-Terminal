@@ -7,7 +7,7 @@ import {
   useMemo,
   memo,
 } from "react";
-import { DollarSign, List, BarChart2, Briefcase, SlidersHorizontal, LayoutGrid, Activity, TrendingUp } from "lucide-react";
+import { DollarSign, List, BarChart2, Briefcase, SlidersHorizontal, LayoutGrid, Activity, TrendingUp, BookOpen } from "lucide-react";
 import DashboardToolbar from "../components/DashboardToolbar";
 import GridLayout from "../components/GridLayout";
 import QuoteCard from "../components/QuoteCard";
@@ -18,6 +18,7 @@ import MiniScreenerCard from "../components/MiniScreenerCard";
 import MiniHeatmapCard from "../components/MiniHeatmapCard";
 import LiquiditySweepDetectorCard from "../components/LiquiditySweepDetectorCard";
 import OptionsSnapshotCard from "../components/OptionsSnapshotCard";
+import PlaybookAnalysisCard from "../components/PlaybookAnalysisCard";
 import { useTabs } from "../lib/tabs";
 import { useLayout } from "../lib/layout";
 import type { LayoutComponent } from "../lib/layout-types";
@@ -38,6 +39,7 @@ const COMPONENT_TYPES = [
   { type: "mini-heatmap", label: "Mini Heatmap", defaultW: 6, defaultH: 10, icon: LayoutGrid },
   { type: "liquidity-sweep-detector", label: "Liquidity Sweep Detector", defaultW: 5, defaultH: 9,  icon: Activity   },
   { type: "options-snapshot",          label: "Options Snapshot",          defaultW: 4, defaultH: 11, icon: TrendingUp  },
+  { type: "playbook-monitor",          label: "Playbook Monitor",          defaultW: 5, defaultH: 9,  icon: BookOpen   },
 ] as const;
 
 /** Debounce workspace `updateComponent` for MiniChart; localStorage stays immediate. */
@@ -474,6 +476,16 @@ function DashboardPageComponent(_props: { tabId?: string }) {
         case "options-snapshot":
           return (
             <OptionsSnapshotCard
+              linkChannel={comp.linkChannel}
+              onSetLinkChannel={getSetLinkChannel(comp.id)}
+              onClose={getOnClose(comp.id)}
+              config={comp.config}
+              onConfigChange={getOnConfigChange(comp.id)}
+            />
+          );
+        case "playbook-monitor":
+          return (
+            <PlaybookAnalysisCard
               linkChannel={comp.linkChannel}
               onSetLinkChannel={getSetLinkChannel(comp.id)}
               onClose={getOnClose(comp.id)}

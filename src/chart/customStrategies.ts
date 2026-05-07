@@ -61,6 +61,8 @@ export interface CustomStrategyCondition {
   targetType: "value" | "source";
   threshold: number;
   right?: CustomStrategyValueSource;
+  /** Signal mode only: which side this condition triggers */
+  conditionSide?: "buy" | "sell";
 }
 
 export interface CustomStrategyDefinition {
@@ -69,6 +71,13 @@ export interface CustomStrategyDefinition {
   conditions: CustomStrategyCondition[];
   buyThreshold: number;
   sellThreshold: number;
+  /**
+   * "score" (default): % of passing conditions drives BUY/SELL thresholds.
+   * "signal": state machine — BUY fires when any buy-side condition is true,
+   *   SELL fires when any sell-side condition is true, state latches between signals.
+   *   Use for crossover indicators that emit discrete buy/sell markers.
+   */
+  mode?: "score" | "signal";
 }
 
 export interface CustomStrategyEvaluation {
@@ -259,31 +268,72 @@ export function evaluateCustomStrategy(
   const buyThreshold = clampThreshold(strategy.buyThreshold, 70);
   const sellThreshold = clampThreshold(strategy.sellThreshold, 30);
 
-  for (let i = 0; i < len; i += 1) {
-    let total = 0;
-    let matches = 0;
+  if (strategy.mode === "signal") {
+    // State-machine mode: BUY/SELL only update when an explicit signal fires;
+    // otherwise the last state is held (latched). This is correct for
+    // crossover indicators that emit discrete buy/sell markers.
+    let lastState: StrategyState = "NEUTRAL";
 
-    for (const condition of strategy.conditions) {
-      const leftSeries = evaluateSource(condition.left, bars, cache);
-      const left = leftSeries[i];
-      if (!Number.isFinite(left)) continue;
+    for (let i = 0; i < len; i += 1) {
+      let buyFired = false;
+      let sellFired = false;
 
-      let right: number;
-      if (condition.targetType === "value") {
-        right = condition.threshold;
-      } else {
-        const rightSeries = evaluateSource(condition.right as CustomStrategyValueSource, bars, cache);
-        right = rightSeries[i];
+      for (const condition of strategy.conditions) {
+        const leftSeries = evaluateSource(condition.left, bars, cache);
+        const left = leftSeries[i];
+        if (!Number.isFinite(left)) continue;
+
+        let right: number;
+        if (condition.targetType === "value") {
+          right = condition.threshold;
+        } else {
+          const rightSeries = evaluateSource(condition.right as CustomStrategyValueSource, bars, cache);
+          right = rightSeries[i];
+        }
+        if (!Number.isFinite(right)) continue;
+
+        if (resolveOperator(left, right, condition.operator)) {
+          if (condition.conditionSide === "sell") sellFired = true;
+          else buyFired = true;
+        }
       }
-      if (!Number.isFinite(right)) continue;
 
-      total += 1;
-      if (resolveOperator(left, right, condition.operator)) matches += 1;
+      // BUY wins if only buy fired; SELL wins if only sell fired;
+      // if both or neither fire, hold previous state.
+      if (buyFired && !sellFired) lastState = "BUY";
+      else if (sellFired && !buyFired) lastState = "SELL";
+
+      stateSeries[i] = lastState;
+      scoreSeries[i] = lastState === "BUY" ? 100 : lastState === "SELL" ? 0 : NaN;
     }
+  } else {
+    // Score mode (default): % of passing conditions gates BUY/SELL thresholds.
+    for (let i = 0; i < len; i += 1) {
+      let total = 0;
+      let matches = 0;
 
-    const score = total === 0 ? NaN : Math.round((matches / total) * 100);
-    scoreSeries[i] = score;
-    stateSeries[i] = deriveState(Number.isFinite(score) ? score : null, buyThreshold, sellThreshold);
+      for (const condition of strategy.conditions) {
+        const leftSeries = evaluateSource(condition.left, bars, cache);
+        const left = leftSeries[i];
+        if (!Number.isFinite(left)) continue;
+
+        let right: number;
+        if (condition.targetType === "value") {
+          right = condition.threshold;
+        } else {
+          const rightSeries = evaluateSource(condition.right as CustomStrategyValueSource, bars, cache);
+          right = rightSeries[i];
+        }
+        if (!Number.isFinite(right)) continue;
+
+        total += 1;
+        if (resolveOperator(left, right, condition.operator)) matches += 1;
+      }
+
+      const score = total === 0 ? NaN : Math.round((matches / total) * 100);
+      scoreSeries[i] = score;
+      stateSeries[i] = deriveState(Number.isFinite(score) ? score : null, buyThreshold, sellThreshold);
+    }
   }
 
   for (let i = 1; i < len; i += 1) {
@@ -297,11 +347,10 @@ export function evaluateCustomStrategy(
   }
 
   const latestScore = [...scoreSeries].reverse().find((value) => Number.isFinite(value));
-  const latestState = deriveState(
-    typeof latestScore === "number" ? latestScore : null,
-    buyThreshold,
-    sellThreshold,
-  );
+  const latestState =
+    strategy.mode === "signal"
+      ? ([...stateSeries].reverse().find((s) => s !== "NEUTRAL") ?? "NEUTRAL")
+      : deriveState(typeof latestScore === "number" ? latestScore : null, buyThreshold, sellThreshold);
 
   return {
     scoreSeries,

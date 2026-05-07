@@ -204,7 +204,6 @@ function sliceScriptResult(result: ScriptResult, length: number): ScriptResult {
 export class SimulationEngine {
   private filteredBars: OHLCVBar[];
   private tfMs: number;
-  private strategy: CustomStrategyDefinition | undefined;
 
   private positionMode: "qty" | "capital";
   /** Whole or fractional shares per BUY in qty mode */
@@ -226,12 +225,11 @@ export class SimulationEngine {
   private scriptResult: ScriptResult | null = null;
   private metrics: SimMetrics = EMPTY_METRICS;
 
-  // Script mode: precomputed signals and full result for slicing
+  // Precomputed signals and full result for slicing — populated in constructor
   private scriptSignals: Array<"BUY" | "SELL" | "NEUTRAL"> = [];
   private fullScriptResult: ScriptResult | null = null;
 
   constructor(config: SimConfig) {
-    this.strategy = config.strategy;
     this.tfMs = getTimeframeMs(config.timeframe);
     this.positionMode = config.positionMode ?? "qty";
     this.fractionalShares = config.fractionalShares ?? true;
@@ -262,13 +260,23 @@ export class SimulationEngine {
       );
     }
 
-    // Precompute script signals if scriptSource provided
+    // Precompute all signals upfront — avoids O(n²) re-evaluation on every bar.
+    // Script source takes priority over strategy when both are present.
+    const allTfBars = buildAllTfBars(this.filteredBars, this.tfMs);
     if (config.scriptSource && config.scriptSource.trim()) {
-      const allTfBars = buildAllTfBars(this.filteredBars, this.tfMs);
       try {
         const result = interpretScript(config.scriptSource, allTfBars);
         this.fullScriptResult = result;
         this.scriptSignals = extractSignals(result, allTfBars.length);
+      } catch {
+        this.fullScriptResult = null;
+        this.scriptSignals = [];
+      }
+    } else if (config.strategy) {
+      try {
+        const evaluation = evaluateCustomStrategy(config.strategy, allTfBars);
+        this.fullScriptResult = evaluation.scriptResult;
+        this.scriptSignals = evaluation.stateSeries as Array<"BUY" | "SELL" | "NEUTRAL">;
       } catch {
         this.fullScriptResult = null;
         this.scriptSignals = [];
@@ -321,23 +329,12 @@ export class SimulationEngine {
 
   private onTfBarCompleted(): void {
     if (this.tfBars.length < 2) return;
+    if (this.fullScriptResult === null) return;
 
     const lastBar = this.tfBars[this.tfBars.length - 1];
-    let latestState: "BUY" | "SELL" | "NEUTRAL";
-
-    if (this.fullScriptResult !== null) {
-      // Script mode: use precomputed signals, slice result for chart rendering
-      const idx = this.tfBars.length - 1;
-      latestState = this.scriptSignals[idx] ?? "NEUTRAL";
-      this.scriptResult = sliceScriptResult(this.fullScriptResult, this.tfBars.length);
-    } else if (this.strategy) {
-      // Strategy mode
-      const evaluation = evaluateCustomStrategy(this.strategy, this.tfBars);
-      this.scriptResult = evaluation.scriptResult;
-      latestState = evaluation.stateSeries[evaluation.stateSeries.length - 1] as "BUY" | "SELL" | "NEUTRAL";
-    } else {
-      return;
-    }
+    const idx = this.tfBars.length - 1;
+    const latestState: "BUY" | "SELL" | "NEUTRAL" = this.scriptSignals[idx] ?? "NEUTRAL";
+    this.scriptResult = sliceScriptResult(this.fullScriptResult, this.tfBars.length);
 
     if (latestState === "BUY" && this.openPosition === null) {
       const price = lastBar.close;

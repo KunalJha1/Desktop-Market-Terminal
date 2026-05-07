@@ -9,3 +9,4 @@ scipy
 requests
 python-dotenv
 psutil
+llama-cpp-python
