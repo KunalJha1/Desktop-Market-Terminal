@@ -37,7 +37,7 @@ interface PollEntry {
 const IN_FLIGHT = new Map<string, Promise<unknown>>();
 const POLL_ENTRIES = new Map<string, PollEntry>();
 
-const BROKER_INTRADAY_POLL_MS = 3_000;
+const BROKER_INTRADAY_POLL_MS = 5_000;
 const BROKER_DAILY_POLL_MS = 60_000;
 const BROKER_CLOSED_SESSION_POLL_MS = 90_000;
 
@@ -178,7 +178,7 @@ function _scheduleNextPoll(key: string): void {
   let delay = _pollIntervalMs(entry);
   if (entry.hitAgainFast) {
     entry.hitAgainFast = false;
-    delay = Math.floor(delay / 2);
+    delay = Math.max(3_000, Math.floor(delay / 2));
   }
 
   entry.timer = setTimeout(() => {

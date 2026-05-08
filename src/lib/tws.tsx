@@ -324,7 +324,9 @@ export function TwsProvider({ children }: { children: ReactNode }) {
 
   const refreshIbStatus = useCallback(async () => {
     if (!sidecarPort || backendState !== "healthy") {
-      setIbStatus("disconnected");
+      // Avoid an immediate drop to "disconnected" if we were just connected —
+      // backend state can briefly flap during restarts. Use "reconnecting" as buffer.
+      setIbStatus((prev) => prev === "connected" ? "reconnecting" : "disconnected");
       return;
     }
     try {
@@ -332,7 +334,8 @@ export function TwsProvider({ children }: { children: ReactNode }) {
         signal: AbortSignal.timeout(IB_STATUS_TIMEOUT_MS),
       });
       if (!res.ok) {
-        setIbStatus("disconnected");
+        // Single HTTP error → reconnecting, not immediately disconnected
+        setIbStatus((prev) => prev === "connected" ? "reconnecting" : "disconnected");
         return;
       }
       const payload = (await res.json()) as TwsStatusResponse;
@@ -344,7 +347,8 @@ export function TwsProvider({ children }: { children: ReactNode }) {
         setIbStatus("disconnected");
       }
     } catch {
-      setIbStatus("disconnected");
+      // Timeout or network error — one miss → reconnecting, two → disconnected
+      setIbStatus((prev) => prev === "connected" ? "reconnecting" : "disconnected");
     }
   }, [backendState, sidecarPort]);
 

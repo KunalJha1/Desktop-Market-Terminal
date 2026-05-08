@@ -247,7 +247,7 @@ const FooterStatusBar = memo(function FooterStatusBar() {
       ? CONNECTION_LABELS[connectionType]
       : "IBKR CONNECTED";
 
-  const dataProvider = isIbConnected
+  const dataProvider = (isIbConnected || isIbReconnecting)
     ? "live"
     : observedMarketDataSource === "dailyiq" || (dailyiqHasKey && observedMarketDataSource == null)
       ? "dailyiq"

@@ -8,7 +8,8 @@ VENV_DIR="$BACKEND_DIR/.venv"
 
 # Fast path: venv already exists — sync requirements in case they changed
 if [ -f "$VENV_DIR/pyvenv.cfg" ]; then
-    uv pip install -q -r "$BACKEND_DIR/requirements.txt" 2>/dev/null || true
+    uv pip install -q -r "$BACKEND_DIR/requirements.txt" \
+        || echo "[setup-backend] Warning: failed to sync requirements — some packages may be outdated"
     exit 0
 fi
 

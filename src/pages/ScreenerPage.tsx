@@ -358,7 +358,7 @@ const ScreenerTableRow = memo(function ScreenerTableRow({
         <div className="flex items-start gap-2.5">
           <SymbolLogo symbol={row.symbol} />
           <div className="min-w-0">
-            <p className="font-mono text-[15px] font-semibold leading-none text-white/90 transition-colors duration-[120ms] group-hover:text-blue">
+            <p className="font-mono text-[15px] font-semibold leading-none text-white/90 transition-colors duration-[120ms] group-hover:text-blue-300/80">
               {row.symbol}
             </p>
             <p className="mt-0.5 text-[13px] leading-snug text-white/85">
@@ -867,7 +867,7 @@ function ScreenerPage() {
           {/* Verdict weight split */}
           <div className="flex items-center gap-2">
             <span className="text-[11px] uppercase tracking-[0.14em] text-white/50">Verdict</span>
-            <span className="font-mono text-[11px] text-blue/90">{100 - sentimentWeight}% TA</span>
+            <span className="font-mono text-[11px] text-blue-300/70">{100 - sentimentWeight}% TA</span>
             <input
               type="range"
               min={0}

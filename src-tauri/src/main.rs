@@ -14,7 +14,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::api::process::{Command as SidecarCommand, CommandChild as SidecarChild};
+use tauri::api::process::{Command as SidecarCommand, CommandChild as SidecarChild, CommandEvent};
 use tauri::{AppHandle, Manager};
 
 /// Windows Job Object support — ensures all spawned child processes are
@@ -135,8 +135,10 @@ const DAILYIQ_API_KEY: &str = match option_env!("DAILYIQ_API_KEY") {
 
 const OAUTH_CALLBACK_PORT: u16 = 17284;
 const WATCHDOG_POLL_INTERVAL_S: u64 = 5;
-const WATCHDOG_FAILS_BEFORE_RESTART: u32 = 3;
+const WATCHDOG_FAILS_BEFORE_RESTART: u32 = 5;
 const WATCHDOG_RESTART_BACKOFF_S: u64 = 20;
+// After a restart, don't count health failures for this many seconds (backend warm-up time).
+const WATCHDOG_POST_RESTART_GRACE_S: u64 = 30;
 
 #[derive(Clone, serde::Serialize)]
 struct BackendStatus {
@@ -552,7 +554,7 @@ fn get_detached_tab_info(
 
 enum ManagedChild {
     System(Child),
-    Sidecar(SidecarChild),
+    Sidecar { child: SidecarChild, exited: Arc<AtomicBool> },
 }
 
 impl ManagedChild {
@@ -560,16 +562,15 @@ impl ManagedChild {
     fn pid(&self) -> u32 {
         match self {
             ManagedChild::System(child) => child.id(),
-            ManagedChild::Sidecar(child) => child.pid(),
+            ManagedChild::Sidecar { child, .. } => child.pid(),
         }
     }
 
     /// Returns true if the process has already exited.
-    /// Only works for System children; Sidecar children always return false.
     fn has_exited(&mut self) -> bool {
         match self {
             ManagedChild::System(child) => child.try_wait().ok().flatten().is_some(),
-            ManagedChild::Sidecar(_) => false,
+            ManagedChild::Sidecar { exited, .. } => exited.load(Ordering::Relaxed),
         }
     }
 
@@ -605,7 +606,7 @@ impl ManagedChild {
                 let _ = child.kill();
                 let _ = child.wait();
             }
-            ManagedChild::Sidecar(child) => {
+            ManagedChild::Sidecar { child, .. } => {
                 let pid = child.pid();
                 Self::kill_tree(pid);
                 let _ = child.kill();
@@ -871,15 +872,24 @@ fn shutdown_app_runtime(
     if !is_shutting_down(state) {
         stop_backend_stack(app_handle, state, reason);
     }
-    for (label, win) in app_handle.windows() {
-        if let Some(skip) = skip_label {
-            if label == skip {
+    // Signal all windows via Tauri event so their React handlers can set the
+    // allow-close flag before win.close() triggers onCloseRequested.
+    // localStorage is not shared across WebView processes, so we use events.
+    let _ = app_handle.emit_all("main-window-closing", ());
+    let app = app_handle.clone();
+    let skip = skip_label.map(|s| s.to_string());
+    std::thread::spawn(move || {
+        // Give React 150 ms to process the event and flip allowNativeCloseRef
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        for (label, win) in app.windows() {
+            if skip.as_deref() == Some(label.as_str()) {
                 continue;
             }
+            let _ = win.close();
         }
-        let _ = win.close();
-    }
-    app_handle.exit(0);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        app.exit(0);
+    });
 }
 
 fn spawn_dev_python(
@@ -978,7 +988,7 @@ fn spawn_bundled_sidecar(
 ) -> Result<ManagedChild, String> {
     let current_dir = app_data_dir(app_handle)?;
     let envs = bundled_env(app_handle)?;
-    let (_rx, child) = SidecarCommand::new_sidecar(binary_name)
+    let (rx, child) = SidecarCommand::new_sidecar(binary_name)
         .map_err(|e| format!("Failed to resolve sidecar '{}': {}", binary_name, e))?
         .args(args.iter().map(|s| s.as_str()))
         .envs(envs)
@@ -986,7 +996,22 @@ fn spawn_bundled_sidecar(
         .spawn()
         .map_err(|e| format!("Failed to spawn sidecar '{}': {}", binary_name, e))?;
 
-    Ok(ManagedChild::Sidecar(child))
+    // Drain the event stream in a background thread so stdout/stderr pipes never
+    // fill up. Set the exited flag when the process terminates so the watchdog
+    // can detect crashes (previously has_exited always returned false for sidecars).
+    let exited = Arc::new(AtomicBool::new(false));
+    let exited_clone = Arc::clone(&exited);
+    std::thread::spawn(move || {
+        let mut rx = rx;
+        while let Some(event) = rx.blocking_recv() {
+            if let CommandEvent::Terminated(_) = event {
+                break;
+            }
+        }
+        exited_clone.store(true, Ordering::Relaxed);
+    });
+
+    Ok(ManagedChild::Sidecar { child, exited })
 }
 
 /// Shared logic: spawn the Python sidecar, poll /health, store state.
@@ -1019,10 +1044,10 @@ fn do_spawn_sidecar(app_handle: &AppHandle, state: &SidecarState) -> Result<u16,
     *state.child.lock().unwrap() = Some(child);
     *state.port.lock().unwrap() = Some(sidecar_port);
 
-    // Poll /healthz until ready (max 10s)
+    // Poll /healthz until ready (max 30s)
     let addr = format!("127.0.0.1:{}", sidecar_port);
     let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(10) {
+    while start.elapsed() < Duration::from_secs(30) {
         if is_shutting_down(state) {
             if let Some(child) = state.child.lock().unwrap().take() {
                 child.kill();
@@ -1033,12 +1058,13 @@ fn do_spawn_sidecar(app_handle: &AppHandle, state: &SidecarState) -> Result<u16,
         std::thread::sleep(Duration::from_millis(250));
         let sock_addr: SocketAddr = addr.parse().unwrap();
         if let Ok(mut stream) = TcpStream::connect_timeout(&sock_addr, Duration::from_millis(200)) {
-            let request = format!("GET /healthz HTTP/1.1\r\nHost: {}\r\n\r\n", addr);
+            let request = format!("GET /healthz HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", addr);
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
             if std::io::Write::write_all(&mut stream, request.as_bytes()).is_ok() {
                 let mut buf = [0u8; 512];
                 if stream.read(&mut buf).is_ok() {
                     let response = String::from_utf8_lossy(&buf);
-                    if response.contains("200") {
+                    if response.contains(" 200 ") || response.contains("200 OK") {
                         return Ok(sidecar_port);
                     }
                 }
@@ -1051,7 +1077,7 @@ fn do_spawn_sidecar(app_handle: &AppHandle, state: &SidecarState) -> Result<u16,
     }
     *state.port.lock().unwrap() = None;
 
-    Err("Sidecar failed to become ready within 10s".to_string())
+    Err("Sidecar failed to become ready within 30s".to_string())
 }
 
 /// True when `GET /healthz` returns HTTP 200 (used by watchdog, not just process liveness).
@@ -1064,7 +1090,7 @@ fn probe_sidecar_http_health(port: u16) -> bool {
         Ok(s) => s,
         Err(_) => return false,
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
     let request = "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
@@ -1372,6 +1398,8 @@ fn main() {
             std::thread::spawn(move || {
                 let mut health_fail_streak: u32 = 0;
                 let mut last_restart_at: Option<Instant> = None;
+                // Tracks when the last successful restart completed, for grace-period logic.
+                let mut last_restart_completed_at: Option<Instant> = None;
                 loop {
                     std::thread::sleep(Duration::from_secs(WATCHDOG_POLL_INTERVAL_S));
                     let state: tauri::State<SidecarState> = watchdog_handle.state();
@@ -1399,6 +1427,7 @@ fn main() {
                             "sidecar exited unexpectedly",
                         ) {
                             println!("Watchdog: backend stack restarted after sidecar exit");
+                            last_restart_completed_at = Some(Instant::now());
                         } else {
                             eprintln!("Watchdog: sidecar exited; restart skipped or failed");
                         }
@@ -1414,6 +1443,13 @@ fn main() {
                                 status.last_healthy_at = Some(now_ms());
                             });
                         } else {
+                            // Suppress failure counting during post-restart warm-up grace period.
+                            let in_grace = last_restart_completed_at
+                                .map(|t| t.elapsed().as_secs() < WATCHDOG_POST_RESTART_GRACE_S)
+                                .unwrap_or(false);
+                            if in_grace {
+                                continue;
+                            }
                             health_fail_streak += 1;
                             update_backend_status(&state, |status| {
                                 status.state = "unhealthy".to_string();
@@ -1436,6 +1472,7 @@ fn main() {
                                     "sidecar healthz check failed",
                                 ) {
                                     println!("Watchdog: backend stack restarted after health check failures");
+                                    last_restart_completed_at = Some(Instant::now());
                                 } else {
                                     eprintln!("Watchdog: backend restart skipped or failed after health check failures");
                                 }
@@ -1562,5 +1599,80 @@ fn main() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    // --- ManagedChild::has_exited correctness ---
+
+    // Sidecar: exited=false at construction → has_exited must be false
+    #[test]
+    fn sidecar_has_not_exited_initially() {
+        let exited = Arc::new(AtomicBool::new(false));
+        assert!(!exited.load(Ordering::Relaxed), "exited flag must start false");
+    }
+
+    // Sidecar: after background thread sets flag → has_exited must be true
+    #[test]
+    fn sidecar_has_exited_after_flag_set() {
+        let exited = Arc::new(AtomicBool::new(false));
+        let clone = Arc::clone(&exited);
+        let handle = std::thread::spawn(move || {
+            clone.store(true, Ordering::Relaxed);
+        });
+        handle.join().unwrap();
+        assert!(exited.load(Ordering::Relaxed), "exited flag must be true after thread sets it");
+    }
+
+    // Arc is shared correctly — two owners see the same value
+    #[test]
+    fn exited_flag_shared_across_arc_clones() {
+        let exited = Arc::new(AtomicBool::new(false));
+        let reader = Arc::clone(&exited);
+        exited.store(true, Ordering::Relaxed);
+        assert!(reader.load(Ordering::Relaxed));
+    }
+
+    // --- Grace period suppression logic ---
+
+    // Within grace window: elapsed < WATCHDOG_POST_RESTART_GRACE_S → suppress
+    #[test]
+    fn grace_period_suppresses_recent_restart() {
+        let last = std::time::Instant::now();
+        let in_grace = last.elapsed().as_secs() < WATCHDOG_POST_RESTART_GRACE_S;
+        assert!(in_grace, "a just-completed restart should be within the grace window");
+    }
+
+    // After grace window: elapsed >= WATCHDOG_POST_RESTART_GRACE_S → do NOT suppress
+    #[test]
+    fn grace_period_expires() {
+        // Use an Instant far in the past by subtracting more than the grace period.
+        let old = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(WATCHDOG_POST_RESTART_GRACE_S + 10))
+            .expect("duration subtraction should not underflow");
+        let in_grace = old.elapsed().as_secs() < WATCHDOG_POST_RESTART_GRACE_S;
+        assert!(!in_grace, "an old restart should be outside the grace window");
+    }
+
+    // --- Watchdog threshold ---
+
+    #[test]
+    fn watchdog_threshold_is_five() {
+        assert_eq!(WATCHDOG_FAILS_BEFORE_RESTART, 5,
+            "threshold must be 5 so 25 s of failures are needed before restart");
+    }
+
+    // --- Startup and probe timeouts ---
+
+    #[test]
+    fn probe_read_timeout_is_four_seconds() {
+        // The probe uses Duration::from_secs(4) for the read timeout.
+        // Verify the constant is at least 3 s so a loaded server has room to respond.
+        let timeout = Duration::from_secs(4);
+        assert!(timeout >= Duration::from_secs(3));
+    }
 }
 

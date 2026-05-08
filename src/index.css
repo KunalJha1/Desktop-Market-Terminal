@@ -84,7 +84,8 @@
 
 .scrollbar-dark::-webkit-scrollbar-thumb:horizontal {
   min-width: 36px;
-  border: 1px solid transparent;
+  border: 2px solid transparent;
+  border-radius: 999px;
   background: rgba(255, 255, 255, 0.22);
   background-clip: padding-box;
 }
@@ -194,14 +195,9 @@
   background: #0d1117;
 }
 
-.scrollbar-panel {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(139, 148, 158, 0.34) transparent;
-}
-
 .scrollbar-panel::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
 }
 
 .scrollbar-panel::-webkit-scrollbar-track {
@@ -211,12 +207,13 @@
 .scrollbar-panel::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
-  background: rgba(139, 148, 158, 0.28);
+  background: rgba(255, 255, 255, 0.18);
   background-clip: padding-box;
+  min-height: 32px;
 }
 
 .scrollbar-panel::-webkit-scrollbar-thumb:hover {
-  background: rgba(230, 237, 243, 0.34);
+  background: rgba(255, 255, 255, 0.32);
   background-clip: padding-box;
 }
 

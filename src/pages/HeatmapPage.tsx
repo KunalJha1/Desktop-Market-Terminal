@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, memo } from "react";
+import { useEffect, useMemo, useRef, useState, memo, useCallback } from "react";
 import { Pencil, Plus, Trash2, ChevronDown } from "lucide-react";
 import CircularGauge from "../components/CircularGauge";
 import CustomSelect from "../components/CustomSelect";
@@ -113,6 +113,71 @@ function formatAsOf(asOf: number | null): string {
   });
 }
 
+interface HeatmapTileButtonProps {
+  rect: LayoutRect;
+  metricMode: HeatmapMetricMode;
+  onEnter: (data: HeatmapTile) => void;
+  onFocus: (data: HeatmapTile) => void;
+}
+
+const HeatmapTileButton = memo(function HeatmapTileButton({ rect, metricMode, onEnter, onFocus }: HeatmapTileButtonProps) {
+  const area = rect.w * rect.h;
+  const forceLabel = area > 5000;
+  const showSymbol = forceLabel || (rect.w > 28 && rect.h > 14);
+  const showMetric = forceLabel || (rect.w > 42 && rect.h > 26);
+  const showName = area > 12000 || (rect.w > 110 && rect.h > 52);
+  const showLogo = rect.w >= 64 && rect.h >= 64;
+  const logoSize = Math.min(28, Math.floor(Math.min(rect.w, rect.h) * 0.35));
+  const metricValue = getTileMetricValue(rect.data, metricMode);
+  const isUnknown = rect.data.status === "pending" || metricValue == null;
+
+  return (
+    <button
+      type="button"
+      className="absolute appearance-none overflow-hidden border border-[#20252c] p-0 text-left"
+      style={{
+        left: rect.x,
+        top: rect.y,
+        width: rect.w,
+        height: rect.h,
+        backgroundColor: getTileMetricColor(rect.data, metricMode),
+      }}
+      onMouseEnter={() => onEnter(rect.data)}
+      onFocus={() => onFocus(rect.data)}
+      title={`${rect.data.symbol} ${formatTileMetricValue(metricValue, metricMode)}`}
+    >
+      {showSymbol ? (
+        <div className="flex h-full flex-col items-center justify-center px-0.5 text-center">
+          {showLogo ? (
+            <img
+              src={`https://assets.parqet.com/logos/symbol/${rect.data.symbol}?format=svg`}
+              alt=""
+              width={logoSize}
+              height={logoSize}
+              className="mb-1 rounded-full object-contain"
+              style={{ width: logoSize, height: logoSize }}
+              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+            />
+          ) : null}
+          <span className="truncate font-sans text-[11px] font-semibold leading-none text-white">
+            {rect.data.symbol}
+          </span>
+          {showMetric ? (
+            <span className="mt-0.5 font-sans text-[10px] leading-none text-white/90">
+              {isUnknown ? "—" : formatTileMetricValue(metricValue, metricMode)}
+            </span>
+          ) : null}
+          {showName ? (
+            <span className="mt-0.5 truncate font-sans text-[10px] leading-none text-white/75">
+              {rect.data.name}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </button>
+  );
+});
+
 function HeatmapPage() {
   const sidecarPort = useSidecarPort();
   const { symbols: watchlistSymbols } = useWatchlist();
@@ -130,6 +195,9 @@ function HeatmapPage() {
   const [metricMode, setMetricMode] = useState<HeatmapMetricMode>(() => loadStoredMetricMode());
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+
+  const handleTileEnter = useCallback((data: HeatmapTile) => setHovered(data), []);
+  const handleTileFocus = useCallback((data: HeatmapTile) => setHovered(data), []);
 
   // Close group dropdown on outside click
   useEffect(() => {
@@ -467,64 +535,15 @@ function HeatmapPage() {
                 />
               ))}
 
-              {tileRects.map((rect) => {
-                const area = rect.w * rect.h;
-                const forceLabel = area > 5000;
-                const showSymbol = forceLabel || (rect.w > 28 && rect.h > 14);
-                const showMetric = forceLabel || (rect.w > 42 && rect.h > 26);
-                const showName = area > 12000 || (rect.w > 110 && rect.h > 52);
-                const showLogo = rect.w >= 64 && rect.h >= 64;
-                const logoSize = Math.min(28, Math.floor(Math.min(rect.w, rect.h) * 0.35));
-                const metricValue = getTileMetricValue(rect.data, metricMode);
-                const isUnknown = rect.data.status === "pending" || metricValue == null;
-
-                return (
-                  <button
-                    key={rect.data.symbol}
-                    type="button"
-                    className="absolute appearance-none overflow-hidden border border-[#20252c] p-0 text-left"
-                    style={{
-                      left: rect.x,
-                      top: rect.y,
-                      width: rect.w,
-                      height: rect.h,
-                      backgroundColor: getTileMetricColor(rect.data, metricMode),
-                    }}
-                    onMouseEnter={() => setHovered(rect.data)}
-                    onFocus={() => setHovered(rect.data)}
-                    title={`${rect.data.symbol} ${formatTileMetricValue(metricValue, metricMode)}`}
-                  >
-                    {showSymbol ? (
-                      <div className="flex h-full flex-col items-center justify-center px-0.5 text-center">
-                        {showLogo ? (
-                          <img
-                            src={`https://assets.parqet.com/logos/symbol/${rect.data.symbol}?format=svg`}
-                            alt=""
-                            width={logoSize}
-                            height={logoSize}
-                            className="mb-1 rounded-full object-contain"
-                            style={{ width: logoSize, height: logoSize }}
-                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
-                          />
-                        ) : null}
-                        <span className="truncate font-sans text-[11px] font-semibold leading-none text-white">
-                          {rect.data.symbol}
-                        </span>
-                        {showMetric ? (
-                          <span className="mt-0.5 font-sans text-[10px] leading-none text-white/90">
-                            {isUnknown ? "—" : formatTileMetricValue(metricValue, metricMode)}
-                          </span>
-                        ) : null}
-                        {showName ? (
-                          <span className="mt-0.5 truncate font-sans text-[10px] leading-none text-white/75">
-                            {rect.data.name}
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </button>
-                );
-              })}
+              {tileRects.map((rect) => (
+                <HeatmapTileButton
+                  key={rect.data.symbol}
+                  rect={rect}
+                  metricMode={metricMode}
+                  onEnter={handleTileEnter}
+                  onFocus={handleTileFocus}
+                />
+              ))}
 
               {sectorBounds.map((sector) => {
                 if (sector.headerHeight === 0) return null;

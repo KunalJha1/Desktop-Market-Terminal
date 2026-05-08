@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, memo } from "react";
+import { useEffect, useMemo, useRef, useState, memo, useCallback } from "react";
 import { X, ChevronDown, Plus } from "lucide-react";
 import ComponentLinkMenu from "./ComponentLinkMenu";
 import CustomSelect from "./CustomSelect";
@@ -103,6 +103,8 @@ function MiniHeatmapCard({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const cachedRectRef = useRef<DOMRect | null>(null);
+  const rafRef = useRef<number>(0);
   const [tooltip, setTooltip] = useState<{
     tile: HeatmapTile;
     x: number;
@@ -222,16 +224,28 @@ function MiniHeatmapCard({
 
   const { tileRects, sectorBounds } = layout;
 
-  const handleMouseMove = (e: React.MouseEvent, tile: HeatmapTile) => {
-    const container = containerRef.current;
-    if (!container) return;
-    const rect = container.getBoundingClientRect();
-    setTooltip({
-      tile,
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+  const handleTileMouseEnter = useCallback((e: React.MouseEvent, tile: HeatmapTile) => {
+    cachedRectRef.current = containerRef.current?.getBoundingClientRect() ?? null;
+    const r = cachedRectRef.current;
+    if (!r) return;
+    setTooltip({ tile, x: e.clientX - r.left, y: e.clientY - r.top });
+  }, []);
+
+  const handleTileMouseMove = useCallback((e: React.MouseEvent, tile: HeatmapTile) => {
+    cancelAnimationFrame(rafRef.current);
+    const cx = e.clientX;
+    const cy = e.clientY;
+    rafRef.current = requestAnimationFrame(() => {
+      const r = cachedRectRef.current;
+      if (!r) return;
+      setTooltip({ tile, x: cx - r.left, y: cy - r.top });
     });
-  };
+  }, []);
+
+  const handleTileMouseLeave = useCallback(() => {
+    cancelAnimationFrame(rafRef.current);
+    setTooltip(null);
+  }, []);
 
   async function handleSaveGroup(payload: HeatmapGroupPayload) {
     if (!sidecarPort) return;
@@ -364,7 +378,7 @@ function MiniHeatmapCard({
         onMouseLeave={() => setTooltip(null)}
       >
         {tileRects.length === 0 ? (
-          <div className="flex h-full items-center justify-center font-mono text-[10px] text-white/20">
+          <div className="absolute inset-0 flex items-center justify-center font-mono text-[10px] text-white/20">
             Loading...
           </div>
         ) : (
@@ -424,9 +438,9 @@ function MiniHeatmapCard({
                     height: rect.h,
                     backgroundColor: getTileMetricColor(rect.data, metricMode),
                   }}
-                  onMouseEnter={(e) => handleMouseMove(e, rect.data)}
-                  onMouseMove={(e) => handleMouseMove(e, rect.data)}
-                  onMouseLeave={() => setTooltip(null)}
+                  onMouseEnter={(e) => handleTileMouseEnter(e, rect.data)}
+                  onMouseMove={(e) => handleTileMouseMove(e, rect.data)}
+                  onMouseLeave={handleTileMouseLeave}
                 >
                   {showSymbol && (
                     <div className="flex h-full flex-col items-center justify-center px-0.5 text-center">

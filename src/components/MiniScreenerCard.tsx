@@ -597,7 +597,7 @@ function MiniScreenerCard({
       </div>
 
 
-      <div ref={containerRef} className="min-h-0 flex-1 overflow-auto scrollbar-none">
+      <div ref={containerRef} className="relative min-h-0 flex-1 overflow-auto scrollbar-none">
         <div style={{ width: tableMinWidth, minWidth: "100%" }} className="min-h-full">
           <div
             className="grid shrink-0 items-center border-b border-white/[0.06] bg-[#0D1117]"
@@ -682,7 +682,7 @@ function MiniScreenerCard({
           </div>
 
           {tiles.length === 0 ? (
-            <div className="flex h-full min-h-[160px] items-center justify-center font-mono text-[12px] text-white/35">
+            <div className="absolute inset-0 flex items-center justify-center font-mono text-[12px] text-white/35">
               Loading...
             </div>
           ) : (

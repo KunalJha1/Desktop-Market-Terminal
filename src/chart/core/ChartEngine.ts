@@ -2816,7 +2816,7 @@ export class ChartEngine {
       const data = this.getOrComputeVPSession(0, this.bars.length - 1, bins);
       if (data) {
         const anchorX = 8;
-        const maxDrawnWidth = this.renderOneVolumeProfileSession(data, anchorX, toY, clipTop, clipBottom, colorSet, maxProfileWidth);
+        const maxDrawnWidth = this.renderOneVolumeProfileSession(data, anchorX, toY, clipTop, clipBottom, colorSet, maxProfileWidth, chartAreaWidth);
         if (maxDrawnWidth > 0) {
           this.renderer.line(anchorX, clipTop, anchorX, clipBottom, this.withAlpha('#94A3B8', 0.30), 1);
           this.volumeProfileHitAreas.set(ind.id, {
@@ -2851,7 +2851,7 @@ export class ChartEngine {
       const rawAnchorX = this.viewport.barToPixelX(session.regularStart);
       const anchorX = Math.max(0, Math.round(rawAnchorX - this.viewport.barWidth / 2));
 
-      const maxDrawnWidth = this.renderOneVolumeProfileSession(data, anchorX, toY, clipTop, clipBottom, colorSet, maxProfileWidth);
+      const maxDrawnWidth = this.renderOneVolumeProfileSession(data, anchorX, toY, clipTop, clipBottom, colorSet, maxProfileWidth, chartAreaWidth);
       if (maxDrawnWidth > 0) {
         this.renderer.line(anchorX, clipTop, anchorX, clipBottom, this.withAlpha('#94A3B8', 0.25), 1);
         overallHitLeft  = Math.min(overallHitLeft,  anchorX);
@@ -2889,6 +2889,7 @@ export class ChartEngine {
     clipBottom: number,
     colors: { upFill: string; downFill: string; vaUpFill: string; vaDownFill: string; divider: string; pocColor: string },
     maxProfileWidth: number,
+    chartAreaEndX: number,
   ): number {
     const prices       = data[0] ?? [];
     const totalVolumes = data[1] ?? [];
@@ -2974,7 +2975,7 @@ export class ChartEngine {
     // out-of-bounds Y, so no logical range check needed here.
     if (pocIndex >= 0 && maxDrawnWidth > 0) {
       const pocY = Math.round(toY(prices[pocIndex]));
-      this.renderer.line(anchorX, pocY, anchorX + maxProfileWidth, pocY, colors.pocColor, 2);
+      this.renderer.line(anchorX, pocY, chartAreaEndX, pocY, colors.pocColor, 2);
     }
 
     return maxDrawnWidth;

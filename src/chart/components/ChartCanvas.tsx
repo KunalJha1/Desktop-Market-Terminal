@@ -115,6 +115,9 @@ export default function ChartCanvas({
   const [alertDialogPrice, setAlertDialogPrice] = useState(0);
   const [priceSectionHeight, setPriceSectionHeight] = useState(0);
   const [paneLayout, setPaneLayout] = useState<Array<{ paneId: string; top: number; height: number; yScaleMode: YScaleMode; showScaleControls: boolean; collapsed: boolean; maximized: boolean }>>([]);
+  const [hoveredPaneId, setHoveredPaneId] = useState<string | null>(null);
+  const paneLayoutRef = useRef(paneLayout);
+  paneLayoutRef.current = paneLayout;
 
   const notifyLayout = useCallback(() => {
     const engine = engineRef.current;
@@ -437,6 +440,8 @@ export default function ChartCanvas({
       drawingHoveredRef.current = hovered;
       setDrawingHovered(hovered);
     }
+    const pane = paneLayoutRef.current.find(p => y >= p.top && y < p.top + (p.collapsed ? 18 : p.height));
+    setHoveredPaneId(pane?.paneId ?? null);
   }, [engineRef]);
 
   const handleCanvasPointerLeave = useCallback(() => {
@@ -446,6 +451,7 @@ export default function ChartCanvas({
     setYAxisHovered(false);
     setXAxisHovered(false);
     setDrawingHovered(false);
+    setHoveredPaneId(null);
   }, []);
 
   useEffect(() => {
@@ -612,9 +618,11 @@ export default function ChartCanvas({
         {actionablePanes.map((pane, idx) => (
           <div
             key={`pane-actions-${pane.paneId}`}
-            className={`pointer-events-auto absolute z-20 flex items-center rounded-md border border-white/[0.08] bg-[#0d1117]/90 shadow-lg backdrop-blur-sm transition-colors duration-[120ms] hover:border-white/[0.16] ${
+            className={`pointer-events-auto absolute z-20 flex items-center rounded-md border border-white/[0.08] bg-[#0d1117]/90 shadow-lg backdrop-blur-sm transition-colors duration-[120ms] hover:border-white/[0.16] transition-opacity ${
               pane.collapsed ? 'gap-0.5 px-1 py-0.5' : 'gap-1 px-1.5 py-1'
-            }`}
+            } ${hoveredPaneId === pane.paneId ? 'opacity-100' : 'opacity-0'}`}
+            onMouseEnter={() => setHoveredPaneId(pane.paneId)}
+            onMouseLeave={() => setHoveredPaneId(null)}
             style={{
               right: PRICE_AXIS_WIDTH + 6,
               top: pane.top + (pane.collapsed ? 1 : 5),

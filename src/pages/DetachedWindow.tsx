@@ -1,6 +1,7 @@
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { isTauriRuntime, usePlatform } from "../lib/platform";
 import {
   getDetachedLabel,
@@ -233,6 +234,12 @@ export default function DetachedWindow() {
   useEffect(() => {
     if (!isTauriRuntime()) return;
 
+    // Listen for the Rust-emitted event so we allow close before win.close()
+    // fires onCloseRequested. localStorage is not shared across WebView processes.
+    const unlistenShutdown = listen("main-window-closing", () => {
+      allowNativeCloseRef.current = true;
+    });
+
     const unlisten = appWindow.onCloseRequested(async (event) => {
       if (allowNativeCloseRef.current || isMainWindowClosing()) {
         return;
@@ -243,6 +250,7 @@ export default function DetachedWindow() {
 
     return () => {
       unlisten.then((fn) => fn());
+      unlistenShutdown.then((fn) => fn());
     };
   }, [info, label]);
 

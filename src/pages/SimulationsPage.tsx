@@ -996,7 +996,7 @@ function SimulationsPage() {
           )}
 
           {/* Per-sim table */}
-          <div className="flex-1 overflow-y-auto min-h-0">
+          <div className="flex-1 overflow-y-auto min-h-0 scrollbar-dark">
             {simStates.length > 0 && (
               <>
                 <div className="flex items-center px-3 h-7 border-b border-white/[0.04] sticky top-0 bg-[#0D1117]">
