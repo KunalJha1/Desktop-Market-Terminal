@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, memo, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, memo, useCallback, useDeferredValue } from "react";
 import { Pencil, Plus, Trash2, ChevronDown } from "lucide-react";
 import CircularGauge from "../components/CircularGauge";
 import CustomSelect from "../components/CustomSelect";
@@ -116,11 +116,9 @@ function formatAsOf(asOf: number | null): string {
 interface HeatmapTileButtonProps {
   rect: LayoutRect;
   metricMode: HeatmapMetricMode;
-  onEnter: (data: HeatmapTile) => void;
-  onFocus: (data: HeatmapTile) => void;
 }
 
-const HeatmapTileButton = memo(function HeatmapTileButton({ rect, metricMode, onEnter, onFocus }: HeatmapTileButtonProps) {
+const HeatmapTileButton = memo(function HeatmapTileButton({ rect, metricMode }: HeatmapTileButtonProps) {
   const area = rect.w * rect.h;
   const forceLabel = area > 5000;
   const showSymbol = forceLabel || (rect.w > 28 && rect.h > 14);
@@ -132,9 +130,8 @@ const HeatmapTileButton = memo(function HeatmapTileButton({ rect, metricMode, on
   const isUnknown = rect.data.status === "pending" || metricValue == null;
 
   return (
-    <button
-      type="button"
-      className="absolute appearance-none overflow-hidden border border-[#20252c] p-0 text-left"
+    <div
+      className="absolute overflow-hidden border border-[#20252c]"
       style={{
         left: rect.x,
         top: rect.y,
@@ -142,9 +139,6 @@ const HeatmapTileButton = memo(function HeatmapTileButton({ rect, metricMode, on
         height: rect.h,
         backgroundColor: getTileMetricColor(rect.data, metricMode),
       }}
-      onMouseEnter={() => onEnter(rect.data)}
-      onFocus={() => onFocus(rect.data)}
-      title={`${rect.data.symbol} ${formatTileMetricValue(metricValue, metricMode)}`}
     >
       {showSymbol ? (
         <div className="flex h-full flex-col items-center justify-center px-0.5 text-center">
@@ -174,7 +168,57 @@ const HeatmapTileButton = memo(function HeatmapTileButton({ rect, metricMode, on
           ) : null}
         </div>
       ) : null}
-    </button>
+    </div>
+  );
+});
+
+interface HeatmapTilesProps {
+  tileRects: LayoutRect[];
+  sectorBounds: SectorBound[];
+  metricMode: HeatmapMetricMode;
+}
+
+const HeatmapTiles = memo(function HeatmapTiles({ tileRects, sectorBounds, metricMode }: HeatmapTilesProps) {
+  if (tileRects.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center font-mono text-[11px] text-white/30">
+        Waiting for warmed market snapshots...
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {sectorBounds.map((sector) => (
+        <div
+          key={`${sector.sector}-shell`}
+          className="pointer-events-none absolute border border-[#2b313a] bg-transparent"
+          style={{ left: sector.x, top: sector.y, width: sector.w, height: sector.h }}
+        />
+      ))}
+
+      {tileRects.map((rect) => (
+        <HeatmapTileButton key={rect.data.symbol} rect={rect} metricMode={metricMode} />
+      ))}
+
+      {sectorBounds.map((sector) => {
+        if (sector.headerHeight === 0) return null;
+        return (
+          <div
+            key={sector.sector}
+            className="pointer-events-none absolute flex items-center justify-between border border-[#2b313a] bg-[#2a2f36] px-1.5"
+            style={{ left: sector.x, top: sector.y, width: sector.w, height: sector.headerHeight }}
+          >
+            <span className="truncate font-sans text-[10px] font-semibold uppercase tracking-[0.08em] text-white/82">
+              {sector.sector}
+            </span>
+            <span className="font-mono text-[9px] text-white/42">
+              {formatMarketCap(sector.totalMarketCap)}
+            </span>
+          </div>
+        );
+      })}
+    </>
   );
 });
 
@@ -195,9 +239,9 @@ function HeatmapPage() {
   const [metricMode, setMetricMode] = useState<HeatmapMetricMode>(() => loadStoredMetricMode());
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
-
-  const handleTileEnter = useCallback((data: HeatmapTile) => setHovered(data), []);
-  const handleTileFocus = useCallback((data: HeatmapTile) => setHovered(data), []);
+  const rafRef = useRef<number>(0);
+  const containerRectRef = useRef<DOMRect | null>(null);
+  const tileRectsRef = useRef<LayoutRect[]>([]);
 
   // Close group dropdown on outside click
   useEffect(() => {
@@ -268,6 +312,7 @@ function HeatmapPage() {
     const el = containerRef.current;
     if (!el) return;
     const observer = new ResizeObserver(([entry]) => {
+      containerRectRef.current = null;
       setContainerSize({
         width: entry.contentRect.width,
         height: entry.contentRect.height,
@@ -364,10 +409,48 @@ function HeatmapPage() {
     return { tileRects: nextTileRects, sectorBounds: nextSectorBounds };
   }, [tiles, containerSize]);
 
+  useEffect(() => {
+    tileRectsRef.current = tileRects;
+  }, [tileRects]);
+
+  const handleContainerMouseMove = useCallback((e: React.MouseEvent) => {
+    cancelAnimationFrame(rafRef.current);
+    const cx = e.clientX;
+    const cy = e.clientY;
+    rafRef.current = requestAnimationFrame(() => {
+      if (!containerRectRef.current) {
+        containerRectRef.current = containerRef.current?.getBoundingClientRect() ?? null;
+      }
+      const r = containerRectRef.current;
+      if (!r) return;
+      const x = cx - r.left;
+      const y = cy - r.top;
+      const rects = tileRectsRef.current;
+      for (let i = 0; i < rects.length; i++) {
+        const rect = rects[i];
+        if (x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h) {
+          setHovered(rect.data);
+          return;
+        }
+      }
+    });
+  }, []);
+
+  const handleContainerMouseLeave = useCallback(() => {
+    cancelAnimationFrame(rafRef.current);
+    setHovered(null);
+  }, []);
+
   const totalTiles = tiles.length;
-  const loadedTiles = tiles.filter((tile) => tile.status !== "pending").length;
-  const legendItems = getLegendItems(metricMode);
-  const hoveredMetricValue = hovered ? getTileMetricValue(hovered, metricMode) : null;
+  const loadedTiles = useMemo(
+    () => tiles.filter((tile) => tile.status !== "pending").length,
+    [tiles],
+  );
+  const legendItems = useMemo(() => getLegendItems(metricMode), [metricMode]);
+
+  // Defer sidebar updates so treemap hit-testing stays on the fast path.
+  const deferredHovered = useDeferredValue(hovered);
+  const hoveredMetricValue = deferredHovered ? getTileMetricValue(deferredHovered, metricMode) : null;
 
   // Active group display label
   const activeLabel = activeGroup ? activeGroup.name : "S&P 500";
@@ -515,61 +598,14 @@ function HeatmapPage() {
         <div
           ref={containerRef}
           className="relative h-[calc(100%-32px)] min-h-0 overflow-hidden bg-[#1a1d23]"
+          onMouseMove={handleContainerMouseMove}
+          onMouseLeave={handleContainerMouseLeave}
         >
-          {tileRects.length === 0 ? (
-            <div className="flex h-full items-center justify-center font-mono text-[11px] text-white/30">
-              Waiting for warmed market snapshots...
-            </div>
-          ) : (
-            <>
-              {sectorBounds.map((sector) => (
-                <div
-                  key={`${sector.sector}-shell`}
-                  className="pointer-events-none absolute border border-[#2b313a] bg-transparent"
-                  style={{
-                    left: sector.x,
-                    top: sector.y,
-                    width: sector.w,
-                    height: sector.h,
-                  }}
-                />
-              ))}
-
-              {tileRects.map((rect) => (
-                <HeatmapTileButton
-                  key={rect.data.symbol}
-                  rect={rect}
-                  metricMode={metricMode}
-                  onEnter={handleTileEnter}
-                  onFocus={handleTileFocus}
-                />
-              ))}
-
-              {sectorBounds.map((sector) => {
-                if (sector.headerHeight === 0) return null;
-
-                return (
-                  <div
-                    key={sector.sector}
-                    className="pointer-events-none absolute flex items-center justify-between border border-[#2b313a] bg-[#2a2f36] px-1.5"
-                    style={{
-                      left: sector.x,
-                      top: sector.y,
-                      width: sector.w,
-                      height: sector.headerHeight,
-                    }}
-                  >
-                    <span className="truncate font-sans text-[10px] font-semibold uppercase tracking-[0.08em] text-white/82">
-                      {sector.sector}
-                    </span>
-                    <span className="font-mono text-[9px] text-white/42">
-                      {formatMarketCap(sector.totalMarketCap)}
-                    </span>
-                  </div>
-                );
-              })}
-            </>
-          )}
+          <HeatmapTiles
+            tileRects={tileRects}
+            sectorBounds={sectorBounds}
+            metricMode={metricMode}
+          />
         </div>
       </div>
 
@@ -592,18 +628,18 @@ function HeatmapPage() {
         </div>
 
         <div className="min-h-0 flex-1 px-3 py-3">
-          {hovered ? (
+          {deferredHovered ? (
             <div className="space-y-3">
               <div>
                 <p className="font-sans text-[20px] font-semibold leading-none text-white">
-                  {hovered.symbol}
+                  {deferredHovered.symbol}
                 </p>
-                <p className="mt-1 text-[11px] text-white/55">{hovered.name}</p>
+                <p className="mt-1 text-[11px] text-white/55">{deferredHovered.name}</p>
               </div>
 
               <div className="border border-white/[0.06] bg-[#141820] px-3 py-2">
                 <p className="font-sans text-[18px] font-semibold text-white">
-                  {formatPrice(hovered.last)}
+                  {formatPrice(deferredHovered.last)}
                 </p>
                 <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-white/35">
                   {getMetricLabel(metricMode)}
@@ -623,31 +659,31 @@ function HeatmapPage() {
                   <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-white/30">
                     Sector
                   </p>
-                  <p>{hovered.sector}</p>
+                  <p>{deferredHovered.sector}</p>
                 </div>
                 <div>
                   <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-white/30">
                     Industry
                   </p>
-                  <p>{hovered.industry}</p>
+                  <p>{deferredHovered.industry}</p>
                 </div>
                 <div>
                   <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-white/30">
                     Market Cap
                   </p>
-                  <p>{formatMarketCap(hovered.marketCap)}</p>
+                  <p>{formatMarketCap(deferredHovered.marketCap)}</p>
                 </div>
                 <div>
                   <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-white/30">
                     P/E
                   </p>
-                  <p>{hovered.trailingPE != null ? hovered.trailingPE.toFixed(1) : "—"}</p>
+                  <p>{deferredHovered.trailingPE != null ? deferredHovered.trailingPE.toFixed(1) : "—"}</p>
                 </div>
                 <div>
                   <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-white/30">
                     Forward P/E
                   </p>
-                  <p>{hovered.forwardPE != null ? hovered.forwardPE.toFixed(1) : "—"}</p>
+                  <p>{deferredHovered.forwardPE != null ? deferredHovered.forwardPE.toFixed(1) : "—"}</p>
                 </div>
               </div>
 
@@ -658,7 +694,7 @@ function HeatmapPage() {
                 <div className="grid grid-cols-3 gap-x-1 gap-y-2">
                   {HEATMAP_TECH_TIMEFRAMES.map(({ key, label }) => (
                     <div key={key} className="flex flex-col items-center gap-0.5">
-                      <CircularGauge score={resolveHeatmapTechScore(hovered, key)} size={38} />
+                      <CircularGauge score={resolveHeatmapTechScore(deferredHovered, key)} size={38} />
                       <span className="font-mono text-[8px] text-white/35">{label}</span>
                     </div>
                   ))}

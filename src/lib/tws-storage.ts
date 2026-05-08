@@ -17,6 +17,8 @@ export interface TwsSettings {
   finnhubApiKey: string;
   playbookMemory: string;
   playbookMemoryEnabled: boolean;
+  playbookSystemPrompt: string;
+  playbookTools: string[];
 }
 
 const FILENAME = "tws-settings.json";
@@ -47,6 +49,8 @@ function defaultSettings(): TwsSettings {
     finnhubApiKey: "",
     playbookMemory: "",
     playbookMemoryEnabled: false,
+    playbookSystemPrompt: "",
+    playbookTools: [],
   };
 }
 
@@ -80,6 +84,15 @@ export async function loadTwsSettings(): Promise<TwsSettings> {
         typeof parsed.playbookMemoryEnabled === "boolean"
           ? parsed.playbookMemoryEnabled
           : typeof parsed.playbookMemory === "string" && parsed.playbookMemory.trim().length > 0,
+      playbookSystemPrompt:
+        typeof parsed.playbookSystemPrompt === "string"
+          ? parsed.playbookSystemPrompt
+          : defaults.playbookSystemPrompt,
+      playbookTools:
+        Array.isArray(parsed.playbookTools) &&
+        parsed.playbookTools.every((t) => typeof t === "string")
+          ? parsed.playbookTools
+          : defaults.playbookTools,
     };
   } catch {
     return defaultSettings();

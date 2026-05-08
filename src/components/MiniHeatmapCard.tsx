@@ -28,6 +28,57 @@ import {
   getTileMetricValue,
 } from "../lib/heatmap-utils";
 
+interface TileListProps {
+  tileRects: LayoutRect[];
+  metricMode: HeatmapMetricMode;
+  onMouseEnter: (e: React.MouseEvent, tile: HeatmapTile) => void;
+  onMouseMove: (e: React.MouseEvent, tile: HeatmapTile) => void;
+  onMouseLeave: () => void;
+}
+
+const TileList = memo(function TileList({ tileRects, metricMode, onMouseEnter, onMouseMove, onMouseLeave }: TileListProps) {
+  return (
+    <>
+      {tileRects.map((rect) => {
+        const area = rect.w * rect.h;
+        const showSymbol = area > 600 || (rect.w > 22 && rect.h > 12);
+        const showMetric = area > 1800 || (rect.w > 36 && rect.h > 22);
+        const metricValue = getTileMetricValue(rect.data, metricMode);
+
+        return (
+          <div
+            key={rect.data.symbol}
+            className="absolute overflow-hidden border border-[#20252c]"
+            style={{
+              left: rect.x,
+              top: rect.y,
+              width: rect.w,
+              height: rect.h,
+              backgroundColor: getTileMetricColor(rect.data, metricMode),
+            }}
+            onMouseEnter={(e) => onMouseEnter(e, rect.data)}
+            onMouseMove={(e) => onMouseMove(e, rect.data)}
+            onMouseLeave={onMouseLeave}
+          >
+            {showSymbol && (
+              <div className="flex h-full flex-col items-center justify-center px-0.5 text-center">
+                <span className="truncate font-sans text-[9px] font-semibold leading-none text-white">
+                  {rect.data.symbol}
+                </span>
+                {showMetric && (
+                  <span className="mt-0.5 font-sans text-[8px] leading-none text-white/80">
+                    {formatTileMetricValue(metricValue, metricMode)}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+});
+
 interface MiniHeatmapCardProps {
   linkChannel: number | null;
   onSetLinkChannel: (channel: number | null) => void;
@@ -421,42 +472,13 @@ function MiniHeatmapCard({
               );
             })}
 
-            {tileRects.map((rect) => {
-              const area = rect.w * rect.h;
-              const showSymbol = area > 600 || (rect.w > 22 && rect.h > 12);
-              const showMetric = area > 1800 || (rect.w > 36 && rect.h > 22);
-              const metricValue = getTileMetricValue(rect.data, metricMode);
-
-              return (
-                <div
-                  key={rect.data.symbol}
-                  className="absolute overflow-hidden border border-[#20252c]"
-                  style={{
-                    left: rect.x,
-                    top: rect.y,
-                    width: rect.w,
-                    height: rect.h,
-                    backgroundColor: getTileMetricColor(rect.data, metricMode),
-                  }}
-                  onMouseEnter={(e) => handleTileMouseEnter(e, rect.data)}
-                  onMouseMove={(e) => handleTileMouseMove(e, rect.data)}
-                  onMouseLeave={handleTileMouseLeave}
-                >
-                  {showSymbol && (
-                    <div className="flex h-full flex-col items-center justify-center px-0.5 text-center">
-                      <span className="truncate font-sans text-[9px] font-semibold leading-none text-white">
-                        {rect.data.symbol}
-                      </span>
-                      {showMetric && (
-                        <span className="mt-0.5 font-sans text-[8px] leading-none text-white/80">
-                          {formatTileMetricValue(metricValue, metricMode)}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            <TileList
+              tileRects={tileRects}
+              metricMode={metricMode}
+              onMouseEnter={handleTileMouseEnter}
+              onMouseMove={handleTileMouseMove}
+              onMouseLeave={handleTileMouseLeave}
+            />
 
             {/* Tooltip */}
             {tooltip && (

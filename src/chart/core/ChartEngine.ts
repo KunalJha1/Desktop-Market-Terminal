@@ -2840,8 +2840,8 @@ export class ChartEngine {
     let overallHitRight = -Infinity;
 
     for (const session of sessions) {
-      // Skip sessions entirely outside the visible viewport
-      if (session.end < vpStart || session.regularStart > vpEnd) continue;
+      // Skip sessions with no RTH bars visible in the viewport
+      if (session.rthEnd < vpStart || session.regularStart > vpEnd) continue;
 
       const data = this.getOrComputeVPSession(session.regularStart, session.end, bins);
       if (!data) continue;
@@ -2851,7 +2851,13 @@ export class ChartEngine {
       const rawAnchorX = this.viewport.barToPixelX(session.regularStart);
       const anchorX = Math.max(0, Math.round(rawAnchorX - this.viewport.barWidth / 2));
 
-      const maxDrawnWidth = this.renderOneVolumeProfileSession(data, anchorX, toY, clipTop, clipBottom, colorSet, maxProfileWidth, chartAreaWidth);
+      // POC line ends at the right edge of the last RTH bar, not the full chart width
+      const pocLineEndX = Math.min(
+        chartAreaWidth,
+        Math.round(this.viewport.barToPixelX(session.rthEnd) + this.viewport.barWidth / 2),
+      );
+
+      const maxDrawnWidth = this.renderOneVolumeProfileSession(data, anchorX, toY, clipTop, clipBottom, colorSet, maxProfileWidth, pocLineEndX);
       if (maxDrawnWidth > 0) {
         this.renderer.line(anchorX, clipTop, anchorX, clipBottom, this.withAlpha('#94A3B8', 0.25), 1);
         overallHitLeft  = Math.min(overallHitLeft,  anchorX);
@@ -3021,12 +3027,13 @@ export class ChartEngine {
     return this.bars.slice(sessions[sessions.length - 1].regularStart);
   }
 
-  private static readonly MARKET_OPEN_MIN = 9 * 60 + 30; // 9:30 AM ET
+  private static readonly MARKET_OPEN_MIN  = 9 * 60 + 30; // 9:30 AM ET
+  private static readonly MARKET_CLOSE_MIN = 16 * 60;     // 4:00 PM ET
 
-  private getSessionBoundaries(): Array<{ regularStart: number; end: number }> {
+  private getSessionBoundaries(): Array<{ regularStart: number; rthEnd: number; end: number }> {
     const bars = this.bars;
     if (bars.length === 0) return [];
-    const sessions: Array<{ regularStart: number; end: number }> = [];
+    const sessions: Array<{ regularStart: number; rthEnd: number; end: number }> = [];
     let dayStart = 0;
 
     for (let i = 1; i <= bars.length; i++) {
@@ -3044,7 +3051,14 @@ export class ChartEngine {
           break;
         }
       }
-      sessions.push({ regularStart, end: dayEnd });
+      // Find last bar before 4:00 PM ET (end of RTH)
+      let rthEnd = regularStart;
+      for (let j = regularStart; j < i; j++) {
+        const p = etDatePartsFromMs(bars[j].time);
+        if (p.hour * 60 + p.minute < ChartEngine.MARKET_CLOSE_MIN) rthEnd = j;
+        else break;
+      }
+      sessions.push({ regularStart, rthEnd, end: dayEnd });
       dayStart = i;
     }
 

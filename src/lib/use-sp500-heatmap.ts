@@ -14,22 +14,16 @@ type HeatmapStore = {
 
 // Per-URL singleton stores so multiple components polling the same URL share one request.
 const storesByUrl = new Map<string, HeatmapStore>();
-const listeners = new Set<() => void>();
-let storeVersion = 0;
 
-function subscribeToStore(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-}
+// Per-URL listener sets — components only re-render when their specific URL's data changes.
+const listenersByUrl = new Map<string, Set<() => void>>();
+const versionsByUrl = new Map<string, number>();
 
-function getStoreVersion(): number {
-  return storeVersion;
-}
-
-function notifyStore() {
-  storeVersion += 1;
-  for (const listener of listeners) {
-    listener();
+function notifyUrl(url: string): void {
+  versionsByUrl.set(url, (versionsByUrl.get(url) ?? 0) + 1);
+  const set = listenersByUrl.get(url);
+  if (set) {
+    for (const listener of set) listener();
   }
 }
 
@@ -58,7 +52,7 @@ async function fetchHeatmapUrl(url: string, store: HeatmapStore): Promise<void> 
     const payload = await res.json();
     store.tiles = (payload.tiles as HeatmapTile[]) ?? [];
     store.asOf = typeof payload.asOf === "number" ? payload.asOf : null;
-    notifyStore();
+    notifyUrl(url);
   } catch {
     // Ignore transport failures; next poll retries.
   } finally {
@@ -81,6 +75,8 @@ function stopPolling(url: string, store: HeatmapStore): void {
     store.intervalId = null;
   }
   storesByUrl.delete(url);
+  listenersByUrl.delete(url);
+  versionsByUrl.delete(url);
 }
 
 function subscribeHeatmapUrl(url: string): () => void {
@@ -106,7 +102,25 @@ export function useHeatmapData(url: string | null): { tiles: HeatmapTile[]; asOf
     return subscribeHeatmapUrl(url);
   }, [url]);
 
-  const version = useSyncExternalStore(subscribeToStore, getStoreVersion);
+  const subscribe = useMemo(() => {
+    if (!url) return (_listener: () => void) => () => {};
+    return (listener: () => void) => {
+      let set = listenersByUrl.get(url);
+      if (!set) {
+        set = new Set();
+        listenersByUrl.set(url, set);
+      }
+      set.add(listener);
+      return () => { set!.delete(listener); };
+    };
+  }, [url]);
+
+  const getSnapshot = useMemo(() => {
+    if (!url) return () => 0;
+    return () => versionsByUrl.get(url) ?? 0;
+  }, [url]);
+
+  const version = useSyncExternalStore(subscribe, getSnapshot);
 
   return useMemo(() => {
     if (!url) return { tiles: [], asOf: null };

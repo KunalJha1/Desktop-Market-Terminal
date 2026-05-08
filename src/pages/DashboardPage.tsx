@@ -115,11 +115,8 @@ function DashboardPageComponent(_props: { tabId?: string }) {
       if (width < 100 || height < 100) return;
 
       setDashboardCanvasSize((prev) => {
-        if (!prev) return { width, height };
-        const nextWidth = Math.max(prev.width, width);
-        const nextHeight = Math.max(prev.height, height);
-        if (nextWidth === prev.width && nextHeight === prev.height) return prev;
-        return { width: nextWidth, height: nextHeight };
+        if (prev?.width === width && prev?.height === height) return prev;
+        return { width, height };
       });
     };
 

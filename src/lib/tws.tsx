@@ -149,6 +149,8 @@ export function TwsProvider({ children }: { children: ReactNode }) {
     finnhubApiKey: "",
     playbookMemory: "",
     playbookMemoryEnabled: false,
+    playbookSystemPrompt: "",
+    playbookTools: [],
   });
   const settingsRef = useRef(settings);
   settingsRef.current = settings;

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { X, RefreshCw, Download, CheckCircle, AlertTriangle, LogOut } from "lucide-react";
+import { X, RefreshCw, Download, CheckCircle, AlertTriangle, LogOut, Clipboard, ClipboardCheck } from "lucide-react";
 import { useTws } from "../lib/tws";
 import { useAuth } from "../lib/auth";
 import { checkUpdate, installUpdate, type UpdateManifest } from "@tauri-apps/api/updater";
@@ -19,6 +19,20 @@ interface SettingsPanelProps {
   onClose: () => void;
   updateAvailable?: boolean;
 }
+
+const SYSTEM_PROMPT_HELPER = `I'm configuring a local AI agent called the Playbook Monitor. It runs inside a trading dashboard and checks whether my live portfolio is following my personal trading rules.
+
+The agent receives:
+1. My trading rules (a bullet-point list I write manually)
+2. Named tool checks I define (e.g. check_position_size, flag_averaging_down, verify_risk_reward)
+3. Live portfolio snapshot data (positions, P&L, recent orders)
+
+Your job is to write the "Agent System Prompt" — the instruction layer that tells the model how to behave, what format to respond in, and what to prioritize. It should NOT contain my actual rules (those are injected separately). It should only describe how to analyze and present findings.
+
+Here is what I want this agent to focus on or how I want it to behave:
+[DESCRIBE WHAT YOU WANT HERE]
+
+Return only the system prompt text, ready to paste directly into the field. No explanation, no preamble, no markdown headers — just the raw prompt.`;
 
 const PLAYBOOK_PLACEHOLDER = `Example:
 - Prioritize risk management over new opportunities
@@ -109,6 +123,10 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
   const [intradayBackfillYearsDraft, setIntradayBackfillYearsDraft] = useState("2");
   const [playbookMemoryDraft, setPlaybookMemoryDraft] = useState("");
   const [playbookMemoryEnabledDraft, setPlaybookMemoryEnabledDraft] = useState(false);
+  const [playbookSystemPromptDraft, setPlaybookSystemPromptDraft] = useState("");
+  const [playbookToolsDraft, setPlaybookToolsDraft] = useState<string[]>([]);
+  const [playbookToolInput, setPlaybookToolInput] = useState("");
+  const [promptHelperCopied, setPromptHelperCopied] = useState(false);
   const [finnhubSaveMessage, setFinnhubSaveMessage] = useState("");
   const [finnhubSaveState, setFinnhubSaveState] = useState<"idle" | "success" | "error">("idle");
   const [playbookSaveMessage, setPlaybookSaveMessage] = useState("");
@@ -130,6 +148,9 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
     setIntradayBackfillYearsDraft(String(settings.intradayBackfillYears));
     setPlaybookMemoryDraft(settings.playbookMemory);
     setPlaybookMemoryEnabledDraft(settings.playbookMemoryEnabled);
+    setPlaybookSystemPromptDraft(settings.playbookSystemPrompt);
+    setPlaybookToolsDraft(settings.playbookTools);
+    setPlaybookToolInput("");
     setFinnhubSaveMessage("");
     setFinnhubSaveState("idle");
     setPlaybookSaveMessage("");
@@ -139,6 +160,8 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
     settings.intradayBackfillYears,
     settings.playbookMemory,
     settings.playbookMemoryEnabled,
+    settings.playbookSystemPrompt,
+    settings.playbookTools,
   ]);
 
   if (!open) return null;
@@ -175,7 +198,9 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
   const playbookHasText = playbookMemoryDraft.trim().length > 0;
   const playbookDirty =
     playbookMemoryDraft !== settings.playbookMemory ||
-    playbookMemoryEnabledDraft !== settings.playbookMemoryEnabled;
+    playbookMemoryEnabledDraft !== settings.playbookMemoryEnabled ||
+    playbookSystemPromptDraft !== settings.playbookSystemPrompt ||
+    playbookToolsDraft.join(",") !== settings.playbookTools.join(",");
 
   async function handleFinnhubSave() {
     setFinnhubSaveMessage("");
@@ -199,14 +224,38 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
     updateSettings({
       playbookMemory: playbookMemoryDraft,
       playbookMemoryEnabled: playbookHasText ? playbookMemoryEnabledDraft : false,
+      playbookSystemPrompt: playbookSystemPromptDraft,
+      playbookTools: playbookToolsDraft,
     });
-    setPlaybookSaveMessage("Playbook memory saved");
+    setPlaybookSaveMessage("Playbook saved");
   }
 
   function handlePlaybookClear() {
     setPlaybookMemoryDraft("");
     setPlaybookMemoryEnabledDraft(false);
+    setPlaybookSystemPromptDraft("");
+    setPlaybookToolsDraft([]);
+    setPlaybookToolInput("");
     setPlaybookSaveMessage("");
+  }
+
+  function handleAddTool() {
+    const name = playbookToolInput.trim().replace(/\s+/g, "_");
+    if (!name || playbookToolsDraft.includes(name)) return;
+    setPlaybookToolsDraft((prev) => [...prev, name]);
+    setPlaybookToolInput("");
+    setPlaybookSaveMessage("");
+  }
+
+  function handleRemoveTool(tool: string) {
+    setPlaybookToolsDraft((prev) => prev.filter((t) => t !== tool));
+    setPlaybookSaveMessage("");
+  }
+
+  async function handleCopyPromptHelper() {
+    await navigator.clipboard.writeText(SYSTEM_PROMPT_HELPER);
+    setPromptHelperCopied(true);
+    setTimeout(() => setPromptHelperCopied(false), 2500);
   }
 
   async function handleSignOut() {
@@ -327,68 +376,6 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
             >
               {status === "probing" ? "Probing..." : "Probe Now"}
             </button>
-          </section>
-
-          {/* Trading Configuration */}
-          <section>
-            <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-white/30">
-              Trading Configuration (IBKR ONLY)
-            </h3>
-
-            {/* Radio: FA Group vs Account */}
-            <div className="mb-3 flex flex-col gap-2">
-              <label className="flex cursor-pointer items-center gap-2 text-[11px] text-white/50">
-                <input
-                  type="radio"
-                  name="tradingMode"
-                  checked={settings.tradingMode === "fa-group"}
-                  onChange={() => updateSettings({ tradingMode: "fa-group" })}
-                  className="accent-blue"
-                />
-                Trade using FA Group
-              </label>
-              <label className="flex cursor-pointer items-center gap-2 text-[11px] text-white/50">
-                <input
-                  type="radio"
-                  name="tradingMode"
-                  checked={settings.tradingMode === "account"}
-                  onChange={() => updateSettings({ tradingMode: "account" })}
-                  className="accent-blue"
-                />
-                Trade using Account
-              </label>
-            </div>
-
-            {/* Conditional input */}
-            {settings.tradingMode === "fa-group" ? (
-              <div>
-                <label className="mb-1 block text-[10px] text-white/30">
-                  FA Group Name
-                </label>
-                <input
-                  type="text"
-                  value={settings.faGroup}
-                  onChange={(e) => updateSettings({ faGroup: e.target.value })}
-                  placeholder="e.g. AllAccounts"
-                  className="w-full rounded border border-white/[0.08] bg-base px-2 py-1 font-mono text-[11px] text-white/60 outline-none transition-colors duration-75 placeholder:text-white/15 focus:border-blue/40"
-                />
-              </div>
-            ) : (
-              <div>
-                <label className="mb-1 block text-[10px] text-white/30">
-                  Account ID
-                </label>
-                <input
-                  type="text"
-                  value={settings.accountId}
-                  onChange={(e) =>
-                    updateSettings({ accountId: e.target.value })
-                  }
-                  placeholder="e.g. DU1234567"
-                  className="w-full rounded border border-white/[0.08] bg-base px-2 py-1 font-mono text-[11px] text-white/60 outline-none transition-colors duration-75 placeholder:text-white/15 focus:border-blue/40"
-                />
-              </div>
-            )}
           </section>
 
           <section className="mt-6">
@@ -539,6 +526,89 @@ export default function SettingsPanel({ open, onClose, updateAvailable }: Settin
             <p className="mt-2 text-[10px] leading-4 text-white/28">
               This text is prepended to the AI monitor context as a persistent instruction layer.
             </p>
+
+            {/* System prompt */}
+            <div className="mt-4">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <label className="text-[10px] text-white/30">
+                  Agent System Prompt
+                </label>
+                <button
+                  type="button"
+                  onClick={handleCopyPromptHelper}
+                  className="flex items-center gap-1 rounded border border-white/[0.08] bg-base px-2 py-0.5 text-[10px] text-white/40 transition-colors duration-75 hover:bg-white/[0.04] hover:text-white/65"
+                >
+                  {promptHelperCopied
+                    ? <><ClipboardCheck className="h-3 w-3 text-green" strokeWidth={1.5} /><span className="text-green">Copied</span></>
+                    : <><Clipboard className="h-3 w-3" strokeWidth={1.5} />Copy generation prompt</>
+                  }
+                </button>
+              </div>
+              <textarea
+                value={playbookSystemPromptDraft}
+                onChange={(e) => {
+                  setPlaybookSystemPromptDraft(e.target.value);
+                  setPlaybookSaveMessage("");
+                }}
+                placeholder="Paste the output from ChatGPT / Claude here after using the generation prompt above."
+                className="min-h-[120px] w-full resize-y rounded-md border border-white/[0.08] bg-base px-3 py-2 text-[11px] leading-5 text-white/72 outline-none transition-colors duration-75 placeholder:text-white/18 focus:border-blue/40"
+                spellCheck={false}
+              />
+              <p className="mt-1 text-[10px] leading-4 text-white/28">
+                Click <span className="text-white/45">Copy generation prompt</span>, paste into ChatGPT or Claude, describe what you want, then paste the result back here.
+              </p>
+            </div>
+
+            {/* Agent tools */}
+            <div className="mt-4">
+              <label className="mb-1 block text-[10px] text-white/30">
+                Agent Tools
+              </label>
+              <p className="mb-2 text-[10px] leading-4 text-white/28">
+                Named checks the agent should run on each analysis pass. Use snake_case (e.g.{" "}
+                <span className="font-mono text-white/40">check_position_size</span>).
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={playbookToolInput}
+                  onChange={(e) => setPlaybookToolInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); handleAddTool(); }
+                  }}
+                  placeholder="tool_name"
+                  className="flex-1 rounded border border-white/[0.08] bg-base px-2 py-1 font-mono text-[11px] text-white/60 outline-none transition-colors duration-75 placeholder:text-white/15 focus:border-blue/40"
+                  spellCheck={false}
+                />
+                <button
+                  type="button"
+                  onClick={handleAddTool}
+                  disabled={!playbookToolInput.trim()}
+                  className="rounded-md border border-white/[0.08] bg-base px-3 py-1 text-[11px] text-white/50 transition-colors duration-120 hover:bg-white/[0.04] hover:text-white/70 disabled:opacity-40"
+                >
+                  Add
+                </button>
+              </div>
+              {playbookToolsDraft.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {playbookToolsDraft.map((tool) => (
+                    <span
+                      key={tool}
+                      className="flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-white/55"
+                    >
+                      {tool}
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveTool(tool)}
+                        className="ml-0.5 text-white/25 transition-colors duration-75 hover:text-white/60"
+                      >
+                        <X className="h-2.5 w-2.5" strokeWidth={2} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <div className="mt-3 flex items-center justify-between gap-3">
               <button

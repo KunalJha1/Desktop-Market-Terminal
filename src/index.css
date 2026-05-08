@@ -50,17 +50,18 @@
 }
 
 .scrollbar-dark {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.26) transparent;
+  scrollbar-width: auto;
+  scrollbar-color: rgba(255, 255, 255, 0.26) #0d1117;
 }
 
 .scrollbar-dark::-webkit-scrollbar {
   width: 7px;
   height: 7px;
+  background: #0d1117;
 }
 
 .scrollbar-dark::-webkit-scrollbar-track {
-  background: transparent;
+  background: #0d1117;
 }
 
 .scrollbar-dark::-webkit-scrollbar:horizontal {
@@ -193,6 +194,11 @@
 
 .scrollbar-mac::-webkit-scrollbar-corner {
   background: #0d1117;
+}
+
+.scrollbar-panel {
+  scrollbar-width: auto;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
 }
 
 .scrollbar-panel::-webkit-scrollbar {

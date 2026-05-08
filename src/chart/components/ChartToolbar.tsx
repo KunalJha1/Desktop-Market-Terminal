@@ -12,6 +12,7 @@ import {
   Code,
   Search,
   Settings2,
+  Clock,
 } from 'lucide-react';
 import ComponentLinkMenu from '../../components/ComponentLinkMenu';
 import SymbolSearchModal from '../../components/SymbolSearchModal';
@@ -227,7 +228,7 @@ export default function ChartToolbar({
                 }`}
               title="More timeframes"
             >
-              🕒
+              <Clock size={14} />
             </button>
             {timeframeOpen && (
               <div className="absolute top-full right-0 mt-1 bg-panel border border-border-default rounded-btn py-1 z-50 min-w-[64px]">
@@ -476,19 +477,6 @@ export default function ChartToolbar({
         {isStale && !loading && (
           <div className="w-2 h-2 rounded-full bg-amber opacity-40" title="Refreshing data…" />
         )}
-        <span className={`text-[9px] font-mono ${
-          dataSource === 'tws' ? 'text-green'
-            : dataSource === 'dailyiq' ? 'text-cyan-400'
-            : dataSource === 'yahoo' ? 'text-blue'
-            : dataSource === 'cache' ? 'text-amber'
-            : 'text-text-muted'
-        }`}>
-          {dataSource === 'tws' ? 'LIVE'
-            : dataSource === 'dailyiq' ? 'DIQ'
-            : dataSource === 'yahoo' ? 'YAHOO'
-            : dataSource === 'cache' ? 'CACHED'
-            : 'OFFLINE'}
-        </span>
       </div>
 
     </div>

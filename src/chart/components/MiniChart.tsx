@@ -32,7 +32,7 @@ import {
 import { PRICE_AXIS_CONTROL_HEIGHT, PRICE_AXIS_WIDTH, VOLUME_PANE_RATIO } from '../constants';
 import { useSidecarPort } from '../../lib/tws';
 import { linkBus } from '../../lib/link-bus';
-import { X, ChevronDown, ChevronUp, Search, TrendingUp, BrainCircuit, Minus, Maximize2, ChevronsUpDown, GripHorizontal, Lock, Unlock } from 'lucide-react';
+import { X, ChevronDown, ChevronUp, Search, TrendingUp, BrainCircuit, Minus, Maximize2, ChevronsUpDown, GripHorizontal, Lock, Unlock, Clock } from 'lucide-react';
 import ComponentLinkMenu from '../../components/ComponentLinkMenu';
 import ScrollArea from '../../components/ScrollArea';
 import IndicatorLegend from './IndicatorLegend';
@@ -2398,13 +2398,15 @@ export default function MiniChart({
                   borderRadius: 2,
                   border: 'none',
                   cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
                   backgroundColor: activeHiddenTimeframe || showTimeframeMenu ? 'rgba(59, 130, 246, 0.1)' : 'transparent',
                   color: activeHiddenTimeframe ? '#3B82F6' : '#FFFFFF',
                   lineHeight: 1,
                 }}
                 title="More timeframes"
               >
-                🕒
+                <Clock size={14} />
               </button>
 
               {showTimeframeMenu && (
