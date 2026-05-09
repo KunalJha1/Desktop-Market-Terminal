@@ -10,4 +10,3 @@ requests
 httpx
 python-dotenv
 psutil
-llama-cpp-python
