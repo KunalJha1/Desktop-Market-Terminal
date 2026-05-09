@@ -84,7 +84,7 @@ uv python install 3.12
 
 echo "[setup-backend] Creating virtual environment..."
 cd "$BACKEND_DIR"
-uv venv --python 3.12
+uv venv --python 3.12 --clear
 
 echo "[setup-backend] Installing dependencies..."
 _install_core "uv"
