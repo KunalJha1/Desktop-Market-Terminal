@@ -2,6 +2,7 @@ import { Renderer } from '../core/Renderer';
 import { Viewport } from '../core/Viewport';
 import type { OHLCVBar } from '../types';
 import { COLORS, BAR_BODY_RATIO, VOLUME_PANE_RATIO } from '../constants';
+import { isWeekendGap } from '../core/timeUtils';
 
 interface VolumeBarRenderOptions {
   top?: number;
@@ -31,12 +32,13 @@ export class VolumeBarRenderer {
 
     let maxVol = 0;
     for (let i = start; i < end; i++) {
-      if (bars[i].volume > maxVol) maxVol = bars[i].volume;
+      if (!isWeekendGap(bars[i].time) && bars[i].volume > maxVol) maxVol = bars[i].volume;
     }
     if (maxVol === 0) return;
 
     for (let i = start; i < end; i++) {
       const bar = bars[i];
+      if (isWeekendGap(bar.time)) continue;
       const slotWidth = viewport.getBarSlotWidth(i);
       const bodyWidth = Math.max(1, Math.min(slotWidth * widthRatio, slotWidth - 1));
       const cx = viewport.barToPixelX(i);

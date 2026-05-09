@@ -262,6 +262,18 @@ export function useOptionsRefresh(
 
   const intervalMs = source === "tws" ? 15_000 : 60_000;
 
+  // One-shot: fire immediately whenever the symbol changes, regardless of session,
+  // so the options page always loads with fresh data (pre/post/regular market).
+  useEffect(() => {
+    if (!sidecarPort || !symbol) return;
+    let cancelled = false;
+    fetch(`http://127.0.0.1:${sidecarPort}/options/refresh?symbol=${encodeURIComponent(symbol)}`, {
+      method: "POST",
+    }).then(() => { if (!cancelled) setLastRefreshed(new Date()); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [sidecarPort, symbol]);
+
+  // Interval polling: only during REGULAR session to avoid hammering the provider.
   useEffect(() => {
     if (!sidecarPort || !symbol || session !== "REGULAR") return;
 
@@ -279,7 +291,6 @@ export function useOptionsRefresh(
       if (!cancelled) setRefreshing(false);
     }
 
-    doRefresh();
     const id = setInterval(doRefresh, intervalMs);
     return () => { cancelled = true; clearInterval(id); };
   }, [sidecarPort, symbol, expiration, session, intervalMs]);

@@ -125,7 +125,9 @@ def ticker_to_quote(symbol: str, t: Ticker) -> dict | None:
     ask = _price(t.ask)
     close = _price(t.close)
     mid = round((bid + ask) / 2, 4) if bid is not None and ask is not None else None
-    display = last if last is not None else (mid if mid is not None else close)
+    # Only use close as display if we have a real live price — otherwise TWS would
+    # write last=prevClose, change=0.00 after hours and overwrite good DailyIQ quotes.
+    display = last if last is not None else mid
     if display is None:
         return None
 
@@ -1816,13 +1818,16 @@ async def worker_loop(host: str, ports: List[int], client_id: int) -> None:
                 await asyncio.sleep(poll_interval_s)
                 continue
             regular_hours = _is_regular_market_hours()
-            if tws_connected:
+            if tws_connected and regular_hours:
+                # During regular hours, only refresh symbols TWS missed/staled.
                 fallback_symbols = await asyncio.to_thread(
                     read_symbols_needing_quote_fallback,
                     symbols,
-                    include_stale_tws=regular_hours,
+                    include_stale_tws=True,
                 )
             else:
+                # After hours / pre-market / weekend: TWS has no live prices, so
+                # always refresh all symbols via DailyIQ/Yahoo for real extended-hours quotes.
                 fallback_symbols = symbols
             if not fallback_symbols:
                 await asyncio.sleep(poll_interval_s)

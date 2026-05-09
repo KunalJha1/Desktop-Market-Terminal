@@ -301,9 +301,16 @@ function OptionsSnapshotCard({
     if (!node) return;
 
     const updateScale = (width: number, height: number) => {
-      const areaScale = Math.sqrt((width * height) / (340 * 440));
-      const widthScale = width / 340;
-      const heightScale = height / 440;
+      // Normalize against a 1920px reference viewport so the card content
+      // doesn't inflate on wider screens (e.g. 1440p) where the same column
+      // fraction allocates significantly more CSS pixels.
+      const vpNorm = Math.min(1.0, Math.sqrt(1920 / Math.max(window.innerWidth, 1)));
+      const normW = width * vpNorm;
+      const normH = height * vpNorm;
+
+      const areaScale = Math.sqrt((normW * normH) / (340 * 440));
+      const widthScale = normW / 340;
+      const heightScale = normH / 440;
       const nextScale = Math.min(areaScale, widthScale * 1.2, heightScale * 1.25) * 1.35;
       setCardScale(clamp(nextScale, 1.05, 2.45));
     };

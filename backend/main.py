@@ -1032,15 +1032,34 @@ def read_options_estimate(symbol: str, expiration: int | None = None) -> dict:
 def _fetch_live_quote_for_options(symbol: str) -> float | None:
     """Return the freshest possible underlying price for the options screen.
 
-    Uses the same priority as the watchlist worker so the options screen and
-    watchlist always show the same price:
-      1. watchlist_quotes (kept fresh by background worker, TWS > DailyIQ > Yahoo)
-      2. market_snapshots
-      3. DailyIQ live snapshot (for symbols not on the watchlist)
+    Priority:
+      1. watchlist_quotes with source='tws' — real-time streaming price, always preferred
+      2. DailyIQ fresh network fetch — most accurate, works in all sessions
+      3. watchlist_quotes (any source) — background-worker cached price
+      4. market_snapshots
     Falls back silently so the options screen always loads even if data is unavailable.
     """
     if not symbol:
         return None
+    # TWS real-time price is the most accurate — use it unconditionally when available
+    try:
+        with sync_db_session() as conn:
+            row = conn.execute(
+                "SELECT last FROM watchlist_quotes WHERE symbol = ? AND source = 'tws'", (symbol,)
+            ).fetchone()
+            if row and row[0]:
+                return float(row[0])
+    except Exception:
+        pass
+    # Always fetch a fresh price from DailyIQ (most accurate, works in all sessions)
+    try:
+        from dailyiq_provider import fetch_quote_from_dailyiq
+        q = fetch_quote_from_dailyiq(symbol)
+        if q and q.get("last"):
+            return float(q["last"])
+    except Exception:
+        pass
+    # Fall back to cached data
     try:
         with sync_db_session() as conn:
             row = conn.execute(
@@ -1053,13 +1072,6 @@ def _fetch_live_quote_for_options(symbol: str) -> float | None:
             ).fetchone()
             if row and row[0]:
                 return float(row[0])
-    except Exception:
-        pass
-    try:
-        from dailyiq_provider import fetch_quote_from_dailyiq
-        q = fetch_quote_from_dailyiq(symbol)
-        if q and q.get("last"):
-            return float(q["last"])
     except Exception:
         pass
     return None

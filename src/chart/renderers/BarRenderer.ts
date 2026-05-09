@@ -2,6 +2,7 @@ import { Renderer } from '../core/Renderer';
 import { Viewport } from '../core/Viewport';
 import type { OHLCVBar } from '../types';
 import { COLORS, BAR_BODY_RATIO } from '../constants';
+import { isWeekendGap } from '../core/timeUtils';
 
 /**
  * OHLC bar chart: vertical line high-low, left tick open, right tick close.
@@ -14,6 +15,7 @@ export class BarRenderer {
 
     for (let i = start; i < end; i++) {
       const bar = bars[i];
+      if (isWeekendGap(bar.time)) continue;
       const cx = viewport.barToPixelX(i);
       const bullish = bar.close >= bar.open;
       const color = bullish ? COLORS.green : COLORS.red;

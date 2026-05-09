@@ -132,6 +132,18 @@ function averageScores(scores: TechScores, visibleTfs: TaScoreTimeframe[]): numb
   return values.reduce((sum, score) => sum + score, 0) / values.length;
 }
 
+function blendedVerdict(
+  taScore: number | null,
+  sentimentScore: number | null,
+  taWeight: number, // 0–100; 100 = pure TA, 0 = pure sentiment
+): number | null {
+  const w = taWeight / 100;
+  if (taScore != null && sentimentScore != null) return taScore * w + sentimentScore * (1 - w);
+  if (taScore != null) return taScore;
+  if (sentimentScore != null) return sentimentScore;
+  return null;
+}
+
 const SymbolLogo = memo(function SymbolLogo({ symbol }: { symbol: string }) {
   const [failed, setFailed] = useState(false);
   const upper = symbol.toUpperCase();
@@ -193,6 +205,10 @@ function MiniScreenerCard({
   const [symbolModalOpen, setSymbolModalOpen] = useState(false);
   const [colDragState, setColDragState] = useState<ColumnDragState | null>(null);
   const [colInsertBeforeId, setColInsertBeforeId] = useState<ColumnId | null>(null);
+  const [verdictBlend, setVerdictBlend] = useState<number>(() => {
+    const raw = config.verdictBlend;
+    return typeof raw === "number" && raw >= 0 && raw <= 100 ? raw : 100;
+  });
   const headerCellRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const suppressSortRef = useRef(false);
   const colInsertBeforeIdRef = useRef<ColumnId | null>(null);
@@ -205,6 +221,11 @@ function MiniScreenerCard({
   useEffect(() => {
     setColumnWidths(configuredColumnWidths);
   }, [configuredColumnWidths]);
+
+  useEffect(() => {
+    const raw = config.verdictBlend;
+    if (typeof raw === "number" && raw >= 0 && raw <= 100) setVerdictBlend(raw);
+  }, [config.verdictBlend]);
 
   useEffect(() => {
     if (!colPickerOpen) return;
@@ -392,10 +413,11 @@ function MiniScreenerCard({
         "1d": detailed?.get("1d")?.score ?? tile.techScore1d ?? null,
         "1w": detailed?.get("1w")?.score ?? tile.techScore1w ?? null,
       };
+      const taScore = averageScores(techScores, visibleTimeframes);
       return {
         ...tile,
         techScores,
-        verdictScore: averageScores(techScores, visibleTimeframes),
+        verdictScore: blendedVerdict(taScore, tile.sentimentScore ?? null, verdictBlend),
       };
     });
 
@@ -442,7 +464,7 @@ function MiniScreenerCard({
     });
 
     return filtered;
-  }, [tiles, technicals, visibleTimeframes, sortDir, sortKey]);
+  }, [tiles, technicals, visibleTimeframes, sortDir, sortKey, verdictBlend]);
 
   const gridTemplateColumns = useMemo(
     () =>
@@ -567,6 +589,33 @@ function MiniScreenerCard({
                       {visibleTimeframes.length > 0
                         ? "Toggle timeframes to show or hide score columns."
                         : "Click a timeframe to add a score column"}
+                    </p>
+                  </div>
+                  <div className="border-t border-white/[0.08] p-2">
+                    <p className="mb-2 text-[9px] uppercase tracking-[0.14em] text-white/28">Verdict Blend</p>
+                    <div className="flex items-center gap-2">
+                      <span className="w-[54px] shrink-0 text-right font-mono text-[9px] text-white/45">Sentiment</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={5}
+                        value={verdictBlend}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setVerdictBlend(v);
+                          persistConfig({ verdictBlend: v });
+                        }}
+                        className="h-[3px] flex-1 cursor-pointer appearance-none rounded-full bg-white/[0.10] accent-blue [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-blue"
+                      />
+                      <span className="w-[36px] shrink-0 font-mono text-[9px] text-white/45">TA</span>
+                    </div>
+                    <p className="mt-1.5 text-center font-mono text-[9px] text-white/35">
+                      {verdictBlend === 100
+                        ? "TA only"
+                        : verdictBlend === 0
+                          ? "Sentiment only"
+                          : `${verdictBlend}% TA · ${100 - verdictBlend}% Sentiment`}
                     </p>
                   </div>
                 </div>,

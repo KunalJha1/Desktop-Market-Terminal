@@ -2,6 +2,7 @@ import { Renderer } from '../core/Renderer';
 import { Viewport } from '../core/Viewport';
 import type { OHLCVBar } from '../types';
 import { COLORS, BAR_BODY_RATIO } from '../constants';
+import { isWeekendGap } from '../core/timeUtils';
 
 const VOLUME_EMA_PERIOD = 200;
 const MIN_WIDTH_SCALE = 0.2;
@@ -223,6 +224,7 @@ export class VolumeWeightedRenderer {
 
     for (let i = start; i < end; i++) {
       const bar = bars[i];
+      if (isWeekendGap(bar.time)) continue;
       const cx = viewport.barToPixelX(i);
       const slotWidth = viewport.getBarSlotWidth(i);
       const bullish = bar.close >= bar.open;
