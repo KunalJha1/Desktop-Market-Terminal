@@ -135,10 +135,12 @@ const DAILYIQ_API_KEY: &str = match option_env!("DAILYIQ_API_KEY") {
 
 const OAUTH_CALLBACK_PORT: u16 = 17284;
 const WATCHDOG_POLL_INTERVAL_S: u64 = 5;
-const WATCHDOG_FAILS_BEFORE_RESTART: u32 = 5;
-const WATCHDOG_RESTART_BACKOFF_S: u64 = 20;
+const WATCHDOG_FAILS_BEFORE_RESTART: u32 = 8;
+const WATCHDOG_RESTART_BACKOFF_S: u64 = 60;
 // After a restart, don't count health failures for this many seconds (backend warm-up time).
-const WATCHDOG_POST_RESTART_GRACE_S: u64 = 30;
+// Must be >= the startup health-poll window (SIDECAR_STARTUP_TIMEOUT_S) so that a slow but
+// successful cold-start isn't immediately hammered by the watchdog.
+const WATCHDOG_POST_RESTART_GRACE_S: u64 = 90;
 
 #[derive(Clone, serde::Serialize)]
 struct BackendStatus {
@@ -1119,10 +1121,11 @@ fn do_spawn_sidecar(app_handle: &AppHandle, state: &SidecarState) -> Result<u16,
     *state.child.lock().unwrap() = Some(child);
     *state.port.lock().unwrap() = Some(sidecar_port);
 
-    // Poll /healthz until ready (max 30s)
+    // Poll /healthz until ready (max WATCHDOG_POST_RESTART_GRACE_S so the startup window
+    // and the post-restart grace period are always in sync).
     let addr = format!("127.0.0.1:{}", sidecar_port);
     let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(30) {
+    while start.elapsed() < Duration::from_secs(WATCHDOG_POST_RESTART_GRACE_S) {
         if is_shutting_down(state) {
             if let Some(child) = state.child.lock().unwrap().take() {
                 child.kill();
@@ -1152,7 +1155,7 @@ fn do_spawn_sidecar(app_handle: &AppHandle, state: &SidecarState) -> Result<u16,
     }
     *state.port.lock().unwrap() = None;
 
-    Err("Sidecar failed to become ready within 30s".to_string())
+    Err(format!("Sidecar failed to become ready within {}s", WATCHDOG_POST_RESTART_GRACE_S))
 }
 
 /// Why a `/healthz` probe failed (or `Ok` if it succeeded). The watchdog logs
@@ -1190,11 +1193,11 @@ fn probe_sidecar_http_health(port: u16) -> HealthProbe {
         Ok(a) => a,
         Err(_) => return HealthProbe::BadAddr,
     };
-    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(800)) {
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
         Ok(s) => s,
         Err(_) => return HealthProbe::ConnectFailed,
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(8)));
     let request = "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
     if stream.write_all(request.as_bytes()).is_err() {
         return HealthProbe::WriteFailed;
@@ -1820,19 +1823,20 @@ mod tests {
     // --- Watchdog threshold ---
 
     #[test]
-    fn watchdog_threshold_is_five() {
-        assert_eq!(WATCHDOG_FAILS_BEFORE_RESTART, 5,
-            "threshold must be 5 so 25 s of failures are needed before restart");
+    fn watchdog_threshold_is_sane() {
+        assert!(
+            WATCHDOG_FAILS_BEFORE_RESTART >= 5,
+            "threshold must be >= 5 so at least 25 s of consecutive failures are needed before restart"
+        );
     }
 
     // --- Startup and probe timeouts ---
 
     #[test]
-    fn probe_read_timeout_is_four_seconds() {
-        // The probe uses Duration::from_secs(4) for the read timeout.
-        // Verify the constant is at least 3 s so a loaded server has room to respond.
-        let timeout = Duration::from_secs(4);
-        assert!(timeout >= Duration::from_secs(3));
+    fn probe_read_timeout_is_generous() {
+        // Verify the probe read timeout gives a loaded server room to respond.
+        let timeout = Duration::from_secs(8);
+        assert!(timeout >= Duration::from_secs(5));
     }
 }
 

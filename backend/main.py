@@ -1549,13 +1549,17 @@ def create_app() -> FastAPI:
             else:
                 logger.info("stdin is not a live pipe (GUI launch) — stdin watchdog skipped")
 
-        # Pre-warm persistent IB connection for portfolio reads
+        # Pre-warm persistent IB connection for portfolio reads.
+        # Hard timeout: if ib_insync's handshake hangs we must not block the lifespan
+        # (and thus delay /healthz from becoming available) indefinitely.
         port = await probe_tws_port(DEFAULT_TWS_HOST, DEFAULT_TWS_PORTS)
         if port is not None:
             pool.set_tws_address(DEFAULT_TWS_HOST, port)
             try:
-                await pool.get_or_create(PORTFOLIO_ROLE)
+                await asyncio.wait_for(pool.get_or_create(PORTFOLIO_ROLE), timeout=15.0)
                 logger.info(f"Persistent IB connection established on port {port}")
+            except asyncio.TimeoutError:
+                logger.warning("IBKR connection timed out at startup (>15s); will retry on first request")
             except Exception:
                 logger.warning("TWS not available at startup; portfolio connection will be attempted on first request")
         else:
@@ -3627,4 +3631,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
     import uvicorn
 
-    uvicorn.run(create_app(), host="127.0.0.1", port=args.port, log_level="info")
+    uvicorn.run(
+        create_app(),
+        host="127.0.0.1",
+        port=args.port,
+        log_level="info",
+        # Keep idle connections alive long enough that the watchdog probe never
+        # races against a keep-alive timeout (default is only 5 s).
+        timeout_keep_alive=120,
+        # Give a stalled /healthz handler up to 30 s before uvicorn forcibly closes
+        # the connection.  The Rust probe's read timeout (8 s) fires first, so this
+        # is just a safety net against runaway handlers.
+        timeout_graceful_shutdown=30,
+    )
