@@ -11,13 +11,13 @@ VENV_DIR="$BACKEND_DIR/.venv"
 export MACOSX_DEPLOYMENT_TARGET=11.0
 export CMAKE_ARGS="-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0"
 
-# Detect venv pip/python path (cross-platform: Windows uses Scripts/, Unix uses bin/)
-if [ -f "$VENV_DIR/Scripts/pip.exe" ]; then
-    VENV_PIP="$VENV_DIR/Scripts/pip.exe"
+# Detect venv python path (cross-platform: Windows uses Scripts/, Unix uses bin/)
+if [ -f "$VENV_DIR/Scripts/python.exe" ]; then
     VENV_PYTHON="$VENV_DIR/Scripts/python.exe"
-else
-    VENV_PIP="$VENV_DIR/bin/pip"
+elif [ -f "$VENV_DIR/bin/python" ]; then
     VENV_PYTHON="$VENV_DIR/bin/python"
+else
+    VENV_PYTHON=""
 fi
 
 # Fast path: venv already exists — sync requirements in case they changed
@@ -25,11 +25,11 @@ if [ -f "$VENV_DIR/pyvenv.cfg" ]; then
     if command -v uv &>/dev/null; then
         uv pip install -q -r "$BACKEND_DIR/requirements.txt" \
             || echo "[setup-backend] Warning: failed to sync requirements — some packages may be outdated"
-    elif [ -f "$VENV_PIP" ]; then
-        "$VENV_PIP" install -q -r "$BACKEND_DIR/requirements.txt" \
+    elif [ -n "$VENV_PYTHON" ] && [ -f "$VENV_PYTHON" ]; then
+        "$VENV_PYTHON" -m pip install -q -r "$BACKEND_DIR/requirements.txt" \
             || echo "[setup-backend] Warning: failed to sync requirements — some packages may be outdated"
     else
-        echo "[setup-backend] Warning: neither uv nor venv pip found — skipping sync"
+        echo "[setup-backend] Warning: neither uv nor venv python found — skipping sync"
     fi
     exit 0
 fi
