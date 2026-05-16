@@ -10,6 +10,7 @@ import {
   diqChopText, diqChopColor, diqChopTextColor,
   diqRsiText, diqRsiColor,
   diqMacdText, diqMacdColor,
+  diqEmaCrossText, diqEmaCrossColor, diqEmaCrossTextColor,
   diqVolMomText, diqVolMomColor, diqVolMomTextColor,
 } from '../../lib/table-overlay';
 import { DIQ_TABLE_TIMEFRAMES } from '../indicators/overlays/dailyIQTechnicalTable.constants';
@@ -58,7 +59,7 @@ export default function DailyIQTechnicalTableOverlay({
   const [headerHovered, setHeaderHovered] = useState(false);
   const rows = snapshot?.rows ?? DIQ_TABLE_TIMEFRAMES.map((tf) => ({
     tf, trend: NaN, strength: NaN, chop: NaN, rsiNow: NaN, rsiPrev: NaN,
-    macdNow: NaN, macdSignal: NaN, macdPrev: NaN, macdSignalPrev: NaN, volMom: NaN,
+    macdNow: NaN, macdSignal: NaN, macdPrev: NaN, macdSignalPrev: NaN, emaCross: NaN, emaCrossGapDir: NaN, volMom: NaN,
   }));
 
   const overallTrend = snapshot?.overallTrend ?? NaN;
@@ -68,6 +69,7 @@ export default function DailyIQTechnicalTableOverlay({
   const overallMacdState = snapshot?.overallMacdState ?? NaN;
   const overallMacdText = overallMacdState === 1 ? 'Bull' : overallMacdState === -1 ? 'Bear' : 'Flat';
   const overallMacdColor = overallMacdState === 1 ? DIQ_TABLE_BULL_GREEN : overallMacdState === -1 ? '#FF3D71' : '#6B7280';
+  const overallEmaCross = snapshot?.overallEmaCross ?? NaN;
   const overallVolMom = snapshot?.overallVolMom ?? NaN;
   const showHeader = !widget.locked || headerHovered;
   const widthScale = (widget.width - minWidth) / (maxWidth - minWidth);
@@ -154,12 +156,12 @@ export default function DailyIQTechnicalTableOverlay({
       <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative', backgroundColor: '#1E2232', userSelect: 'none', WebkitUserSelect: 'none' }}>
         <table style={{ width: '100%', height: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: bodyFontSize, fontFamily: '"JetBrains Mono", monospace', color: '#E6EDF3', backgroundColor: '#1E2232', tableLayout: 'fixed', userSelect: 'none', WebkitUserSelect: 'none' }}>
           <colgroup>
-            <col style={{ width: '16%' }} /><col style={{ width: '14%' }} /><col style={{ width: '13%' }} />
-            <col style={{ width: '18%' }} /><col style={{ width: '13%' }} /><col style={{ width: '13%' }} /><col style={{ width: '13%' }} />
+            <col style={{ width: '14%' }} /><col style={{ width: '12%' }} /><col style={{ width: '12%' }} />
+            <col style={{ width: '16%' }} /><col style={{ width: '13%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} />
           </colgroup>
           <thead>
             <tr>
-              {['Timeframe', 'Trend', 'Strength', 'Chop', 'RSI', 'MACD', 'Vol Mom'].map((head) => (
+              {['Timeframe', 'Trend', 'Strength', 'Chop', 'RSI', 'MACD', 'EMA Cross', 'Vol Mom'].map((head) => (
                 <th key={head} style={{ position: 'sticky', top: 0, zIndex: 1, padding: headerCellPadding, borderBottom: '1px solid rgba(255,255,255,0.14)', backgroundColor: '#1E2232', color: '#FFFFFF', textAlign: head === 'Timeframe' ? 'left' : 'center', fontWeight: 600, fontSize: headerFontSize, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{head}</th>
               ))}
             </tr>
@@ -173,6 +175,7 @@ export default function DailyIQTechnicalTableOverlay({
                 <td style={{ padding: bodyCellPadding, backgroundColor: diqChopColor(row.chop), color: diqChopTextColor(row.chop), textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqChopText(row.chop)}</td>
                 <td style={{ padding: bodyCellPadding, backgroundColor: diqRsiColor(row.rsiNow, row.rsiPrev), color: '#FFFFFF', textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqRsiText(row.rsiNow, row.rsiPrev)}</td>
                 <td style={{ padding: bodyCellPadding, backgroundColor: diqMacdColor(row.macdNow, row.macdSignal, row.macdPrev, row.macdSignalPrev), color: '#FFFFFF', textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqMacdText(row.macdNow, row.macdSignal, row.macdPrev, row.macdSignalPrev)}</td>
+                <td style={{ padding: bodyCellPadding, backgroundColor: diqEmaCrossColor(row.emaCross), color: diqEmaCrossTextColor(row.emaCross), textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqEmaCrossText(row.emaCross, row.emaCrossGapDir)}</td>
                 <td style={{ padding: bodyCellPadding, backgroundColor: diqVolMomColor(row.volMom), color: diqVolMomTextColor(row.volMom), textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqVolMomText(row.volMom)}</td>
               </tr>
             ))}
@@ -183,6 +186,7 @@ export default function DailyIQTechnicalTableOverlay({
               <td style={{ padding: overallCellPadding, backgroundColor: diqChopColor(overallChop), color: diqChopTextColor(overallChop), textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqChopText(overallChop)}</td>
               <td style={{ padding: overallCellPadding, backgroundColor: diqRsiColor(overallRsi, overallRsi), color: '#FFFFFF', textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{Number.isFinite(overallRsi) ? overallRsi.toFixed(1) : '--'}</td>
               <td style={{ padding: overallCellPadding, backgroundColor: overallMacdColor, color: '#FFFFFF', textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{overallMacdText}</td>
+              <td style={{ padding: overallCellPadding, backgroundColor: diqEmaCrossColor(overallEmaCross), color: diqEmaCrossTextColor(overallEmaCross), textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{Number.isFinite(overallEmaCross) ? (overallEmaCross === 1 ? 'Bull ↑' : overallEmaCross === -1 ? 'Bear ↓' : 'Mixed →') : '--'}</td>
               <td style={{ padding: overallCellPadding, backgroundColor: diqVolMomColor(overallVolMom), color: diqVolMomTextColor(overallVolMom), textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{Number.isFinite(overallVolMom) ? (overallVolMom === 1 ? 'SBM ↑' : overallVolMom === -1 ? 'SSM ↓' : 'Mixed →') : '--'}</td>
             </tr>
           </tbody>

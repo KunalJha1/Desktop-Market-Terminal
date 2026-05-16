@@ -13,6 +13,8 @@ export interface TechnicalTableRowSnapshot {
   macdSignal: number;
   macdPrev: number;
   macdSignalPrev: number;
+  emaCross: number;    // 2=Bull Cross, 1=Bull above, -1=Bear below, -2=Bear Cross, 0=Flat
+  emaCrossGapDir: number; // 1=gap expanding, -1=gap shrinking, 0=flat
   volMom: number; // 1=SBM, -1=SSM, 2=BullDiv, -2=BearDiv, 0=Flat
 }
 
@@ -23,6 +25,7 @@ export interface TechnicalTableSnapshot {
   overallChop: number;
   overallRsi: number;
   overallMacdState: number;
+  overallEmaCross: number; // 1=bull majority, -1=bear majority, 0=mixed
   overallVolMom: number; // 1=SBM dominates, -1=SSM dominates, 0=Mixed
 }
 
@@ -174,6 +177,30 @@ export function diqMacdColor(macdNow: number, signalNow: number, macdPrev: numbe
   if (macdNow > signalNow) return DIQ_TABLE_BULL_GREEN;
   if (macdNow < signalNow) return '#FB923C';
   return '#6B7280';
+}
+
+export function diqEmaCrossText(v: number, gapDir: number): string {
+  if (!Number.isFinite(v)) return '--';
+  const gap = gapDir === 1 ? '↑' : gapDir === -1 ? '↓' : '→';
+  if (v === 2) return `Bull X ↑${gap}`;
+  if (v === 1) return `Bull ↑${gap}`;
+  if (v === -1) return `Bear ↓${gap}`;
+  if (v === -2) return `Bear X ↓${gap}`;
+  return 'Flat →';
+}
+
+export function diqEmaCrossColor(v: number): string {
+  if (!Number.isFinite(v)) return '#6B7280';
+  if (v === 2) return '#00C853';
+  if (v === 1) return DIQ_TABLE_BULL_GREEN;
+  if (v === -1) return '#991B1B';
+  if (v === -2) return '#FF3D71';
+  return '#6B7280';
+}
+
+export function diqEmaCrossTextColor(v: number): string {
+  if (v === 2) return '#000000';
+  return '#FFFFFF';
 }
 
 export function diqVolMomText(v: number): string {
@@ -400,7 +427,7 @@ export function computeTechnicalTableRowFromBars(
   slowLen: number,
   trendLen: number,
 ): TechnicalTableRowSnapshot {
-  const row: TechnicalTableRowSnapshot = { tf, trend: NaN, strength: NaN, chop: NaN, rsiNow: NaN, rsiPrev: NaN, macdNow: NaN, macdSignal: NaN, macdPrev: NaN, macdSignalPrev: NaN, volMom: NaN };
+  const row: TechnicalTableRowSnapshot = { tf, trend: NaN, strength: NaN, chop: NaN, rsiNow: NaN, rsiPrev: NaN, macdNow: NaN, macdSignal: NaN, macdPrev: NaN, macdSignalPrev: NaN, emaCross: NaN, emaCrossGapDir: NaN, volMom: NaN };
   if (bars.length === 0) return row;
 
   const closes = bars.map((b) => b.close);
@@ -443,6 +470,28 @@ export function computeTechnicalTableRowFromBars(
   if (trendIndex >= 0) {
     row.trend = closes[trendIndex] > trend[trendIndex] && fast[trendIndex] > slow[trendIndex] ? 1
       : closes[trendIndex] < trend[trendIndex] && fast[trendIndex] < slow[trendIndex] ? -1 : 0;
+  }
+
+  const emaCrossIndex = (() => {
+    for (let idx = i; idx >= 0; idx -= 1) if (Number.isFinite(fast[idx]) && Number.isFinite(slow[idx])) return idx;
+    return -1;
+  })();
+  if (emaCrossIndex >= 0) {
+    const fastNow = fast[emaCrossIndex];
+    const slowNow = slow[emaCrossIndex];
+    const prevIdx = findPreviousFiniteIndex(fast, emaCrossIndex);
+    const fastPrev = prevIdx >= 0 ? fast[prevIdx] : NaN;
+    const slowPrev = prevIdx >= 0 ? slow[prevIdx] : NaN;
+    const bullCross = Number.isFinite(fastPrev) && Number.isFinite(slowPrev) && fastPrev <= slowPrev && fastNow > slowNow;
+    const bearCross = Number.isFinite(fastPrev) && Number.isFinite(slowPrev) && fastPrev >= slowPrev && fastNow < slowNow;
+    row.emaCross = bullCross ? 2 : bearCross ? -2 : fastNow > slowNow ? 1 : fastNow < slowNow ? -1 : 0;
+    if (Number.isFinite(fastPrev) && Number.isFinite(slowPrev)) {
+      const gapNow = Math.abs(fastNow - slowNow);
+      const gapPrev = Math.abs(fastPrev - slowPrev);
+      row.emaCrossGapDir = gapNow > gapPrev ? 1 : gapNow < gapPrev ? -1 : 0;
+    } else {
+      row.emaCrossGapDir = 0;
+    }
   }
 
   const strengthIndex = (() => {

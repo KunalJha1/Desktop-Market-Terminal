@@ -1348,13 +1348,14 @@ export default function MiniChart({
           computeTechnicalTableRowFromBars('1D', bars1d, techTableFastLen, techTableSlowLen, techTableTrendLen),
           computeTechnicalTableRowFromBars('1W', bars1w, techTableFastLen, techTableSlowLen, techTableTrendLen),
         ];
-        let bullCount = 0, bearCount = 0, strengthSum = 0, strengthCount = 0, chopSum = 0, chopCount = 0, rsiSum = 0, rsiCount = 0, macdBull = 0, macdBear = 0, volMomBull = 0, volMomBear = 0;
+        let bullCount = 0, bearCount = 0, strengthSum = 0, strengthCount = 0, chopSum = 0, chopCount = 0, rsiSum = 0, rsiCount = 0, macdBull = 0, macdBear = 0, emaCrossBull = 0, emaCrossBear = 0, volMomBull = 0, volMomBear = 0;
         for (const row of rows) {
           if (row.trend === 1) bullCount += 1; else if (row.trend === -1) bearCount += 1;
           if (Number.isFinite(row.strength)) { strengthSum += row.strength; strengthCount += 1; }
           if (Number.isFinite(row.chop)) { chopSum += row.chop; chopCount += 1; }
           if (Number.isFinite(row.rsiNow)) { rsiSum += row.rsiNow; rsiCount += 1; }
           if (Number.isFinite(row.macdNow) && Number.isFinite(row.macdSignal)) { if (row.macdNow > row.macdSignal) macdBull += 1; else if (row.macdNow < row.macdSignal) macdBear += 1; }
+          if (row.emaCross > 0) emaCrossBull += 1; else if (row.emaCross < 0) emaCrossBear += 1;
           if (row.volMom === 1) volMomBull += 1; else if (row.volMom === -1) volMomBear += 1;
         }
         const snapshot: TechnicalTableSnapshot = {
@@ -1364,6 +1365,7 @@ export default function MiniChart({
           overallChop: chopCount > 0 ? chopSum / chopCount : NaN,
           overallRsi: rsiCount > 0 ? rsiSum / rsiCount : NaN,
           overallMacdState: macdBull > macdBear ? 1 : macdBear > macdBull ? -1 : 0,
+          overallEmaCross: emaCrossBull > emaCrossBear ? 1 : emaCrossBear > emaCrossBull ? -1 : 0,
           overallVolMom: volMomBull > volMomBear ? 1 : volMomBear > volMomBull ? -1 : 0,
         };
         if (!cancelled) { techTableSnapshotCacheRef.current = { key: cacheKey, snapshot }; setTechTableSnapshot(snapshot); }

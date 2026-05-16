@@ -576,6 +576,8 @@ interface TechnicalTableRowSnapshot {
   macdSignal: number;
   macdPrev: number;
   macdSignalPrev: number;
+  emaCross: number;
+  emaCrossGapDir: number;
   volMom: number;
 }
 
@@ -586,6 +588,7 @@ interface TechnicalTableSnapshot {
   overallChop: number;
   overallRsi: number;
   overallMacdState: number;
+  overallEmaCross: number;
   overallVolMom: number;
 }
 
@@ -1057,6 +1060,8 @@ function computeTechnicalTableRowFromBars(
     macdSignal: NaN,
     macdPrev: NaN,
     macdSignalPrev: NaN,
+    emaCross: NaN,
+    emaCrossGapDir: NaN,
     volMom: NaN,
   };
 
@@ -1121,6 +1126,29 @@ function computeTechnicalTableRowFromBars(
         ? -1
         : 0;
   }
+
+  const emaCrossIndex = (() => {
+    for (let idx = i; idx >= 0; idx -= 1) if (Number.isFinite(fast[idx]) && Number.isFinite(slow[idx])) return idx;
+    return -1;
+  })();
+  if (emaCrossIndex >= 0) {
+    const fastNow = fast[emaCrossIndex];
+    const slowNow = slow[emaCrossIndex];
+    const prevIdx = findPreviousFiniteIndex(fast, emaCrossIndex);
+    const fastPrev = prevIdx >= 0 ? fast[prevIdx] : NaN;
+    const slowPrev = prevIdx >= 0 ? slow[prevIdx] : NaN;
+    const bullCross = Number.isFinite(fastPrev) && Number.isFinite(slowPrev) && fastPrev <= slowPrev && fastNow > slowNow;
+    const bearCross = Number.isFinite(fastPrev) && Number.isFinite(slowPrev) && fastPrev >= slowPrev && fastNow < slowNow;
+    row.emaCross = bullCross ? 2 : bearCross ? -2 : fastNow > slowNow ? 1 : fastNow < slowNow ? -1 : 0;
+    if (Number.isFinite(fastPrev) && Number.isFinite(slowPrev)) {
+      const gapNow = Math.abs(fastNow - slowNow);
+      const gapPrev = Math.abs(fastPrev - slowPrev);
+      row.emaCrossGapDir = gapNow > gapPrev ? 1 : gapNow < gapPrev ? -1 : 0;
+    } else {
+      row.emaCrossGapDir = 0;
+    }
+  }
+
 
   const strengthIndex = (() => {
     for (let idx = i; idx >= 0; idx -= 1) {
@@ -2087,6 +2115,8 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
         let rsiCount = 0;
         let macdBull = 0;
         let macdBear = 0;
+        let emaCrossBull = 0;
+        let emaCrossBear = 0;
         let volMomBull = 0;
         let volMomBear = 0;
 
@@ -2109,6 +2139,8 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
             if (row.macdNow > row.macdSignal) macdBull += 1;
             else if (row.macdNow < row.macdSignal) macdBear += 1;
           }
+          if (row.emaCross > 0) emaCrossBull += 1;
+          else if (row.emaCross < 0) emaCrossBear += 1;
           if (row.volMom === 1) volMomBull += 1;
           else if (row.volMom === -1) volMomBear += 1;
         }
@@ -2120,6 +2152,7 @@ function ChartPage({ tabId, allowSplit = true, compact = false }: ChartPageProps
           overallChop: chopCount > 0 ? (chopSum / chopCount) : NaN,
           overallRsi: rsiCount > 0 ? (rsiSum / rsiCount) : NaN,
           overallMacdState: macdBull > macdBear ? 1 : macdBear > macdBull ? -1 : 0,
+          overallEmaCross: emaCrossBull > emaCrossBear ? 1 : emaCrossBear > emaCrossBull ? -1 : 0,
           overallVolMom: volMomBull > volMomBear ? 1 : volMomBear > volMomBull ? -1 : 0,
         };
 
