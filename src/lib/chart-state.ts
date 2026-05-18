@@ -100,8 +100,8 @@ export function createDefaultLiquidityTableWidgetState(): TechnicalTableWidgetSt
   return {
     x: 120,
     y: 120,
-    width: 560,
-    height: 310,
+    width: 800,
+    height: 400,
     visible: true,
     locked: false,
   };
@@ -348,8 +348,8 @@ export function loadChartState(tabId: string): ChartState | null {
             const base = {
               x: typeof lw.x === "number" ? lw.x : 120,
               y: typeof lw.y === "number" ? lw.y : 120,
-              width: typeof lw.width === "number" ? Math.max(400, Math.min(680, lw.width)) : 560,
-              height: typeof lw.height === "number" ? Math.max(270, Math.min(520, lw.height)) : 310,
+              width: typeof lw.width === "number" ? Math.max(700, Math.min(1100, lw.width)) : 800,
+              height: typeof lw.height === "number" ? Math.max(340, Math.min(700, lw.height)) : 400,
               visible: typeof lw.visible === "boolean" ? lw.visible : true,
               locked: typeof lw.locked === "boolean" ? lw.locked : false,
             };
