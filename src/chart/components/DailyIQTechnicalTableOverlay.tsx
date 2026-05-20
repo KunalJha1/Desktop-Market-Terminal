@@ -42,8 +42,8 @@ export default function DailyIQTechnicalTableOverlay({
   widget,
   dragging,
   resizing,
-  minWidth = 360,
-  maxWidth = 680,
+  minWidth = 440,
+  maxWidth = 900,
   minHeight = 250,
   maxHeight = 520,
   onHeaderPointerDown,
@@ -72,18 +72,19 @@ export default function DailyIQTechnicalTableOverlay({
   const overallEmaCross = snapshot?.overallEmaCross ?? NaN;
   const overallVolMom = snapshot?.overallVolMom ?? NaN;
   const showHeader = !widget.locked || headerHovered;
-  const widthScale = (widget.width - minWidth) / (maxWidth - minWidth);
-  const heightScale = (widget.height - minHeight) / (maxHeight - minHeight);
-  const tableScale = Math.max(0, Math.min(1, (widthScale + heightScale) / 2));
-  const titleFontSize = 10 + (tableScale * 4);
-  const headerFontSize = 10 + (tableScale * 5);
-  const bodyFontSize = 10 + (tableScale * 5);
-  const headerPadY = 5 + (tableScale * 5);
-  const headerPadX = 7 + (tableScale * 7);
-  const bodyPadY = 4 + (tableScale * 5);
-  const bodyPadX = 7 + (tableScale * 6);
-  const overallPadY = 5 + (tableScale * 5);
-  const overallPadX = 7 + (tableScale * 7);
+  const wScale = Math.max(0, Math.min(1, (widget.width - minWidth) / (maxWidth - minWidth)));
+  const hScale = Math.max(0, Math.min(1, (widget.height - minHeight) / (maxHeight - minHeight)));
+  const tableScale = (wScale + hScale) / 2;
+  // font + horizontal padding scale with WIDTH only so text never overflows its % column
+  const titleFontSize = 9 + (wScale * 3);
+  const headerFontSize = 9 + (wScale * 3);
+  const bodyFontSize = 9 + (wScale * 3);
+  const headerPadY = 5 + (hScale * 5);
+  const headerPadX = 4 + (wScale * 5);
+  const bodyPadY = 3 + (hScale * 4);
+  const bodyPadX = 4 + (wScale * 5);
+  const overallPadY = 5 + (hScale * 5);
+  const overallPadX = 4 + (wScale * 5);
   const headerCellPadding = `${headerPadY}px ${headerPadX}px`;
   const bodyCellPadding = `${bodyPadY}px ${bodyPadX}px`;
   const overallCellPadding = `${overallPadY}px ${overallPadX}px`;
@@ -156,38 +157,39 @@ export default function DailyIQTechnicalTableOverlay({
       <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative', backgroundColor: '#1E2232', userSelect: 'none', WebkitUserSelect: 'none' }}>
         <table style={{ width: '100%', height: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: bodyFontSize, fontFamily: '"JetBrains Mono", monospace', color: '#E6EDF3', backgroundColor: '#1E2232', tableLayout: 'fixed', userSelect: 'none', WebkitUserSelect: 'none' }}>
           <colgroup>
-            <col style={{ width: '14%' }} /><col style={{ width: '12%' }} /><col style={{ width: '12%' }} />
-            <col style={{ width: '16%' }} /><col style={{ width: '13%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} />
+            {/* widths proportional to longest content: Timeframe(9) Trend(7) Strength(8) Chop(11) RSI(7) MACD(8) EMA Cross(9) Vol Mom(10) = 69 units */}
+            <col style={{ width: '13%' }} /><col style={{ width: '10%' }} /><col style={{ width: '12%' }} />
+            <col style={{ width: '16%' }} /><col style={{ width: '10%' }} /><col style={{ width: '12%' }} /><col style={{ width: '13%' }} /><col style={{ width: '14%' }} />
           </colgroup>
           <thead>
             <tr>
               {['Timeframe', 'Trend', 'Strength', 'Chop', 'RSI', 'MACD', 'EMA Cross', 'Vol Mom'].map((head) => (
-                <th key={head} style={{ position: 'sticky', top: 0, zIndex: 1, padding: headerCellPadding, borderBottom: '1px solid rgba(255,255,255,0.14)', backgroundColor: '#1E2232', color: '#FFFFFF', textAlign: head === 'Timeframe' ? 'left' : 'center', fontWeight: 600, fontSize: headerFontSize, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{head}</th>
+                <th key={head} style={{ position: 'sticky', top: 0, zIndex: 1, padding: headerCellPadding, borderBottom: '1px solid rgba(255,255,255,0.14)', backgroundColor: '#1E2232', color: '#FFFFFF', textAlign: head === 'Timeframe' ? 'left' : 'center', fontWeight: 600, fontSize: headerFontSize, whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{head}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => (
               <tr key={row.tf}>
-                <td style={{ padding: bodyCellPadding, backgroundColor: '#141821', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{row.tf}</td>
-                <td style={{ padding: bodyCellPadding, backgroundColor: diqTrendColor(row.trend), color: '#FFFFFF', textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqTrendText(row.trend)}</td>
-                <td style={{ padding: bodyCellPadding, backgroundColor: diqStrengthColor(row.strength), color: diqStrengthTextColor(row.strength), textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqStrengthText(row.strength)}</td>
-                <td style={{ padding: bodyCellPadding, backgroundColor: diqChopColor(row.chop), color: diqChopTextColor(row.chop), textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqChopText(row.chop)}</td>
-                <td style={{ padding: bodyCellPadding, backgroundColor: diqRsiColor(row.rsiNow, row.rsiPrev), color: '#FFFFFF', textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqRsiText(row.rsiNow, row.rsiPrev)}</td>
-                <td style={{ padding: bodyCellPadding, backgroundColor: diqMacdColor(row.macdNow, row.macdSignal, row.macdPrev, row.macdSignalPrev), color: '#FFFFFF', textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqMacdText(row.macdNow, row.macdSignal, row.macdPrev, row.macdSignalPrev)}</td>
-                <td style={{ padding: bodyCellPadding, backgroundColor: diqEmaCrossColor(row.emaCross), color: diqEmaCrossTextColor(row.emaCross), textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqEmaCrossText(row.emaCross, row.emaCrossGapDir)}</td>
-                <td style={{ padding: bodyCellPadding, backgroundColor: diqVolMomColor(row.volMom), color: diqVolMomTextColor(row.volMom), textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqVolMomText(row.volMom)}</td>
+                <td style={{ padding: bodyCellPadding, backgroundColor: '#141821', whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{row.tf}</td>
+                <td style={{ padding: bodyCellPadding, backgroundColor: diqTrendColor(row.trend), color: '#FFFFFF', textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{diqTrendText(row.trend)}</td>
+                <td style={{ padding: bodyCellPadding, backgroundColor: diqStrengthColor(row.strength), color: diqStrengthTextColor(row.strength), textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{diqStrengthText(row.strength)}</td>
+                <td style={{ padding: bodyCellPadding, backgroundColor: diqChopColor(row.chop), color: diqChopTextColor(row.chop), textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{diqChopText(row.chop)}</td>
+                <td style={{ padding: bodyCellPadding, backgroundColor: diqRsiColor(row.rsiNow, row.rsiPrev), color: '#FFFFFF', textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{diqRsiText(row.rsiNow, row.rsiPrev)}</td>
+                <td style={{ padding: bodyCellPadding, backgroundColor: diqMacdColor(row.macdNow, row.macdSignal, row.macdPrev, row.macdSignalPrev), color: '#FFFFFF', textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{diqMacdText(row.macdNow, row.macdSignal, row.macdPrev, row.macdSignalPrev)}</td>
+                <td style={{ padding: bodyCellPadding, backgroundColor: diqEmaCrossColor(row.emaCross), color: diqEmaCrossTextColor(row.emaCross), textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{diqEmaCrossText(row.emaCross, row.emaCrossGapDir)}</td>
+                <td style={{ padding: bodyCellPadding, backgroundColor: diqVolMomColor(row.volMom), color: diqVolMomTextColor(row.volMom), textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{diqVolMomText(row.volMom)}</td>
               </tr>
             ))}
             <tr>
-              <td style={{ padding: overallCellPadding, backgroundColor: '#1E2232', color: '#FFFFFF', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>Overall</td>
-              <td style={{ padding: overallCellPadding, backgroundColor: diqTrendColor(overallTrend), color: '#FFFFFF', textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqTrendText(overallTrend)}</td>
-              <td style={{ padding: overallCellPadding, backgroundColor: diqStrengthColor(overallStrength), color: diqStrengthTextColor(overallStrength), textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqStrengthText(overallStrength)}</td>
-              <td style={{ padding: overallCellPadding, backgroundColor: diqChopColor(overallChop), color: diqChopTextColor(overallChop), textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{diqChopText(overallChop)}</td>
-              <td style={{ padding: overallCellPadding, backgroundColor: diqRsiColor(overallRsi, overallRsi), color: '#FFFFFF', textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{Number.isFinite(overallRsi) ? overallRsi.toFixed(1) : '--'}</td>
-              <td style={{ padding: overallCellPadding, backgroundColor: overallMacdColor, color: '#FFFFFF', textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{overallMacdText}</td>
-              <td style={{ padding: overallCellPadding, backgroundColor: diqEmaCrossColor(overallEmaCross), color: diqEmaCrossTextColor(overallEmaCross), textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{Number.isFinite(overallEmaCross) ? (overallEmaCross === 1 ? 'Bull ↑' : overallEmaCross === -1 ? 'Bear ↓' : 'Mixed →') : '--'}</td>
-              <td style={{ padding: overallCellPadding, backgroundColor: diqVolMomColor(overallVolMom), color: diqVolMomTextColor(overallVolMom), textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{Number.isFinite(overallVolMom) ? (overallVolMom === 1 ? 'SBM ↑' : overallVolMom === -1 ? 'SSM ↓' : 'Mixed →') : '--'}</td>
+              <td style={{ padding: overallCellPadding, backgroundColor: '#1E2232', color: '#FFFFFF', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>Overall</td>
+              <td style={{ padding: overallCellPadding, backgroundColor: diqTrendColor(overallTrend), color: '#FFFFFF', textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{diqTrendText(overallTrend)}</td>
+              <td style={{ padding: overallCellPadding, backgroundColor: diqStrengthColor(overallStrength), color: diqStrengthTextColor(overallStrength), textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{diqStrengthText(overallStrength)}</td>
+              <td style={{ padding: overallCellPadding, backgroundColor: diqChopColor(overallChop), color: diqChopTextColor(overallChop), textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{diqChopText(overallChop)}</td>
+              <td style={{ padding: overallCellPadding, backgroundColor: diqRsiColor(overallRsi, overallRsi), color: '#FFFFFF', textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{Number.isFinite(overallRsi) ? overallRsi.toFixed(1) : '--'}</td>
+              <td style={{ padding: overallCellPadding, backgroundColor: overallMacdColor, color: '#FFFFFF', textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{overallMacdText}</td>
+              <td style={{ padding: overallCellPadding, backgroundColor: diqEmaCrossColor(overallEmaCross), color: diqEmaCrossTextColor(overallEmaCross), textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{Number.isFinite(overallEmaCross) ? (overallEmaCross === 1 ? 'Bull ↑' : overallEmaCross === -1 ? 'Bear ↓' : 'Mixed →') : '--'}</td>
+              <td style={{ padding: overallCellPadding, backgroundColor: diqVolMomColor(overallVolMom), color: diqVolMomTextColor(overallVolMom), textAlign: 'center', fontWeight: 600, whiteSpace: 'nowrap', verticalAlign: 'middle', overflow: 'hidden' }}>{Number.isFinite(overallVolMom) ? (overallVolMom === 1 ? 'SBM ↑' : overallVolMom === -1 ? 'SSM ↓' : 'Mixed →') : '--'}</td>
             </tr>
           </tbody>
         </table>

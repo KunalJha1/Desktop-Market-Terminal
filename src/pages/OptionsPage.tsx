@@ -119,8 +119,8 @@ const COL_MAP: Record<ColId, ColDef> = {
 const CALL_COL_IDS: ColId[] = [
   "rho","vega","gamma","theta","delta",
   "toBePct","be","iv","timeVal","intrinsic",
-  "annAskPct","annBidPct","askPct","bidPct",
-  "ltp","theoretical","spread","ask","bid",
+  "annBidPct","annAskPct","bidPct","askPct",
+  "ltp","theoretical","spread","bid","ask",
   "retDist","distance","volBar",
 ];
 const DEFAULT_VISIBLE_COLS = new Set<ColId>(
@@ -140,8 +140,9 @@ function getOrderedColsFromOrder(order: ColId[], visible: Set<ColId>, widthOverr
     width: widthOverrides[id] ?? COL_MAP[id].width,
   }));
 }
+const MIN_COL_W = 48;
 function gridTemplate(cols: ColDef[]): string {
-  return cols.map(c => `${c.width}px`).join(" ");
+  return cols.map(c => `minmax(${MIN_COL_W}px, ${c.width}fr)`).join(" ");
 }
 function totalWidth(cols: ColDef[]): number {
   return cols.reduce((s, c) => s + c.width, 0);
@@ -233,11 +234,11 @@ const SideMetrics = memo(function SideMetrics({
 }) {
   const itmBg = "";
   const ctx: CellCtx = { underlyingPrice, isCall, strike };
-  const w = totalWidth(cols);
+  const minW = totalWidth(cols);
   return (
     <div
       className={`grid h-full items-center font-mono text-[13px] tabular-nums ${itmBg}`}
-      style={{ gridTemplateColumns: gridTemplate(cols), width: w, minWidth: w }}
+      style={{ gridTemplateColumns: gridTemplate(cols), width: "100%", minWidth: minW }}
     >
       {cols.map(col => {
         if (col.id === "volBar") {
@@ -292,12 +293,12 @@ function ChainHeaderLabels({
   dragColId: ColId | null;
   insertBeforeId: ColId | null;
 }) {
-  const w = totalWidth(cols);
+  const minW = totalWidth(cols);
   return (
     <div
       ref={isCall ? headerRef : undefined}
       className={`grid font-mono text-[12px] font-medium uppercase tracking-[0.1em] text-white ${isCall ? "text-right" : "text-left"}`}
-      style={{ gridTemplateColumns: gridTemplate(cols), width: w, minWidth: w }}
+      style={{ gridTemplateColumns: gridTemplate(cols), width: "100%", minWidth: minW }}
     >
       {cols.map(col => {
         const isDragging = dragColId === col.id;
@@ -553,12 +554,15 @@ function OptionsPage() {
       if (!callHeaderRef.current) return;
       const rect = callHeaderRef.current.getBoundingClientRect();
       const x = ev.clientX - rect.left;
-      // Use latest callColOrder + visibleCols + colWidthOverrides captured in closure
+      // Read actual rendered column widths from DOM (fr units differ from stored px)
+      const headerCells = Array.from(callHeaderRef.current.children) as HTMLElement[];
+      let cellIdx = 0;
       let cum = 0;
       let foundId: ColId | null = null;
       for (const cid of callColOrder) {
         if (!visibleCols.has(cid)) continue;
-        const w = colWidthOverrides[cid] ?? COL_MAP[cid].width;
+        const cell = headerCells[cellIdx++];
+        const w = cell ? cell.getBoundingClientRect().width : 0;
         if (x < cum + w / 2) { foundId = cid; break; }
         cum += w;
       }

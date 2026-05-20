@@ -182,11 +182,11 @@ export function diqMacdColor(macdNow: number, signalNow: number, macdPrev: numbe
 export function diqEmaCrossText(v: number, gapDir: number): string {
   if (!Number.isFinite(v)) return '--';
   const gap = gapDir === 1 ? '↑' : gapDir === -1 ? '↓' : '→';
-  if (v === 2) return `Bull X ↑${gap}`;
-  if (v === 1) return `Bull ↑${gap}`;
-  if (v === -1) return `Bear ↓${gap}`;
-  if (v === -2) return `Bear X ↓${gap}`;
-  return 'Flat →';
+  if (v === 2) return `Bull X ${gap}`;
+  if (v === 1) return `Bull ${gap}`;
+  if (v === -1) return `Bear ${gap}`;
+  if (v === -2) return `Bear X ${gap}`;
+  return `Flat ${gap}`;
 }
 
 export function diqEmaCrossColor(v: number): string {

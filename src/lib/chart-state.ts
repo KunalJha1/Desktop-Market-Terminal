@@ -89,7 +89,7 @@ export function createDefaultTechnicalTableWidgetState(): TechnicalTableWidgetSt
   return {
     x: 120,
     y: 120,
-    width: 520,
+    width: 600,
     height: 286,
     visible: true,
     locked: false,
@@ -330,7 +330,7 @@ export function loadChartState(tabId: string): ChartState | null {
             const base = {
               x: typeof tw.x === "number" ? tw.x : 120,
               y: typeof tw.y === "number" ? tw.y : 120,
-              width: typeof tw.width === "number" ? Math.max(360, Math.min(680, tw.width)) : 520,
+              width: typeof tw.width === "number" ? Math.max(440, Math.min(900, tw.width)) : 600,
               height: typeof tw.height === "number" ? Math.max(250, Math.min(520, tw.height)) : 286,
               visible: typeof tw.visible === "boolean" ? tw.visible : true,
               locked: typeof tw.locked === "boolean" ? tw.locked : false,
